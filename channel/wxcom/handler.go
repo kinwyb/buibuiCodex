@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -40,7 +41,7 @@ func (h *MessageHandler) ParseInboundMessage(frame *WsFrame) (*WsMessage, error)
 
 	// 获取基本信息
 	var userID, chatID string
-	if from, ok := body["from"].(map[string]interface{}); ok {
+	if from, ok := body["from"].(map[string]any); ok {
 		userID = getString(from, "userid")
 	}
 	if chattype, ok := body["chattype"].(string); ok {
@@ -64,24 +65,24 @@ func (h *MessageHandler) ParseInboundMessage(frame *WsFrame) (*WsMessage, error)
 	// 根据消息类型解析内容
 	switch msgType {
 	case MsgTypeText:
-		if text, ok := body[MsgTypeText].(map[string]interface{}); ok {
+		if text, ok := body[MsgTypeText].(map[string]any); ok {
 			msg.Content = getString(text, "content")
 		}
 
 	case MsgTypeImage:
-		if image, ok := body[MsgTypeImage].(map[string]interface{}); ok {
+		if image, ok := body[MsgTypeImage].(map[string]any); ok {
 			msg.MediaURL = getString(image, "url")
 			msg.MediaKey = getString(image, "aeskey")
 		}
 
 	case MsgTypeMixed:
-		if mixed, ok := body[MsgTypeMixed].(map[string]interface{}); ok {
-			items, _ := mixed["msg_item"].([]interface{})
+		if mixed, ok := body[MsgTypeMixed].(map[string]any); ok {
+			items, _ := mixed["msg_item"].([]any)
 			// 解析第一个文本项作为内容
 			for _, item := range items {
-				if itemMap, ok := item.(map[string]interface{}); ok {
+				if itemMap, ok := item.(map[string]any); ok {
 					if getString(itemMap, "msgtype") == MsgTypeText {
-						if text, ok := itemMap[MsgTypeText].(map[string]interface{}); ok {
+						if text, ok := itemMap[MsgTypeText].(map[string]any); ok {
 							msg.Content = getString(text, "content")
 							break
 						}
@@ -91,12 +92,12 @@ func (h *MessageHandler) ParseInboundMessage(frame *WsFrame) (*WsMessage, error)
 		}
 
 	case MsgTypeVoice:
-		if voice, ok := body[MsgTypeVoice].(map[string]interface{}); ok {
+		if voice, ok := body[MsgTypeVoice].(map[string]any); ok {
 			msg.Content = getString(voice, "content") // 语音转文本内容
 		}
 
 	case MsgTypeFile:
-		if file, ok := body[MsgTypeFile].(map[string]interface{}); ok {
+		if file, ok := body[MsgTypeFile].(map[string]any); ok {
 			msg.MediaURL = getString(file, "url")
 			msg.MediaKey = getString(file, "aeskey")
 		}
@@ -112,7 +113,7 @@ func (h *MessageHandler) ParseEvent(frame *WsFrame) (*WsEvent, error) {
 		return nil, fmt.Errorf("frame body is nil")
 	}
 
-	eventData, ok := body["event"].(map[string]interface{})
+	eventData, ok := body["event"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("event not found in body")
 	}
@@ -143,7 +144,7 @@ func (h *MessageHandler) ConvertToInbound(msg *WsMessage, channelName, accountID
 		Content:   strings.TrimSpace(msg.Content),
 		//StreamingMode: bus.StreamingModeAccumulate, // 企业微信需要累积内容
 		Timestamp: msg.MsgTime,
-		Metadata:  make(map[string]interface{}),
+		Metadata:  make(map[string]any),
 	}
 
 	// 设置消息类型
@@ -153,7 +154,7 @@ func (h *MessageHandler) ConvertToInbound(msg *WsMessage, channelName, accountID
 	if msg.MediaURL != "" {
 		media := types.Media{
 			URL:      msg.MediaURL,
-			Metadata: make(map[string]interface{}),
+			Metadata: make(map[string]any),
 		}
 		if msg.MediaKey != "" {
 			media.Metadata["aeskey"] = msg.MediaKey
@@ -190,8 +191,8 @@ func (h *MessageHandler) ConvertToInbound(msg *WsMessage, channelName, accountID
 }
 
 // BuildStreamReply 构建流式回复消息体
-func (h *MessageHandler) BuildStreamReply(streamID, reason string, content string, finish bool, msgItem []MixedItem, feedback *StreamFeedback) map[string]interface{} {
-	stream := map[string]interface{}{
+func (h *MessageHandler) BuildStreamReply(streamID, reason string, content string, finish bool, msgItem []MixedItem, feedback *StreamFeedback) map[string]any {
+	stream := map[string]any{
 		"id":      streamID,
 		"content": content,
 		"finish":  finish,
@@ -201,18 +202,18 @@ func (h *MessageHandler) BuildStreamReply(streamID, reason string, content strin
 	}
 
 	if finish && len(msgItem) > 0 {
-		items := make([]map[string]interface{}, len(msgItem))
+		items := make([]map[string]any, len(msgItem))
 		for i, item := range msgItem {
-			itemMap := map[string]interface{}{
+			itemMap := map[string]any{
 				"msgtype": item.MsgType,
 			}
 			if item.Text != nil {
-				itemMap[MsgTypeText] = map[string]interface{}{
+				itemMap[MsgTypeText] = map[string]any{
 					"content": item.Text.Content,
 				}
 			}
 			if item.Image != nil {
-				itemMap[MsgTypeImage] = map[string]interface{}{
+				itemMap[MsgTypeImage] = map[string]any{
 					"url":    item.Image.URL,
 					"aeskey": item.Image.AesKey,
 				}
@@ -223,45 +224,43 @@ func (h *MessageHandler) BuildStreamReply(streamID, reason string, content strin
 	}
 
 	if feedback != nil {
-		stream["feedback"] = map[string]interface{}{
+		stream["feedback"] = map[string]any{
 			"button_desc": feedback.ButtonDesc,
 		}
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"msgtype": MsgTypeStream,
 		"stream":  stream,
 	}
 }
 
 // BuildMarkdownReply 构建Markdown回复消息体
-func (h *MessageHandler) BuildMarkdownReply(content string) map[string]interface{} {
-	return map[string]interface{}{
+func (h *MessageHandler) BuildMarkdownReply(content string) map[string]any {
+	return map[string]any{
 		"msgtype": MsgTypeMarkdown,
-		"markdown": map[string]interface{}{
+		"markdown": map[string]any{
 			"content": content,
 		},
 	}
 }
 
 // BuildTextReply 构建文本回复消息体
-func (h *MessageHandler) BuildTextReply(content string) map[string]interface{} {
-	return map[string]interface{}{
+func (h *MessageHandler) BuildTextReply(content string) map[string]any {
+	return map[string]any{
 		"msgtype": MsgTypeText,
-		MsgTypeText: map[string]interface{}{
+		MsgTypeText: map[string]any{
 			"content": content,
 		},
 	}
 }
 
 // BuildSendMessage 构建主动发送消息体
-func (h *MessageHandler) BuildSendMessage(chatID string, body map[string]interface{}) map[string]any {
-	result := map[string]interface{}{
+func (h *MessageHandler) BuildSendMessage(chatID string, body map[string]any) map[string]any {
+	result := map[string]any{
 		"chatid": chatID,
 	}
-	for k, v := range body {
-		result[k] = v
-	}
+	maps.Copy(result, body)
 	return result
 }
 
@@ -280,7 +279,7 @@ func (h *MessageHandler) ConvertOutboundToReply(outbound *types.Message, streamI
 }
 
 // getString 从map中获取字符串值
-func getString(m map[string]interface{}, key string) string {
+func getString(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
@@ -290,8 +289,8 @@ func getString(m map[string]interface{}, key string) string {
 }
 
 // ParseBodyFromJSON 从JSON字符串解析消息体
-func ParseBodyFromJSON(jsonStr string) (map[string]interface{}, error) {
-	var body map[string]interface{}
+func ParseBodyFromJSON(jsonStr string) (map[string]any, error) {
+	var body map[string]any
 	if err := json.Unmarshal([]byte(jsonStr), &body); err != nil {
 		return nil, err
 	}
@@ -304,15 +303,15 @@ func MarshalFrame(frame *WsFrame) ([]byte, error) {
 }
 
 // BuildTemplateCardReply 构建模板卡片回复消息体
-func (h *MessageHandler) BuildTemplateCardReply(card *TemplateCard, feedback *CardFeedback) map[string]interface{} {
+func (h *MessageHandler) BuildTemplateCardReply(card *TemplateCard, feedback *CardFeedback) map[string]any {
 	cardMap := h.cardToMap(card)
 	if feedback != nil {
-		cardMap["feedback"] = map[string]interface{}{
+		cardMap["feedback"] = map[string]any{
 			"button_desc": feedback.ButtonDesc,
 		}
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"msgtype":       MsgTypeTemplateCard,
 		"template_card": cardMap,
 	}
@@ -320,27 +319,27 @@ func (h *MessageHandler) BuildTemplateCardReply(card *TemplateCard, feedback *Ca
 
 // BuildStreamWithCardReply 构建流式消息+模板卡片组合回复
 func (h *MessageHandler) BuildStreamWithCardReply(streamID, content string, finish bool,
-	msgItem []MixedItem, streamFeedback *StreamFeedback, card *TemplateCard, cardFeedback *CardFeedback) map[string]interface{} {
+	msgItem []MixedItem, streamFeedback *StreamFeedback, card *TemplateCard, cardFeedback *CardFeedback) map[string]any {
 
-	stream := map[string]interface{}{
+	stream := map[string]any{
 		"id":      streamID,
 		"content": content,
 		"finish":  finish,
 	}
 
 	if finish && len(msgItem) > 0 {
-		items := make([]map[string]interface{}, len(msgItem))
+		items := make([]map[string]any, len(msgItem))
 		for i, item := range msgItem {
-			itemMap := map[string]interface{}{
+			itemMap := map[string]any{
 				"msgtype": item.MsgType,
 			}
 			if item.Text != nil {
-				itemMap[MsgTypeText] = map[string]interface{}{
+				itemMap[MsgTypeText] = map[string]any{
 					"content": item.Text.Content,
 				}
 			}
 			if item.Image != nil {
-				itemMap[MsgTypeImage] = map[string]interface{}{
+				itemMap[MsgTypeImage] = map[string]any{
 					"url":    item.Image.URL,
 					"aeskey": item.Image.AesKey,
 				}
@@ -351,12 +350,12 @@ func (h *MessageHandler) BuildStreamWithCardReply(streamID, content string, fini
 	}
 
 	if streamFeedback != nil {
-		stream["feedback"] = map[string]interface{}{
+		stream["feedback"] = map[string]any{
 			"button_desc": streamFeedback.ButtonDesc,
 		}
 	}
 
-	body := map[string]interface{}{
+	body := map[string]any{
 		"msgtype": "stream_with_template_card",
 		"stream":  stream,
 	}
@@ -364,7 +363,7 @@ func (h *MessageHandler) BuildStreamWithCardReply(streamID, content string, fini
 	if card != nil {
 		cardMap := h.cardToMap(card)
 		if cardFeedback != nil {
-			cardMap["feedback"] = map[string]interface{}{
+			cardMap["feedback"] = map[string]any{
 				"button_desc": cardFeedback.ButtonDesc,
 			}
 		}
@@ -375,8 +374,8 @@ func (h *MessageHandler) BuildStreamWithCardReply(streamID, content string, fini
 }
 
 // BuildUpdateTemplateCard 构建更新模板卡片消息体
-func (h *MessageHandler) BuildUpdateTemplateCard(card *TemplateCard, userIDs []string) map[string]interface{} {
-	body := map[string]interface{}{
+func (h *MessageHandler) BuildUpdateTemplateCard(card *TemplateCard, userIDs []string) map[string]any {
+	body := map[string]any{
 		"response_type": "update_template_card",
 		"template_card": h.cardToMap(card),
 	}
@@ -389,38 +388,38 @@ func (h *MessageHandler) BuildUpdateTemplateCard(card *TemplateCard, userIDs []s
 }
 
 // cardToMap 将TemplateCard转换为map
-func (h *MessageHandler) cardToMap(card *TemplateCard) map[string]interface{} {
+func (h *MessageHandler) cardToMap(card *TemplateCard) map[string]any {
 	if card == nil {
 		return nil
 	}
 
-	cardMap := map[string]interface{}{
+	cardMap := map[string]any{
 		"card_type": card.CardType,
 	}
 
 	if card.Source != nil {
-		cardMap["source"] = map[string]interface{}{
+		cardMap["source"] = map[string]any{
 			"icon_url": card.Source.IconURL,
 			"desc":     card.Source.Desc,
 		}
 	}
 
 	if card.MainTitle != nil {
-		cardMap["main_title"] = map[string]interface{}{
+		cardMap["main_title"] = map[string]any{
 			"title": card.MainTitle.Title,
 			"desc":  card.MainTitle.Desc,
 		}
 	}
 
 	if card.SubTitle != nil {
-		cardMap["sub_title"] = map[string]interface{}{
+		cardMap["sub_title"] = map[string]any{
 			"title": card.SubTitle.Title,
 			"desc":  card.SubTitle.Desc,
 		}
 	}
 
 	if card.EmphasisTitle != nil {
-		cardMap["emphasis_title"] = map[string]interface{}{
+		cardMap["emphasis_title"] = map[string]any{
 			"title": card.EmphasisTitle.Title,
 			"desc":  card.EmphasisTitle.Desc,
 		}
@@ -431,7 +430,7 @@ func (h *MessageHandler) cardToMap(card *TemplateCard) map[string]interface{} {
 	}
 
 	if card.CardAction != nil {
-		action := map[string]interface{}{}
+		action := map[string]any{}
 		if card.CardAction.Type > 0 {
 			action["type"] = card.CardAction.Type
 		}
@@ -448,16 +447,16 @@ func (h *MessageHandler) cardToMap(card *TemplateCard) map[string]interface{} {
 	}
 
 	if card.ButtonSelection != nil {
-		selection := map[string]interface{}{
+		selection := map[string]any{
 			"question_key": card.ButtonSelection.QuestionKey,
 			"title":        card.ButtonSelection.Title,
 			"disable":      card.ButtonSelection.Disable,
 			"selected_id":  card.ButtonSelection.SelectedID,
 		}
 		if len(card.ButtonSelection.OptionList) > 0 {
-			options := make([]map[string]interface{}, len(card.ButtonSelection.OptionList))
+			options := make([]map[string]any, len(card.ButtonSelection.OptionList))
 			for i, opt := range card.ButtonSelection.OptionList {
-				options[i] = map[string]interface{}{
+				options[i] = map[string]any{
 					"id":      opt.ID,
 					"text":    opt.Text,
 					"disable": opt.Disable,
@@ -469,7 +468,7 @@ func (h *MessageHandler) cardToMap(card *TemplateCard) map[string]interface{} {
 	}
 
 	if card.ButtonTextArea != nil {
-		cardMap["button_textarea"] = map[string]interface{}{
+		cardMap["button_textarea"] = map[string]any{
 			"question_key": card.ButtonTextArea.QuestionKey,
 			"title":        card.ButtonTextArea.Title,
 			"disable":      card.ButtonTextArea.Disable,
@@ -479,18 +478,18 @@ func (h *MessageHandler) cardToMap(card *TemplateCard) map[string]interface{} {
 	}
 
 	if len(card.SelectList) > 0 {
-		selectList := make([]map[string]interface{}, len(card.SelectList))
+		selectList := make([]map[string]any, len(card.SelectList))
 		for i, item := range card.SelectList {
-			selectItem := map[string]interface{}{
+			selectItem := map[string]any{
 				"question_key": item.QuestionKey,
 				"title":        item.Title,
 				"disable":      item.Disable,
 				"selected_id":  item.SelectedID,
 			}
 			if len(item.OptionList) > 0 {
-				options := make([]map[string]interface{}, len(item.OptionList))
+				options := make([]map[string]any, len(item.OptionList))
 				for j, opt := range item.OptionList {
-					options[j] = map[string]interface{}{
+					options[j] = map[string]any{
 						"id":      opt.ID,
 						"text":    opt.Text,
 						"disable": opt.Disable,
@@ -504,7 +503,7 @@ func (h *MessageHandler) cardToMap(card *TemplateCard) map[string]interface{} {
 	}
 
 	if card.SubmitButton != nil {
-		cardMap["submit_button"] = map[string]interface{}{
+		cardMap["submit_button"] = map[string]any{
 			"text":    card.SubmitButton.Text,
 			"key":     card.SubmitButton.Key,
 			"disable": card.SubmitButton.Disable,
@@ -512,7 +511,7 @@ func (h *MessageHandler) cardToMap(card *TemplateCard) map[string]interface{} {
 	}
 
 	if card.ImageTextArea != nil {
-		cardMap["image_text_area"] = map[string]interface{}{
+		cardMap["image_text_area"] = map[string]any{
 			"type":      card.ImageTextArea.Type,
 			"url":       card.ImageTextArea.URL,
 			"title":     card.ImageTextArea.Title,
@@ -522,9 +521,9 @@ func (h *MessageHandler) cardToMap(card *TemplateCard) map[string]interface{} {
 	}
 
 	if len(card.VerticalContent) > 0 {
-		content := make([]map[string]interface{}, len(card.VerticalContent))
+		content := make([]map[string]any, len(card.VerticalContent))
 		for i, item := range card.VerticalContent {
-			content[i] = map[string]interface{}{
+			content[i] = map[string]any{
 				"title": item.Title,
 				"desc":  item.Desc,
 			}

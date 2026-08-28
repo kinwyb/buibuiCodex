@@ -269,10 +269,8 @@ func (s *sessionSequence) processOnePending() {
 	// pending 消息已经入过队列，spawnLimit 满了也必须放它跑（否则消息丢失）；
 	// 只在常规入口（processMessages）做 spawnLimit 拒收。
 	s.spawnLimit <- struct{}{}
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		defer func() { <-s.spawnLimit }()
 		s.handleInboundMessage(next)
-	}()
+	})
 }

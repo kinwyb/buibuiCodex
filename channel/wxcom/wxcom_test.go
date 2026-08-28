@@ -97,11 +97,11 @@ func TestMessageHandlerParseTextMessage(t *testing.T) {
 		Headers: map[string]string{
 			"req_id": "test_req_id",
 		},
-		Body: map[string]interface{}{
+		Body: map[string]any{
 			"msgtype":  MsgTypeText,
 			"chattype": "group",
 			"chatid":   "test_chat",
-			MsgTypeText: map[string]interface{}{
+			MsgTypeText: map[string]any{
 				"content": "Hello, World!",
 			},
 		},
@@ -134,13 +134,13 @@ func TestMessageHandlerParsePrivateChatMessage(t *testing.T) {
 		Headers: map[string]string{
 			"req_id": "test_req_id",
 		},
-		Body: map[string]interface{}{
+		Body: map[string]any{
 			"msgtype":  MsgTypeText,
 			"chattype": "single",
-			"from": map[string]interface{}{
+			"from": map[string]any{
 				"userid": "zhangsan",
 			},
-			MsgTypeText: map[string]interface{}{
+			MsgTypeText: map[string]any{
 				"content": "Hello!",
 			},
 		},
@@ -173,9 +173,9 @@ func TestMessageHandlerParseImageMessage(t *testing.T) {
 		Headers: map[string]string{
 			"req_id": "test_req_id",
 		},
-		Body: map[string]interface{}{
+		Body: map[string]any{
 			"msgtype": MsgTypeImage,
-			MsgTypeImage: map[string]interface{}{
+			MsgTypeImage: map[string]any{
 				"url":    "https://example.com/image.jpg",
 				"aeskey": "test_aes_key",
 			},
@@ -209,9 +209,9 @@ func TestMessageHandlerParseEvent(t *testing.T) {
 		Headers: map[string]string{
 			"req_id": "test_req_id",
 		},
-		Body: map[string]interface{}{
+		Body: map[string]any{
 			"msgtype": "event",
-			"event": map[string]interface{}{
+			"event": map[string]any{
 				"eventtype": EventTypeEnterChat,
 				"userid":    "test_user",
 				"chatid":    "test_chat",
@@ -284,7 +284,7 @@ func TestMessageHandlerBuildStreamReply(t *testing.T) {
 		t.Errorf("Expected msgtype %s, got %s", MsgTypeStream, body["msgtype"])
 	}
 
-	stream, ok := body["stream"].(map[string]interface{})
+	stream, ok := body["stream"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected stream map")
 	}
@@ -311,7 +311,7 @@ func TestMessageHandlerBuildMarkdownReply(t *testing.T) {
 		t.Errorf("Expected msgtype %s, got %s", MsgTypeMarkdown, body["msgtype"])
 	}
 
-	markdown, ok := body["markdown"].(map[string]interface{})
+	markdown, ok := body["markdown"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected markdown map")
 	}
@@ -440,7 +440,7 @@ func TestMessageHandlerBuildTemplateCardReply(t *testing.T) {
 		t.Errorf("Expected msgtype %s, got %s", MsgTypeTemplateCard, body["msgtype"])
 	}
 
-	cardMap, ok := body["template_card"].(map[string]interface{})
+	cardMap, ok := body["template_card"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected template_card map")
 	}
@@ -449,7 +449,7 @@ func TestMessageHandlerBuildTemplateCardReply(t *testing.T) {
 		t.Errorf("Expected card_type %s, got %s", CardTypeTextNotice, cardMap["card_type"])
 	}
 
-	feedbackMap, ok := cardMap["feedback"].(map[string]interface{})
+	feedbackMap, ok := cardMap["feedback"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected feedback map")
 	}
@@ -471,7 +471,7 @@ func TestMessageHandlerBuildStreamWithCardReply(t *testing.T) {
 		t.Errorf("Expected msgtype 'stream_with_template_card', got '%s'", body["msgtype"])
 	}
 
-	streamMap, ok := body["stream"].(map[string]interface{})
+	streamMap, ok := body["stream"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected stream map")
 	}
@@ -480,7 +480,7 @@ func TestMessageHandlerBuildStreamWithCardReply(t *testing.T) {
 		t.Errorf("Expected stream id 'stream_123', got '%s'", streamMap["id"])
 	}
 
-	cardMap, ok := body["template_card"].(map[string]interface{})
+	cardMap, ok := body["template_card"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected template_card map")
 	}
@@ -544,7 +544,7 @@ func TestCardToMapWithAllFields(t *testing.T) {
 		t.Errorf("Expected task_id 'task_full', got '%s'", cardMap["task_id"])
 	}
 
-	selectList, ok := cardMap["select_list"].([]map[string]interface{})
+	selectList, ok := cardMap["select_list"].([]map[string]any)
 	if !ok {
 		t.Fatal("Expected select_list")
 	}
@@ -604,7 +604,7 @@ func TestComputeMD5(t *testing.T) {
 
 func TestGetStringFromMap(t *testing.T) {
 	// 测试正常获取
-	m := map[string]interface{}{"key": "value"}
+	m := map[string]any{"key": "value"}
 	if v, ok := getStringFromMap(m, "key"); !ok || v != "value" {
 		t.Errorf("Expected 'value', got '%v', ok=%v", v, ok)
 	}
@@ -620,7 +620,7 @@ func TestGetStringFromMap(t *testing.T) {
 	}
 
 	// 测试非 string 类型值
-	m2 := map[string]interface{}{"num": 123}
+	m2 := map[string]any{"num": 123}
 	if v, ok := getStringFromMap(m2, "num"); ok {
 		t.Errorf("Expected false for non-string value, got '%v'", v)
 	}

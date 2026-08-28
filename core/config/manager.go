@@ -39,7 +39,7 @@ func (m *Manager) UpdateConfig(config json.RawMessage) error {
 	defer m.mu.Unlock()
 
 	// 验证 JSON 格式有效
-	var parsed interface{}
+	var parsed any
 	if err := json.Unmarshal(config, &parsed); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}

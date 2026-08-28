@@ -257,7 +257,7 @@ func (c *Channel) handleEvent(frame *WsFrame) {
 			ChatID:    event.ChatID,
 			Content:   fmt.Sprintf("模板卡片事件: %s", event.EventKey),
 			Timestamp: event.EventTime,
-			Metadata: map[string]interface{}{
+			Metadata: map[string]any{
 				"event_type": EventTypeTemplateCardEvent,
 				"event_key":  event.EventKey,
 				"task_id":    event.TaskID,
@@ -277,7 +277,7 @@ func (c *Channel) handleEvent(frame *WsFrame) {
 			ChatID:    event.ChatID,
 			Content:   "用户反馈事件",
 			Timestamp: event.EventTime,
-			Metadata: map[string]interface{}{
+			Metadata: map[string]any{
 				"event_type": EventTypeFeedbackEvent,
 				"req_id":     frame.Headers["req_id"],
 			},
@@ -407,7 +407,7 @@ func (c *Channel) sendStream(ctx context.Context, event *types.Event) error {
 				c.streamIDMap[reqID] = c.streamIDMap[reqID] + 1
 				c.streamIDMapLock.Unlock()
 				if event.Metadata == nil {
-					event.Metadata = make(map[string]interface{})
+					event.Metadata = make(map[string]any)
 				}
 				event.Metadata["is_retry"] = true
 				c.sendStream(ctx, event) //尝试重新发送消息
@@ -659,9 +659,9 @@ func (c *Channel) handleSendFileRequest(ctx context.Context, event *types.Event)
 	reqID := generateReqID(WsCmdSendMsg)
 	cmd := WsCmdSendMsg
 	//}
-	body := c.handler.BuildSendMessage(event.ChatID, map[string]interface{}{
+	body := c.handler.BuildSendMessage(event.ChatID, map[string]any{
 		"msgtype": fileType,
-		fileType: map[string]interface{}{
+		fileType: map[string]any{
 			"media_id": mediaID,
 		},
 	})
@@ -675,7 +675,7 @@ func (c *Channel) handleSendFileRequest(ctx context.Context, event *types.Event)
 }
 
 // getStringFromMap 从 map 中获取字符串值
-func getStringFromMap(m map[string]interface{}, key string) (string, bool) {
+func getStringFromMap(m map[string]any, key string) (string, bool) {
 	if m == nil {
 		return "", false
 	}

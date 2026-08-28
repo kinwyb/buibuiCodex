@@ -9,11 +9,11 @@ import (
 
 // ThreadBinding 会话到通道的绑定
 type ThreadBinding struct {
-	SessionKey string                 // Channel:AccountID:ChatID
-	TargetChan string                 // 目标通道名称
-	AgentName  string                 // 可选：指定 agent
-	Priority   int                    // 优先级（越高越优先）
-	Metadata   map[string]interface{} // 附加元数据
+	SessionKey string         // Channel:AccountID:ChatID
+	TargetChan string         // 目标通道名称
+	AgentName  string         // 可选：指定 agent
+	Priority   int            // 优先级（越高越优先）
+	Metadata   map[string]any // 附加元数据
 }
 
 // BindingOption 绑定配置选项
@@ -34,7 +34,7 @@ func WithPriority(priority int) BindingOption {
 }
 
 // WithMetadata 设置元数据
-func WithMetadata(metadata map[string]interface{}) BindingOption {
+func WithMetadata(metadata map[string]any) BindingOption {
 	return func(b *ThreadBinding) {
 		b.Metadata = metadata
 	}
@@ -62,7 +62,7 @@ func (s *ThreadBindingService) Bind(sessionKey, targetChan string, opts ...Bindi
 		SessionKey: sessionKey,
 		TargetChan: targetChan,
 		Priority:   0,
-		Metadata:   make(map[string]interface{}),
+		Metadata:   make(map[string]any),
 	}
 
 	// 应用选项

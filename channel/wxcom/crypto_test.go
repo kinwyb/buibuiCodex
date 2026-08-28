@@ -17,7 +17,7 @@ func TestDecryptAES256CBC(t *testing.T) {
 
 	// 生成测试密钥 (32字节)
 	key := make([]byte, 32)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		key[i] = byte(i)
 	}
 	aesKeyBase64 := base64.StdEncoding.EncodeToString(key)
@@ -44,7 +44,7 @@ func TestDecryptAES256CBCWithPadding(t *testing.T) {
 	// 测试不同长度的数据
 
 	key := make([]byte, 32)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		key[i] = byte(i)
 	}
 	aesKeyBase64 := base64.StdEncoding.EncodeToString(key)

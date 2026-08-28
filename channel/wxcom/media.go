@@ -30,10 +30,10 @@ func (c *Channel) SendMedia(ctx context.Context, mediaType string, reqID string,
 	} else {
 		reqID = generateReqID(WsCmdSendMsg)
 	}
-	body := map[string]interface{}{
+	body := map[string]any{
 		"chatid":  chatID,
 		"msgtype": mediaType,
-		mediaType: map[string]interface{}{
+		mediaType: map[string]any{
 			"media_id": mediaID,
 		},
 	}
@@ -122,7 +122,7 @@ func (c *Channel) UploadMedia(ctx context.Context, mediaType, filename string, d
 
 		// 2. 分片上传
 		uploadFailed := false
-		for i := 0; i < totalChunks; i++ {
+		for i := range totalChunks {
 			start := i * chunkSize
 			end := start + chunkSize
 			if end > totalSize {
@@ -161,7 +161,7 @@ func (c *Channel) UploadMedia(ctx context.Context, mediaType, filename string, d
 
 // uploadMediaInit 上传初始化
 func (c *Channel) uploadMediaInit(ctx context.Context, mediaType, filename string, totalSize, totalChunks int, md5 string) (string, error) {
-	body := map[string]interface{}{
+	body := map[string]any{
 		"type":         mediaType,
 		"filename":     filename,
 		"total_size":   totalSize,
@@ -186,7 +186,7 @@ func (c *Channel) uploadMediaInit(ctx context.Context, mediaType, filename strin
 
 // uploadMediaChunk 上传分片
 func (c *Channel) uploadMediaChunk(ctx context.Context, uploadID string, chunkIndex int, data []byte) error {
-	body := map[string]interface{}{
+	body := map[string]any{
 		"upload_id":   uploadID,
 		"chunk_index": chunkIndex,
 		"base64_data": base64.StdEncoding.EncodeToString(data),
@@ -206,7 +206,7 @@ func (c *Channel) uploadMediaChunk(ctx context.Context, uploadID string, chunkIn
 
 // uploadMediaFinish 完成上传
 func (c *Channel) uploadMediaFinish(ctx context.Context, uploadID string) (string, error) {
-	body := map[string]interface{}{
+	body := map[string]any{
 		"upload_id": uploadID,
 	}
 
@@ -241,7 +241,7 @@ func (c *Channel) processMedia(ctx context.Context, inbound *types.InputMessage)
 			media.URL = "" // 清空 URL，避免 OpenAI 接口优先使用已失效的临时链接
 			media.MimeType = DetectMimeType(data)
 			if media.Metadata == nil {
-				media.Metadata = make(map[string]interface{})
+				media.Metadata = make(map[string]any)
 			}
 			media.Metadata["filename"] = filename
 

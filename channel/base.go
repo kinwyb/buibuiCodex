@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"github.com/kinwyb/buibuiCodex/core/bus"
@@ -131,13 +132,7 @@ func (c *BaseChannel) IsAllowed(senderID string) bool {
 	}
 
 	// 检查是否在允许列表中
-	for _, id := range c.config.AllowedIDs {
-		if id == senderID {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(c.config.AllowedIDs, senderID)
 }
 
 // PublishInbound 发布入站消息

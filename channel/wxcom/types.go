@@ -107,11 +107,11 @@ func (c *WxComConfig) Validate() error {
 
 // WsFrame WebSocket帧结构
 type WsFrame struct {
-	Cmd     string                 `json:"cmd,omitempty"`
-	Headers map[string]string      `json:"headers"`
-	Body    map[string]interface{} `json:"body,omitempty"`
-	ErrCode int                    `json:"errcode,omitempty"`
-	ErrMsg  string                 `json:"errmsg,omitempty"`
+	Cmd     string            `json:"cmd,omitempty"`
+	Headers map[string]string `json:"headers"`
+	Body    map[string]any    `json:"body,omitempty"`
+	ErrCode int               `json:"errcode,omitempty"`
+	ErrMsg  string            `json:"errmsg,omitempty"`
 }
 
 // WsHeaders WebSocket帧headers (用于reply等方法参数)
@@ -320,7 +320,7 @@ type EventData struct {
 	ChatID    string `json:"chatid,omitempty"`    // 会话ID
 	TaskID    string `json:"task_id,omitempty"`   // 任务ID (模板卡片事件)
 	// 其他字段
-	Extra map[string]interface{} `json:"-"`
+	Extra map[string]any `json:"-"`
 }
 
 // WsMessage WebSocket消息 (入站消息回调)

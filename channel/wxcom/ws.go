@@ -199,7 +199,7 @@ func (m *WsManager) sendAuth(ctx context.Context) error {
 		Headers: map[string]string{
 			"req_id": reqID,
 		},
-		Body: map[string]interface{}{
+		Body: map[string]any{
 			"bot_id": m.config.BotID,
 			"secret": m.config.Secret,
 		},
@@ -454,7 +454,7 @@ func (m *WsManager) send(frame *WsFrame) error {
 
 // SendReply 通过WebSocket通道发送回复消息
 // 同一个reqID的消息会被放入队列中串行发送，不同reqID由不同worker并行处理
-func (m *WsManager) SendReply(ctx context.Context, reqID string, body map[string]interface{}, cmd string) (*WsFrame, error) {
+func (m *WsManager) SendReply(ctx context.Context, reqID string, body map[string]any, cmd string) (*WsFrame, error) {
 	frame := &WsFrame{
 		Cmd: cmd,
 		Headers: map[string]string{
@@ -505,7 +505,7 @@ func (m *WsManager) SendReply(ctx context.Context, reqID string, body map[string
 
 // SendCommand 发送 WebSocket 命令并等待响应
 // 用于上传素材等非回复类命令，不走 reply worker 队列
-func (m *WsManager) SendCommand(ctx context.Context, cmd string, body map[string]interface{}, timeout time.Duration) (*WsFrame, error) {
+func (m *WsManager) SendCommand(ctx context.Context, cmd string, body map[string]any, timeout time.Duration) (*WsFrame, error) {
 	reqID := generateReqID(cmd)
 	frame := &WsFrame{
 		Cmd: cmd,
@@ -558,7 +558,7 @@ func (m *WsManager) startReplyWorkers(count int) {
 	// 创建新的 worker context（每次连接成功时重新创建）
 	m.replyWorkerCtx, m.replyWorkerCancel = context.WithCancel(context.Background())
 
-	for i := 0; i < count; i++ {
+	for i := range count {
 		go m.replyWorkerLoop(i)
 	}
 	m.logger.Info("Reply workers started", "count", count)
@@ -783,12 +783,4 @@ func (m *WsManager) SetOnEvent(f func(frame *WsFrame)) {
 // generateReqID 生成请求ID
 func generateReqID(cmd string) string {
 	return fmt.Sprintf("%s_%s", cmd, uuid.New().String()[:8])
-}
-
-// min 返回最小值
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
