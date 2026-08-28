@@ -10,12 +10,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/kinwyb/buibuiCodex/codex"
 	"github.com/kinwyb/buibuiCodex/codex/jsonRpc"
 	"github.com/kinwyb/buibuiCodex/codex/proc"
 	"github.com/kinwyb/buibuiCodex/codex/proc/docker"
 	"github.com/kinwyb/buibuiCodex/core/config"
+	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
 )
 
@@ -120,6 +122,7 @@ func (a *Agent) initProcess() error {
 	if err != nil {
 		return fmt.Errorf("连接 app-server 失败: %v", err)
 	}
+	client.RegisterDefaultEventHandler(a.allEventHandler)
 	a.client = client
 	a.isInit = true
 	return nil
@@ -129,43 +132,29 @@ func (a *Agent) getThread(ctx context.Context, sessionID string) (*codex.Thread,
 	a.epMu.Lock()
 	defer a.epMu.Unlock()
 	thread := a.client.Thread()
+	waitResume := true
 	turn, ok := a.eps[sessionID]
 	if !ok {
-		cfg := &jsonRpc.ThreadConfig{
-			Model:         a.cfg.Model,
-			OpenAIBaseURL: a.cfg.Provider.APIBaseURL,
-			OpenAIAPIKey:  a.cfg.Provider.APIKey,
-			////MCPServers: map[string]jsonRpc.MCPServer{
-			//	"boda": {
-			//		URL: "http://localhost:9090/mcp",
-			//	},
-			//},
+		// 查询数据库中使用过的thread
+		dbThread := a.cfg.SessionDB.LastThread(ctx, sessionID, a.AgentID())
+		if dbThread != nil {
+			turn = &codexTurn{
+				startTime:      dbThread.CreateTime.Unix(),
+				threadID:       dbThread.ThreadID,
+				turnID:         "",
+				lastUpdateTime: dbThread.LastUpdate.Unix(),
+			}
+		} else {
+			// 没有有效的thread，创建新的thread
+			waitResume = false
+			nTurn, err := a.newThread(ctx, thread, sessionID)
+			if err != nil {
+				return nil, err
+			}
+			turn = nTurn
 		}
-		workspace := filepath.Join(a.cfg.WorkSpace, "workspace")
-		opts := []codex.ThreadStartOption{codex.ThreadStartWithConfig(cfg),
-			codex.ThreadStartWithSendbox(jsonRpc.SandboxModeDangerFullAccess)}
-		dynamicTool := a.dynamicTools()
-		if dynamicTool != nil {
-			opts = append(opts, codex.ThreadStartWithDynamicTool(dynamicTool))
-		}
-		if a.cfg.Description != "" {
-			opts = append(opts, codex.ThreadStartWithInstructions(a.cfg.Description))
-		}
-		startThreadParams := codex.NewThreadStartParam(workspace, opts...)
-		threadID, err := thread.Start(ctx, *startThreadParams)
-		if err != nil {
-			err = fmt.Errorf("threadStart fail: %w", err)
-			slog.Error(err.Error())
-			return nil, err
-		}
-		slog.Debug(fmt.Sprintf("thread started : %s", threadID))
-		turn = &codexTurn{
-			threadID:       threadID,
-			startTime:      time.Now().Unix(),
-			lastUpdateTime: time.Now().Unix(),
-		}
-		a.eps[sessionID] = turn
-	} else {
+	}
+	if waitResume {
 		err := thread.Resume(ctx, turn.threadID)
 		if err != nil {
 			slog.Error(err.Error())
@@ -174,6 +163,56 @@ func (a *Agent) getThread(ctx context.Context, sessionID string) (*codex.Thread,
 		turn.lastUpdateTime = time.Now().Unix()
 	}
 	return thread, nil
+}
+
+func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID string) (*codexTurn, error) {
+	cfg := &jsonRpc.ThreadConfig{
+		Model:         a.cfg.Model,
+		OpenAIBaseURL: a.cfg.Provider.APIBaseURL,
+		OpenAIAPIKey:  a.cfg.Provider.APIKey,
+		////MCPServers: map[string]jsonRpc.MCPServer{
+		//	"boda": {
+		//		URL: "http://localhost:9090/mcp",
+		//	},
+		//},
+	}
+	workspace := filepath.Join(a.cfg.WorkSpace, "workspace")
+	opts := []codex.ThreadStartOption{codex.ThreadStartWithConfig(cfg),
+		codex.ThreadStartWithSendbox(jsonRpc.SandboxModeDangerFullAccess)}
+	dynamicTool := a.dynamicTools()
+	if dynamicTool != nil {
+		opts = append(opts, codex.ThreadStartWithDynamicTool(dynamicTool))
+	}
+	if a.cfg.Description != "" {
+		opts = append(opts, codex.ThreadStartWithInstructions(a.cfg.Description))
+	}
+	startThreadParams := codex.NewThreadStartParam(workspace, opts...)
+	threadID, err := thread.Start(ctx, *startThreadParams)
+	if err != nil {
+		err = fmt.Errorf("threadStart fail: %w", err)
+		slog.Error(err.Error())
+		return nil, err
+	}
+	slog.Debug(fmt.Sprintf("thread started : %s", threadID))
+	turn := &codexTurn{
+		threadID:       threadID,
+		startTime:      time.Now().Unix(),
+		lastUpdateTime: time.Now().Unix(),
+	}
+	a.eps[sessionID] = turn
+
+	// 数据库保存新建成功的thread
+	dbErr := a.cfg.SessionDB.ThreadSave(ctx, &db.SessionThread{
+		ThreadID:   threadID,
+		SessionID:  sessionID,
+		Agent:      a.AgentID(),
+		CreateTime: time.Now(),
+		LastUpdate: time.Now(),
+	})
+	if dbErr != nil {
+		slog.Error("fail to save db thread ", "error", dbErr.Error())
+	}
+	return turn, nil
 }
 
 // Prompt 执行一个请求
@@ -201,6 +240,17 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 		ct.turnID = turn.TurnID()
 	}
 	a.epMu.Unlock()
+	// 保存turn
+	dbErr := a.cfg.SessionDB.TurnSave(ctx, &db.SessionTurn{
+		ReqID:     state.ReqID,
+		TurnID:    turn.TurnID(),
+		ThreadID:  turn.ThreadID(),
+		SessionID: state.SessionID,
+		Agent:     a.AgentID(),
+	})
+	if dbErr != nil {
+		slog.Error("fail to save db turn ", "error", dbErr.Error())
+	}
 	turn.RegisterEventHandler(func(event *codex.Event) {
 		a.codexEventParse(state, event)
 		if event.Method == string(codex.TurnCompleted) {
@@ -216,6 +266,22 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 		}
 	})
 	return nil
+}
+
+func (a *Agent) allEventHandler(event *codex.Event) {
+	// 将事件保存入数据库
+	dbErr := a.cfg.SessionDB.TurnEventSave(context.Background(), &db.TurnEvent{
+		ID:         uuid.NewV4().String(),
+		ThreadID:   event.ThreadID,
+		TurnID:     event.TurnID,
+		Type:       string(event.Type),
+		Method:     event.Method,
+		RawData:    string(event.RawData),
+		CreateTime: time.Now(),
+	})
+	if dbErr != nil {
+		slog.Error("fail to save db thread event", "error", dbErr.Error())
+	}
 }
 
 func (a *Agent) buildInput(turn *codex.Turn, message *types.InputMessage) []jsonRpc.InputItem {
@@ -259,6 +325,10 @@ func (a *Agent) codexEventParse(state *types.State, notification *codex.Event) {
 	// 1. 节点状态更新（捕获思考开始、工具调用开始）
 	case string(codex.ItemStarted), string(codex.ItemCompleted):
 		a.lifeEventParse(event, notification)
+		if event.Type == types.EventMessageCompleted {
+			// 存入state中
+			state.AddNewMessage(event.Message)
+		}
 	case string(codex.ItemReasoningSummaryTextDelta), string(codex.ItemReasoningTextDelta), string(codex.ItemAgentMessageDelta):
 		itemEvt, err := notification.To[jsonRpc.TextDeltaEvent]()
 		if err != nil {

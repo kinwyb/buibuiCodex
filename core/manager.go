@@ -16,6 +16,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/codex/cdm"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
+	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
 )
 
@@ -31,6 +32,7 @@ type Manager struct {
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 	sequence     *sessionSequence
+	dataStorage  *db.Data
 }
 
 // NewManager 创建 Agent 管理器
@@ -76,12 +78,20 @@ func (m *Manager) RegisterAgent(agentID string, agent types.Agent, isDefault boo
 	}
 }
 
-// RegisterAgentsFromConfig 根据配置自动注册所有 agent
+// InitFromConfig 根据配置自动注册所有 agent
 // 处理子 agent 依赖关系，确保子 agent 先于父 agent 创建
-func (m *Manager) RegisterAgentsFromConfig(ctx context.Context, cfg *config.ManagerConfig) error {
+func (m *Manager) InitFromConfig(ctx context.Context, cfg *config.ManagerConfig) error {
+	if cfg.Workspace == "" {
+		return errors.New("workspace is required")
+	}
 	if cfg == nil || len(cfg.Agents) == 0 {
 		return errors.New("no agents in config")
 	}
+	sqlite, err := db.NewSQLiteStorage(filepath.Join(cfg.Workspace, "buibui.db"))
+	if err != nil {
+		return err
+	}
+	m.dataStorage = db.NewData(sqlite)
 
 	// 解析所有 agent 配置
 	agentNames := make([]string, 0, len(cfg.Agents))
@@ -120,6 +130,7 @@ func (m *Manager) RegisterAgentsFromConfig(ctx context.Context, cfg *config.Mana
 		if _, err = os.Stat(workspacetmp); os.IsNotExist(err) {
 			_ = os.MkdirAll(workspacetmp, 0755)
 		}
+		resolved.SessionDB = m.dataStorage.Session()
 
 		// 创建 Agent
 		ag := cdm.NewAgent(resolved)
@@ -190,6 +201,10 @@ func (m *Manager) Start(ctx context.Context) error {
 // Stop 停止所有 Agent
 func (m *Manager) Stop() error {
 
+	if m.dataStorage != nil {
+		m.dataStorage.Close()
+	}
+
 	// 先取消 context，让 processMessages 和 scheduler 退出
 	if m.cancel != nil {
 		m.cancel()
@@ -245,7 +260,19 @@ func (m *Manager) CancelSession(sessionKey string) bool {
 }
 
 func (m *Manager) messageHandler(ctx context.Context, state *types.State) {
+	// 保存session信息
+	dbErr := m.dataStorage.Session().SessionSave(ctx, &db.Session{
+		SessionID: state.SessionID,
+		Channel:   state.Input.Channel,
+		AccountID: state.Input.AccountID,
+		UserID:    state.Input.SenderID,
+		ChatID:    state.Input.ChatID,
+	})
+	if dbErr != nil {
+		slog.Error("failed to save session", "error", dbErr)
+	}
 	msg := state.Input
+
 	// 识别定时任务消息
 	//if msg.Metadata != nil && msg.Metadata[meta.KeyFormScheduledTask] == true {
 	//	slog.Info("Scheduled task inbound message routed",
@@ -337,6 +364,17 @@ func (m *Manager) handleInboundContext(ctx context.Context, msg *types.InputMess
 // agent执行
 func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.Agent) error {
 
+	// 保存请求信息
+	quest := state.Input.Content
+	if quest == "" {
+		questV, _ := json.Marshal(state.Input.Media)
+		quest = string(questV)
+	}
+	dbErr := m.dataStorage.Session().RequestSave(ctx, state.ReqID, quest, agent.AgentID())
+	if dbErr != nil {
+		slog.Error("failed to save request", "error", dbErr)
+	}
+
 	// 注册回调，通过闭包携带 msg 和 agentName 信息
 	eventSeq := 0
 	firstStart := true // 标记是否是第一次 start 事件
@@ -396,6 +434,21 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 	// 使用 Agent 处理消息
 	err := agent.Prompt(ctx, state)
 	eventSeq++
+
+	// 保存进数据库turn完成
+	answer := state.LastMessage()
+	if err != nil {
+		answer = "错误：" + err.Error()
+	}
+	dbErr = m.dataStorage.Session().TurnSave(ctx, &db.SessionTurn{
+		ReqID:       state.ReqID,
+		Answer:      answer,
+		IsCompleted: true,
+		CompletedAt: time.Now(),
+	})
+	if dbErr != nil {
+		slog.Error("fail to save db completed turn ", "error", dbErr.Error())
+	}
 
 	//for _, h := range m.agHandler {
 	//	isContinue := h.AfterAgent(ctx, state, err)

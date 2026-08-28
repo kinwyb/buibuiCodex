@@ -86,6 +86,7 @@ type Client struct {
 	cancel    context.CancelFunc
 	threadMu  sync.Mutex
 	threadSub map[string]EventHandler
+	eHandler  EventHandler
 }
 
 // NewClient 创建并初始化一个 Codex Client
@@ -144,6 +145,9 @@ func (c *Client) requestLoop() {
 					ID:      req.ID,
 					Method:  req.Method,
 					RawData: req.Params,
+				}
+				if c.eHandler != nil {
+					c.eHandler(event)
 				}
 				switch req.Method {
 				case string(ItemToolCall):
@@ -230,6 +234,10 @@ func (c *Client) requestLoop() {
 			}
 		}
 	}
+}
+
+func (c *Client) RegisterDefaultEventHandler(handler EventHandler) {
+	c.eHandler = handler
 }
 
 // SubScribeEvent 订阅事件

@@ -21,7 +21,6 @@ func NewState(input *InputMessage) *State {
 	if input.ID == "" {
 		input.ID = uuid.NewV4().String()
 	}
-
 	return &State{
 		SessionID:    input.SessionID(),
 		ReqID:        input.ID,
@@ -29,6 +28,18 @@ func NewState(input *InputMessage) *State {
 		NewMessage:   nil,
 		EventHandler: nil,
 	}
+}
+
+func (s *State) LastMessage() string {
+	if len(s.NewMessage) == 0 {
+		return ""
+	}
+	return s.NewMessage[len(s.NewMessage)-1].Content
+}
+
+// AddNewMessage 保存新信息
+func (s *State) AddNewMessage(msg *Message) {
+	s.NewMessage = append(s.NewMessage, msg)
 }
 
 func (s *State) BuildEvent() *Event {

@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+
+	"github.com/kinwyb/buibuiCodex/core/db"
 )
 
 type ManagerConfig struct {
@@ -15,12 +17,13 @@ type ManagerConfig struct {
 
 // AgentConfig agent 配置
 type AgentConfig struct {
-	Name         string          `json:"name"`
-	Description  string          `json:"description"` // Agent 描述
-	ProviderName string          `json:"provider"`
-	Model        string          `json:"model"`
-	WorkSpace    string          `json:"-"` //agent工作区
-	Provider     *ProviderConfig `json:"-"` //供应商配置
+	Name         string             `json:"name"`
+	Description  string             `json:"description"` // Agent 描述
+	ProviderName string             `json:"provider"`
+	Model        string             `json:"model"`
+	WorkSpace    string             `json:"-"` //agent工作区
+	Provider     *ProviderConfig    `json:"-"` //供应商配置
+	SessionDB    db.ISessionStorage `json:"-"`
 }
 
 // GetAgent 获取指定名称的 agent 配置
