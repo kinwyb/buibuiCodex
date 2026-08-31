@@ -284,6 +284,18 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	return err
 }
 
+// Approve 提交审批结果
+func (a *Agent) Approve(reqID any, approve jsonRpc.ApprovalDecision) error {
+	approveResult := &jsonRpc.ApprovalResult{
+		Decision: approve,
+	}
+	err := a.client.Response(reqID, approveResult, nil)
+	if err != nil {
+		slog.Error("response approve request error", "error", err.Error())
+	}
+	return err
+}
+
 func (a *Agent) allEventHandler(event *codex.Event) {
 	// 将事件保存入数据库
 	dbErr := a.cfg.SessionDB.TurnEventSave(context.Background(), &db.TurnEvent{
@@ -337,15 +349,15 @@ func (a *Agent) codexEventParse(state *types.State, notification *codex.Event) {
 		Extra:            nil,
 	}
 	event.Message = msg
-	switch notification.Method {
+	switch codex.NotificationMethod(notification.Method) {
 	// 1. 节点状态更新（捕获思考开始、工具调用开始）
-	case string(codex.ItemStarted), string(codex.ItemCompleted):
+	case codex.ItemStarted, codex.ItemCompleted:
 		a.lifeEventParse(event, notification)
 		if event.Type == types.EventMessageCompleted {
 			// 存入state中
 			state.AddNewMessage(event.Message)
 		}
-	case string(codex.ItemReasoningSummaryTextDelta), string(codex.ItemReasoningTextDelta), string(codex.ItemAgentMessageDelta):
+	case codex.ItemReasoningSummaryTextDelta, codex.ItemReasoningTextDelta, codex.ItemAgentMessageDelta:
 		itemEvt, err := notification.To[jsonRpc.TextDeltaEvent]()
 		if err != nil {
 			fmt.Printf("item lifecycle event error: %v\n", err)
@@ -362,7 +374,7 @@ func (a *Agent) codexEventParse(state *types.State, notification *codex.Event) {
 			event.Type = types.EventReasoningDelta
 			msg.ReasoningContent = itemEvt.Delta
 		}
-	case string(codex.ThreadTokenUsageUpdated):
+	case codex.ThreadTokenUsageUpdated:
 		itemEvt, err := notification.To[jsonRpc.TokenUsageNotification]()
 		if err != nil {
 			fmt.Printf("item lifecycle event error: %v\n", err)
@@ -401,8 +413,8 @@ func (a *Agent) codexEventParse(state *types.State, notification *codex.Event) {
 }
 
 func (a *Agent) codexRequestParse(state *types.State, request *codex.Event) {
-	switch request.Method {
-	case string(codex.ItemToolCall):
+	switch codex.ServerRequestMethod(request.Method) {
+	case codex.ItemToolCall:
 		itemEvt, err := request.To[jsonRpc.ToolCall]()
 		if err != nil {
 			slog.Error("request tool call error", "error", err.Error())
@@ -416,6 +428,32 @@ func (a *Agent) codexRequestParse(state *types.State, request *codex.Event) {
 		if err != nil {
 			slog.Error("response tool request error", "error", err.Error())
 		}
+	case codex.ItemCommandExecutionRequestApproval, codex.ExecCommandApproval,
+		codex.ItemPermissionsRequestApproval, codex.ItemFileChangeRequestApproval:
+		itemEvt, err := request.To[jsonRpc.BaseApprovalEvent]()
+		if err != nil {
+			slog.Error("request tool call error", "error", err.Error())
+			return
+		}
+		event := state.BuildEvent()
+		event.EventID = fmt.Sprintf("%v", request.ID)
+		event.Type = types.EventApproval
+		event.Message = &types.Message{
+			Role:             types.RoleSystem,
+			IsDetla:          false,
+			ReasoningContent: "",
+			Content:          itemEvt.Reason,
+			Extra:            nil,
+			ApprovalID:       request.ID,
+		}
+		if strings.Contains(strings.ToLower(request.Method), "command") {
+			event.Message.Content = fmt.Sprintf("执行命令：%v,理由：%s", itemEvt.Command, itemEvt.Reason)
+		}
+		if event.Metadata == nil {
+			event.Metadata = map[string]any{}
+		}
+		event.Metadata["approval_request"] = string(request.RawData)
+		state.EventHandler(event)
 	}
 }
 

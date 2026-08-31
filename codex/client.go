@@ -159,6 +159,19 @@ func (c *Client) requestLoop() {
 					event.Raw = toolCall
 					event.ThreadID = toolCall.ThreadID
 					event.TurnID = toolCall.TurnID
+				case string(ItemCommandExecutionRequestApproval), string(ExecCommandApproval),
+					string(ItemPermissionsRequestApproval), string(ItemFileChangeRequestApproval):
+					event.Type = EventTypeRequest
+					command := jsonRpc.BaseApprovalEvent{}
+					err := json.Unmarshal(req.Params, &command)
+					if err != nil {
+						slog.Error(fmt.Sprintf("codex app-server command approval unmarshal failed: %v", err))
+						break
+					}
+					slog.Debug(fmt.Sprintf("command approval: %v", command))
+					event.Raw = command
+					event.ThreadID = command.ThreadID
+					event.TurnID = command.TurnID
 				case string(ItemCompleted), string(ItemStarted):
 					event.Type = EventTypeNotification
 					var itemEvt jsonRpc.ItemLifecycleEvent

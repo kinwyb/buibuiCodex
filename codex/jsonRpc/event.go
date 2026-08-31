@@ -133,3 +133,28 @@ type TextDeltaEvent struct {
 	Delta        string        `json:"delta"` // 增量文本 (如 " user is asking what")
 	SummaryIndex int           `json:"summaryIndex"`
 }
+
+// BaseApprovalEvent 基本审批字段
+type BaseApprovalEvent struct {
+	baseNotificationEvent
+	Reason string `json:"reason"`
+	CommandApprovalEvent
+}
+
+type CommandApprovalEvent struct {
+	ItemID         string   `json:"itemId"`
+	Command        []string `json:"command"`
+	Cwd            string   `json:"cwd"`
+	CommandActions []any    `json:"commandActions"`
+}
+
+type ApprovalDecision string
+
+const (
+	ApprovalAccept ApprovalDecision = "accept"  //通过
+	ApprovalReject ApprovalDecision = "decline" //拒绝
+)
+
+type ApprovalResult struct {
+	Decision ApprovalDecision `json:"decision"`
+}

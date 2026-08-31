@@ -42,6 +42,9 @@ type Message struct {
 
 	// customized information for model implementation
 	Extra map[string]any `json:"extra,omitempty"`
+
+	// 审批ID,审批时有效
+	ApprovalID any `json:"approve_id,omitempty"`
 }
 
 type ToolType string
