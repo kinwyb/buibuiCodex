@@ -33,6 +33,7 @@ func TestNewManager(t *testing.T) {
 		return
 	}
 	msgBus := bus.NewMessageBus(100)
+
 	channel := channel.NewManager(msgBus)
 	err = channel.InitializeFromConfig(ctx, cfg.Channels)
 	if err != nil {
@@ -47,7 +48,7 @@ func TestNewManager(t *testing.T) {
 	defer channel.StopAll()
 	manager := NewManager(msgBus)
 	defer manager.Stop()
-	err = manager.RegisterAgentsFromConfig(ctx, &cfg.ManagerConfig)
+	err = manager.InitFromConfig(ctx, &cfg.ManagerConfig)
 	if err != nil {
 		slog.Error("register agents failed ", "error", err)
 		return

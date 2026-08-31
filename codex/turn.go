@@ -17,6 +17,12 @@ func TurnStartWithApprovalPolicy(policy jsonRpc.ApprovalPolicy) TurnStartOptions
 	}
 }
 
+func TurnStartWithSandboxPolicy(policy jsonRpc.SandboxPolicy) TurnStartOptions {
+	return func(params *jsonRpc.StartTurnParams) {
+		params.SandboxPolicy = &policy
+	}
+}
+
 type Turn struct {
 	client *Client
 	thread *Thread

@@ -13,6 +13,7 @@ type StartTurnParams struct {
 	Input             []InputItem    `json:"input"`    // 注意：这里必须是数组 sequence
 	ApprovalPolicy    ApprovalPolicy `json:"approvalPolicy,omitempty"`
 	ApprovalsReviewer string         `json:"approvalsReviewer,omitempty"`
+	SandboxPolicy     *SandboxPolicy `json:"sandboxPolicy,omitempty"`
 }
 
 // StartTurnResult 发起 Turn 返回结果
@@ -21,16 +22,19 @@ type StartTurnResult struct {
 }
 
 type Turn struct {
-	TurnID      string `json:"id"`
-	Status      string `json:"status"`
-	StartedAt   int64  `json:"startedAt"`
-	CompletedAt int64  `json:"completedAt"`
-	DurationMs  int64  `json:"durationMs"`
+	TurnID      string      `json:"id"`
+	Status      string      `json:"status"`
+	StartedAt   int64       `json:"startedAt"`
+	CompletedAt int64       `json:"completedAt"`
+	DurationMs  int64       `json:"durationMs"`
+	Error       *CodexError `json:"error,omitempty"`
 }
 
-type TurnStartEvent struct {
+type TurnEvent struct {
 	ThreadID string `json:"threadId"`
 	Turn     Turn   `json:"turn"`
 }
 
-type TurnCompletedEvent = TurnStartEvent
+type TurnStartEvent = TurnEvent
+
+type TurnCompletedEvent = TurnEvent

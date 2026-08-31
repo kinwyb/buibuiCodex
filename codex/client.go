@@ -146,9 +146,6 @@ func (c *Client) requestLoop() {
 					Method:  req.Method,
 					RawData: req.Params,
 				}
-				if c.eHandler != nil {
-					c.eHandler(event)
-				}
 				switch req.Method {
 				case string(ItemToolCall):
 					event.Type = EventTypeRequest
@@ -156,7 +153,7 @@ func (c *Client) requestLoop() {
 					err := json.Unmarshal(req.Params, &toolCall)
 					if err != nil {
 						slog.Error(fmt.Sprintf("codex app-server tool call unmarshal failed: %v", err))
-						continue
+						break
 					}
 					slog.Debug(fmt.Sprintf("toolCall: %v", toolCall))
 					event.Raw = toolCall
@@ -168,7 +165,7 @@ func (c *Client) requestLoop() {
 					err := json.Unmarshal(req.Params, &itemEvt)
 					if err != nil {
 						slog.Error(fmt.Sprintf("codex app-server item lifecycle event unmarshal failed: %v", err))
-						continue
+						break
 					}
 					event.Raw = itemEvt
 					event.ThreadID = itemEvt.ThreadID
@@ -179,7 +176,7 @@ func (c *Client) requestLoop() {
 					err := json.Unmarshal(req.Params, &itemEvt)
 					if err != nil {
 						slog.Error(fmt.Sprintf("codex app-server text delta event unmarshal failed: %v", err))
-						continue
+						break
 					}
 					if strings.HasPrefix(req.Method, "item/reasoning") {
 						itemEvt.DeltaType = jsonRpc.Reasoning
@@ -195,7 +192,7 @@ func (c *Client) requestLoop() {
 					err := json.Unmarshal(req.Params, &itemEvt)
 					if err != nil {
 						slog.Error(fmt.Sprintf("codex app-server token usage event unmarshal failed: %v", err))
-						continue
+						break
 					}
 					event.Raw = itemEvt
 					event.ThreadID = itemEvt.ThreadID
@@ -206,7 +203,7 @@ func (c *Client) requestLoop() {
 					err := json.Unmarshal(req.Params, &itemEvt)
 					if err != nil {
 						slog.Error(fmt.Sprintf("codex app-server turn start event unmarshal failed: %v", err))
-						continue
+						break
 					}
 					event.Raw = itemEvt
 					event.ThreadID = itemEvt.ThreadID
@@ -216,11 +213,14 @@ func (c *Client) requestLoop() {
 					err := json.Unmarshal(req.Params, &itemEvt)
 					if err != nil {
 						slog.Error(fmt.Sprintf("codex app-server code event unmarshal failed: %v", err))
-						continue
+						break
 					}
 					slog.Error("request loop handler error:" + itemEvt.Error.Message)
 				default:
 					slog.Debug(fmt.Sprintf("codex app-server unsupported request type: %s => %s", req.Method, req.Params.String()))
+				}
+				if c.eHandler != nil {
+					c.eHandler(event)
 				}
 				// 如果存在线程ID,并且是有效的事件，进行事件回调
 				if event.ThreadID != "" && event.Type != "" {

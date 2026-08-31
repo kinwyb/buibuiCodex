@@ -485,6 +485,7 @@ func (c *Channel) HandleEvent(ctx context.Context, event *types.Event) error {
 
 	case types.EventError: // 错误
 		c.logger.Error("Chat error", "error", event.Message.Content, "chat_id", event.ChatID)
+		_ = c.sendStream(ctx, event)
 	}
 	return nil
 }

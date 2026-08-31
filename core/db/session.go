@@ -9,7 +9,7 @@ import (
 )
 
 type Session struct {
-	SessionID  string    `json:"session_id" gorm:"primaryKey;type:varchar(128)"`
+	SessionID  string    `json:"session_id" gorm:"uniqueIndex;type:varchar(128)"`
 	Seq        uint      `json:"seq" gorm:"primaryKey;autoIncrement"`
 	Channel    string    `json:"channel" gorm:"index;type:varchar(64)"`    // 来源渠道
 	AccountID  string    `json:"account_id" gorm:"index;type:varchar(64)"` // 账号ID（用于多账号场景）
@@ -28,7 +28,7 @@ type SessionThread struct {
 }
 
 type SessionTurn struct {
-	ReqID              string     `json:"req_id" gorm:"primaryKey;type:varchar(128)"`
+	ReqID              string     `json:"req_id" gorm:"uniqueIndex;type:varchar(128)"`
 	Seq                uint       `json:"seq" gorm:"primaryKey;autoIncrement"`
 	TurnID             string     `json:"turn_id" gorm:"index;type:varchar(128)"`
 	ThreadID           string     `json:"thread_id" gorm:"index;type:varchar(128)"`
@@ -55,13 +55,13 @@ type TokenUsage struct {
 
 // TurnEvent 会话事件记录
 type TurnEvent struct {
-	ID         string    `json:"id" gorm:"primaryKey;type:varchar(128)"`
+	ID         string    `json:"id" gorm:"uniqueIndex;type:varchar(128)"`
 	Seq        uint      `json:"seq" gorm:"primaryKey;autoIncrement"`
 	ThreadID   string    `json:"thread_id" gorm:"index;type:varchar(128)"` //threadID
 	TurnID     string    `json:"turn_id" gorm:"index;type:varchar(128)"`   //turnID
 	Type       string    `json:"type" gorm:"index;type:varchar(64)"`
 	Method     string    `json:"method" gorm:"index;type:varchar(64)"` //方法
-	RawData    string    `json:"raw_data" gorm:"primaryKey;type:JSON"`
+	RawData    string    `json:"raw_data" gorm:"type:JSON"`
 	CreateTime time.Time `json:"create_time" gorm:"index;not null"`
 }
 
@@ -138,7 +138,7 @@ func (s *SessionStorage) SessionSave(ctx context.Context, session *Session) erro
 	if session.CreateTime.IsZero() {
 		session.CreateTime = time.Now()
 	}
-	return s.db.WithContext(ctx).Save(session).Error
+	return s.db.WithContext(ctx).Where(" session_id = ? ", session.SessionID).FirstOrCreate(session).Error
 }
 
 func (s *SessionStorage) ThreadSave(ctx context.Context, thread *SessionThread) error {

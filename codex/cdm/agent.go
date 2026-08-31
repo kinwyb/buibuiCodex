@@ -95,10 +95,7 @@ func (a *Agent) initProcess() error {
 		ImageName:     "codex_run:v2",
 		WorkSpace:     filepath.Join(a.cfg.WorkSpace, "workspace"),
 		CodexHome:     filepath.Join(a.cfg.WorkSpace, "root"),
-		Env: []string{
-			"OPENAI_BASE_URL=" + a.cfg.Provider.APIBaseURL,
-			"OPENAI_API_KEY=" + a.cfg.Provider.APIKey,
-		},
+		APIBaseURL:    a.cfg.Provider.APIBaseURL,
 	}
 
 	pm, err := proc.NewSafeProc(startParam)
@@ -162,6 +159,18 @@ func (a *Agent) getThread(ctx context.Context, sessionID string) (*codex.Thread,
 		}
 		turn.lastUpdateTime = time.Now().Unix()
 	}
+
+	// 数据库保存新建成功的thread
+	dbErr := a.cfg.SessionDB.ThreadSave(ctx, &db.SessionThread{
+		ThreadID:   turn.threadID,
+		SessionID:  sessionID,
+		Agent:      a.AgentID(),
+		CreateTime: time.Now(),
+		LastUpdate: time.Now(),
+	})
+	if dbErr != nil {
+		slog.Error("fail to save db thread ", "error", dbErr.Error())
+	}
 	return thread, nil
 }
 
@@ -176,6 +185,7 @@ func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID s
 		//	},
 		//},
 	}
+	slog.Debug("OPENAI_BASE_URL=" + a.cfg.Provider.APIBaseURL)
 	workspace := filepath.Join(a.cfg.WorkSpace, "workspace")
 	opts := []codex.ThreadStartOption{codex.ThreadStartWithConfig(cfg),
 		codex.ThreadStartWithSendbox(jsonRpc.SandboxModeDangerFullAccess)}
@@ -201,17 +211,6 @@ func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID s
 	}
 	a.eps[sessionID] = turn
 
-	// 数据库保存新建成功的thread
-	dbErr := a.cfg.SessionDB.ThreadSave(ctx, &db.SessionThread{
-		ThreadID:   threadID,
-		SessionID:  sessionID,
-		Agent:      a.AgentID(),
-		CreateTime: time.Now(),
-		LastUpdate: time.Now(),
-	})
-	if dbErr != nil {
-		slog.Error("fail to save db thread ", "error", dbErr.Error())
-	}
 	return turn, nil
 }
 
@@ -223,13 +222,21 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 		return err
 	}
 	thread, err := a.getThread(ctx, state.SessionID)
+	if err != nil {
+		return err
+	}
 	turn, err := thread.Turn()
 	if err != nil {
 		err = fmt.Errorf("thread build turn fail: %w", err)
 		slog.Error(err.Error())
 		return err
 	}
-	err = turn.Start(ctx, a.buildInput(turn, state.Input))
+	var opts []codex.TurnStartOptions
+	opts = append(opts, codex.TurnStartWithSandboxPolicy(jsonRpc.SandboxPolicy{
+		Type:          jsonRpc.SandboxPolicyTypeDangerFullAccess,
+		NetworkAccess: true,
+	}), codex.TurnStartWithApprovalPolicy(jsonRpc.Never))
+	err = turn.Start(ctx, a.buildInput(turn, state.Input), opts...)
 	if err != nil {
 		err = fmt.Errorf("turn start fail: %w", err)
 		slog.Error(err.Error())
@@ -251,6 +258,7 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	if dbErr != nil {
 		slog.Error("fail to save db turn ", "error", dbErr.Error())
 	}
+	completed := make(chan error, 1)
 	turn.RegisterEventHandler(func(event *codex.Event) {
 		a.codexEventParse(state, event)
 		if event.Method == string(codex.TurnCompleted) {
@@ -262,10 +270,18 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 				}
 				delete(a.turnMap, event.TurnID)
 			}
+			turnEvent, _ := event.To[jsonRpc.TurnEvent]()
+			if turnEvent.Turn.Error != nil {
+				completed <- errors.New(turnEvent.Turn.Error.Message)
+			} else {
+				completed <- nil
+			}
 			a.epMu.Unlock()
 		}
 	})
-	return nil
+	err = <-completed
+	close(completed)
+	return err
 }
 
 func (a *Agent) allEventHandler(event *codex.Event) {
@@ -351,6 +367,30 @@ func (a *Agent) codexEventParse(state *types.State, notification *codex.Event) {
 		if err != nil {
 			fmt.Printf("item lifecycle event error: %v\n", err)
 			return
+		}
+		if a.cfg.SessionDB != nil {
+			dErr := a.cfg.SessionDB.TurnTokenUsage(context.Background(), itemEvt.TurnID, db.TokenUsage{
+				TotalTokens:           itemEvt.TokenUsage.Last.TotalTokens,
+				InputTokens:           itemEvt.TokenUsage.Last.InputTokens,
+				CachedInputTokens:     itemEvt.TokenUsage.Last.CachedInputTokens,
+				CacheWriteInputTokens: itemEvt.TokenUsage.Last.CacheWriteInputTokens,
+				OutputTokens:          itemEvt.TokenUsage.Last.OutputTokens,
+				ReasoningOutputTokens: itemEvt.TokenUsage.Last.ReasoningOutputTokens,
+			})
+			if dErr != nil {
+				slog.Error("fail to save token usage", "error", dErr.Error())
+			}
+			dErr = a.cfg.SessionDB.ThreadTokenUsage(context.Background(), itemEvt.ThreadID, db.TokenUsage{
+				TotalTokens:           itemEvt.TokenUsage.Total.TotalTokens,
+				InputTokens:           itemEvt.TokenUsage.Total.InputTokens,
+				CachedInputTokens:     itemEvt.TokenUsage.Total.CachedInputTokens,
+				CacheWriteInputTokens: itemEvt.TokenUsage.Total.CacheWriteInputTokens,
+				OutputTokens:          itemEvt.TokenUsage.Total.OutputTokens,
+				ReasoningOutputTokens: itemEvt.TokenUsage.Total.ReasoningOutputTokens,
+			})
+			if dErr != nil {
+				slog.Error("fail to save thread token usage", "error", dErr.Error())
+			}
 		}
 		fmt.Printf("\n\n🎉 [Turn token消耗统计] Total Tokens: %d,Last Tokens: %d\n",
 			itemEvt.TokenUsage.Total.TotalTokens, itemEvt.TokenUsage.Last.TotalTokens)

@@ -142,9 +142,24 @@ type CodexErrorEvent struct {
 
 // CodexError 包含错误的具体描述与内部错误分类
 type CodexError struct {
-	Message           string         `json:"message"`
-	CodexErrorInfo    CodexErrorInfo `json:"codexErrorInfo"`
-	AdditionalDetails string         `json:"additionalDetails,omitempty"`
+	Message           string          `json:"message"`
+	AdditionalDetails string          `json:"additionalDetails,omitempty"`
+	CodexErrorInfo    json.RawMessage `json:"codexErrorInfo"`
+}
+
+// ParseErrorInfo 使用时按需解析
+func (e *CodexError) ParseErrorInfo() (*CodexErrorInfo, string, error) {
+	// 尝试字符串
+	var s string
+	if err := json.Unmarshal(e.CodexErrorInfo, &s); err == nil {
+		return nil, s, nil
+	}
+	// 尝试结构体
+	var info CodexErrorInfo
+	if err := json.Unmarshal(e.CodexErrorInfo, &info); err != nil {
+		return nil, "", err
+	}
+	return &info, "", nil
 }
 
 // CodexErrorInfo 内部具体的错误类型枚举/映射
@@ -156,3 +171,20 @@ type CodexErrorInfo struct {
 type ResponseStreamDisconnected struct {
 	HTTPStatusCode *int `json:"httpStatusCode"` // 使用指针支持 null 值
 }
+
+type SandboxPolicy struct {
+	Type                SandboxPolicyType `json:"type"`
+	NetworkAccess       bool              `json:"networkAccess"`
+	ExcludeSlashTmp     *bool             `json:"excludeSlashTmp,omitempty"`
+	ExcludeTmpdirEnvVar *bool             `json:"excludeTmpdirEnvVar,omitempty"`
+	WritableRoots       []string          `json:"writableRoots,omitempty"`
+}
+
+type SandboxPolicyType string
+
+const (
+	ExternalSandbox                   SandboxPolicyType = "externalSandbox"
+	SandboxPolicyTypeDangerFullAccess SandboxPolicyType = "dangerFullAccess"
+	SandboxPolicyTypeReadOnly         SandboxPolicyType = "readOnly"
+	SandboxPolicyTypeWorkspaceWrite   SandboxPolicyType = "workspaceWrite"
+)
