@@ -96,6 +96,10 @@ func (a *Agent) initProcess() error {
 		WorkSpace:     filepath.Join(a.cfg.WorkSpace, "workspace"),
 		CodexHome:     filepath.Join(a.cfg.WorkSpace, "root"),
 		APIBaseURL:    a.cfg.Provider.APIBaseURL,
+		//APIKey:        a.cfg.Provider.APIKey,
+		Env: []string{
+			"OPENAI_API_KEY_" + a.cfg.ProviderName + "=" + a.cfg.Provider.APIKey,
+		},
 	}
 
 	pm, err := proc.NewSafeProc(startParam)
@@ -176,19 +180,26 @@ func (a *Agent) getThread(ctx context.Context, sessionID string) (*codex.Thread,
 
 func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID string) (*codexTurn, error) {
 	cfg := &jsonRpc.ThreadConfig{
-		Model:         a.cfg.Model,
-		OpenAIBaseURL: a.cfg.Provider.APIBaseURL,
-		OpenAIAPIKey:  a.cfg.Provider.APIKey,
+		Model:          a.cfg.Model,
+		OpenAIBaseURL:  a.cfg.Provider.APIBaseURL,
+		OpenAIAPIKey:   a.cfg.Provider.APIKey,
+		ModelProviders: make(map[string]jsonRpc.ModelProviderInfo),
 		////MCPServers: map[string]jsonRpc.MCPServer{
 		//	"boda": {
 		//		URL: "http://localhost:9090/mcp",
 		//	},
 		//},
 	}
+	cfg.ModelProviders[a.cfg.ProviderName] = jsonRpc.ModelProviderInfo{
+		BaseURL:            a.cfg.Provider.APIBaseURL,
+		EnvKey:             "OPENAI_API_KEY_" + a.cfg.ProviderName,
+		Name:               a.cfg.ProviderName,
+		SupportsWebsockets: new(false),
+	}
 	slog.Debug("OPENAI_BASE_URL=" + a.cfg.Provider.APIBaseURL)
 	workspace := filepath.Join(a.cfg.WorkSpace, "workspace")
 	opts := []codex.ThreadStartOption{codex.ThreadStartWithConfig(cfg),
-		codex.ThreadStartWithSendbox(jsonRpc.SandboxModeDangerFullAccess)}
+		codex.ThreadStartWithSendbox(jsonRpc.SandboxModeDangerFullAccess), codex.ThreadStartWithModelProvider(a.cfg.ProviderName)}
 	dynamicTool := a.dynamicTools()
 	if dynamicTool != nil {
 		opts = append(opts, codex.ThreadStartWithDynamicTool(dynamicTool))

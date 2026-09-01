@@ -50,6 +50,12 @@ func ThreadStartWithInstructions(instructions string) ThreadStartOption {
 	}
 }
 
+func ThreadStartWithModelProvider(modelProvider string) ThreadStartOption {
+	return func(params *jsonRpc.StartThreadParams) {
+		params.ModelProvider = modelProvider
+	}
+}
+
 type Thread struct {
 	client   *Client
 	threadID string

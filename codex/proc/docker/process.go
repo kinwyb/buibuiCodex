@@ -27,6 +27,7 @@ type StartParam struct {
 	WorkSpace     string   `description:"工作目录"`
 	CodexHome     string   `description:"Codex根目录"`
 	APIBaseURL    string   `description:"模型请求地址"`
+	APIKey        string   `description:"模型APIKey"`
 	Env           []string `description:"环境变量"`
 }
 
@@ -78,6 +79,11 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 	}
 
 	if containerID == "" { // 创建并启动新容器
+		if opts.WorkSpace != "" { //检测workspace目录是否存在
+			if err = os.MkdirAll(opts.WorkSpace, 0755); err != nil {
+				return nil, fmt.Errorf("创建 Workspace 目录失败: %w", err)
+			}
+		}
 		// A. 容器基础配置
 		config := &container.Config{
 			Image: imageName,
@@ -123,7 +129,7 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 			// codex home添加auth.json,没有这个文件后续即使配置了模型也会异常
 			authFile := filepath.Join(opts.CodexHome, "auth.json")
 			if _, err = os.Stat(authFile); os.IsNotExist(err) {
-				os.WriteFile(authFile, []byte("{\n  \"OPENAI_API_KEY\": \"\"\n}"), os.ModePerm)
+				os.WriteFile(authFile, []byte(fmt.Sprintf("{\n  \"OPENAI_API_KEY\": \"%s\"\n}", opts.APIKey)), os.ModePerm)
 			}
 			// C. 【关键】持久化 Codex 的历史与配置目录！
 			hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{

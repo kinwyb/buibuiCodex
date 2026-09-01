@@ -70,13 +70,13 @@ func TestNewManager(t *testing.T) {
 					case types.EventMessageStart:
 						fmt.Println("\n↩️ 回复开始: [" + event.EventID + "]")
 					case types.EventMessageDelta:
-						fmt.Print(event.Message.Content)
+						//fmt.Print(event.Message.Content)
 					case types.EventMessageCompleted:
 						fmt.Println("\n✅ 完整回复: [" + event.EventID + "]\n" + event.Message.Content)
 					case types.EventReasoningStart:
 						fmt.Println("\n🤔思考中...[" + event.EventID + "]")
 					case types.EventReasoningDelta:
-						fmt.Print(event.Message.ReasoningContent)
+						//fmt.Print(event.Message.ReasoningContent)
 					case types.EventReasoningCompleted:
 						fmt.Println("\n😊思考完成：[" + event.EventID + "] \n" + event.Message.ReasoningContent)
 					case types.EventToolStart:
