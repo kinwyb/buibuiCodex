@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 	"uuid"
 
@@ -22,13 +21,25 @@ import (
 )
 
 type StartParam struct {
-	ContainerName string   `description:"容器名称"`
-	ImageName     string   `description:"镜像名称"`
-	WorkSpace     string   `description:"工作目录"`
-	CodexHome     string   `description:"Codex根目录"`
-	APIBaseURL    string   `description:"模型请求地址"`
-	APIKey        string   `description:"模型APIKey"`
-	Env           []string `description:"环境变量"`
+	ContainerName  string                     `description:"容器名称"`
+	ImageName      string                     `description:"镜像名称"`
+	WorkSpace      string                     `description:"工作目录"`
+	CodexHome      string                     `description:"Codex根目录"`
+	APIBaseURL     string                     `description:"模型请求地址"`
+	APIKey         string                     `description:"模型APIKey"`
+	Env            []string                   `description:"环境变量"`
+	ModelProviders map[string]ModelProvider   `description:"模型供应商"`
+	MCP            map[string]MCPServerConfig `description:"MCP配置"`
+}
+
+func (s *StartParam) ToCodexConfig() CodexConfig {
+	codexConfig := CodexConfig{
+		OpenAIBaseURL:  s.APIBaseURL,
+		SandboxMode:    "workspace-write",
+		ModelProviders: s.ModelProviders,
+		MCPServers:     s.MCP,
+	}
+	return codexConfig
 }
 
 type StartResult struct {
@@ -122,7 +133,7 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 			})
 		}
 		if opts.CodexHome != "" {
-			if err = ensureCodexConfig(opts.CodexHome, opts.APIBaseURL); err != nil {
+			if err = ensureCodexConfig(opts.CodexHome, opts.ToCodexConfig()); err != nil {
 				slog.Error("codex config.toml set openai_base_url failed", "error", err.Error())
 				return nil, fmt.Errorf("确保 Codex 配置失败: %w", err)
 			}
@@ -185,79 +196,6 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 		Token:       containerName,
 		ContainerIP: containerIP,
 	}, nil
-}
-
-func ensureCodexConfig(codexHome string, openAIBaseURL string) error {
-	if codexHome == "" {
-		return nil
-	}
-	if err := os.MkdirAll(codexHome, 0755); err != nil {
-		return fmt.Errorf("创建 CodexHome 目录失败: %w", err)
-	}
-
-	configPath := filepath.Join(codexHome, "config.toml")
-
-	// 需要确保的配置项
-	configs := map[string]string{
-		"openai_base_url": fmt.Sprintf(`"%s"`, openAIBaseURL),
-		"sandbox_mode":    `"workspace-write"`,
-	}
-
-	content, err := os.ReadFile(configPath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("读取 config.toml 失败: %w", err)
-	}
-
-	if os.IsNotExist(err) {
-		// 文件不存在，创建并写入所有配置
-		var lines []string
-		for k, v := range configs {
-			lines = append(lines, fmt.Sprintf(`%s = %s`, k, v))
-		}
-		if writeErr := os.WriteFile(configPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); writeErr != nil {
-			return fmt.Errorf("写入 config.toml 失败: %w", writeErr)
-		}
-		slog.Info(fmt.Sprintf("已创建 Codex 配置: %s", configPath))
-		return nil
-	}
-
-	// 文件已存在，逐行检查并更新
-	lines := strings.Split(string(content), "\n")
-	updated := false
-
-	for key, value := range configs {
-		expectedLine := fmt.Sprintf(`%s = %s`, key, value)
-		found := false
-
-		for i, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, key+" ") || strings.HasPrefix(trimmed, key+"=") {
-				if trimmed == expectedLine {
-					found = true
-					break // 已经是目标值，无需修改
-				}
-				lines[i] = expectedLine
-				found = true
-				updated = true
-				break
-			}
-		}
-
-		if !found {
-			// 配置项不存在，追加到末尾
-			lines = append(lines, expectedLine)
-			updated = true
-		}
-	}
-
-	if updated {
-		if writeErr := os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0644); writeErr != nil {
-			return fmt.Errorf("更新 config.toml 失败: %w", writeErr)
-		}
-		slog.Info("已更新 Codex 配置")
-	}
-
-	return nil
 }
 
 // 内部方法：探测 TCP 端口是否开启

@@ -21,6 +21,19 @@ type ProviderConfig struct {
 	DefaultModel string `json:"default_model"`
 }
 
+type MCPConfig struct {
+	Name string `json:"name"`
+	// Stdio 模式字段
+	Enabled bool              `json:"enabled,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Auth    string            `json:"auth,omitempty"`
+	// HTTP/SSE 模式字段
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"http_headers,omitempty"`
+}
+
 // LogConfig 日志配置
 type LogConfig struct {
 	Level      string `json:"level"`       // 日志级别: debug, info, warn, error

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 
 	"github.com/kinwyb/buibuiCodex/core/db"
 )
@@ -13,17 +14,20 @@ type ManagerConfig struct {
 	Agent     string                     `json:"agent"`
 	Workspace string                     `json:"workspace"` // 工作区根目录（所有 agent 共享）
 	Agents    []*AgentConfig             `json:"agents"`
+	MCP       []*MCPConfig               `json:"mcp"` //mcp配置
 }
 
 // AgentConfig agent 配置
 type AgentConfig struct {
-	Name         string             `json:"name"`
-	Description  string             `json:"description"` // Agent 描述
-	ProviderName string             `json:"provider"`
-	Model        string             `json:"model"`
-	WorkSpace    string             `json:"-"` //agent工作区
-	Provider     *ProviderConfig    `json:"-"` //供应商配置
-	SessionDB    db.ISessionStorage `json:"-"`
+	Name         string                `json:"name"`
+	Description  string                `json:"description"` // Agent 描述
+	ProviderName string                `json:"provider"`
+	Model        string                `json:"model"`
+	Mcp          []string              `json:"mcp,omitempty"` //mcp配置
+	MCPProvider  map[string]*MCPConfig `json:"mcp_provider,omitempty"`
+	WorkSpace    string                `json:"-"` //agent工作区
+	Provider     *ProviderConfig       `json:"-"` //供应商配置
+	SessionDB    db.ISessionStorage    `json:"-"`
 }
 
 // GetAgent 获取指定名称的 agent 配置
@@ -80,6 +84,19 @@ func (cfg *ManagerConfig) ResolveAgentConfig(name string) (*AgentConfig, error) 
 		description = fmt.Sprintf("Agent %s for general tasks", name)
 	}
 
+	for _, v := range cfg.MCP {
+		if !v.Enabled {
+			continue
+		}
+		if len(agent.Mcp) > 0 && !slices.Contains(agent.Mcp, v.Name) {
+			continue
+		}
+		if agent.MCPProvider == nil {
+			agent.MCPProvider = make(map[string]*MCPConfig)
+		}
+		agent.MCPProvider[v.Name] = v
+	}
+
 	return &AgentConfig{
 		Name:         agent.Name,
 		Description:  description,
@@ -87,5 +104,6 @@ func (cfg *ManagerConfig) ResolveAgentConfig(name string) (*AgentConfig, error) 
 		ProviderName: providerName,
 		Provider:     provider,
 		Model:        model,
+		MCPProvider:  agent.MCPProvider,
 	}, nil
 }

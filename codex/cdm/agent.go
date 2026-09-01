@@ -100,6 +100,33 @@ func (a *Agent) initProcess() error {
 		Env: []string{
 			"OPENAI_API_KEY_" + a.cfg.ProviderName + "=" + a.cfg.Provider.APIKey,
 		},
+		MCP:            make(map[string]docker.MCPServerConfig),
+		ModelProviders: make(map[string]docker.ModelProvider),
+	}
+	startParam.ModelProviders[a.cfg.ProviderName] = docker.ModelProvider{
+		BaseURL:            a.cfg.Provider.APIBaseURL,
+		EnvKey:             "OPENAI_API_KEY_" + a.cfg.ProviderName,
+		Name:               a.cfg.ProviderName,
+		SupportsWebsockets: new(false),
+	}
+
+	for k, v := range a.cfg.MCPProvider {
+		mcpServer := docker.MCPServerConfig{
+			Args:    v.Args,
+			Env:     v.Env,
+			Headers: v.Headers,
+		}
+		if v.Command != "" {
+			mcpServer.Command = new(v.Command)
+		}
+		if v.URL != "" {
+			mcpServer.URL = new(v.URL)
+		}
+		if v.Auth != "" {
+			mcpServer.Headers = make(map[string]string)
+			mcpServer.Headers["Authorization"] = "Bearer " + v.Auth
+		}
+		startParam.MCP[k] = mcpServer
 	}
 
 	pm, err := proc.NewSafeProc(startParam)
@@ -184,11 +211,6 @@ func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID s
 		OpenAIBaseURL:  a.cfg.Provider.APIBaseURL,
 		OpenAIAPIKey:   a.cfg.Provider.APIKey,
 		ModelProviders: make(map[string]jsonRpc.ModelProviderInfo),
-		////MCPServers: map[string]jsonRpc.MCPServer{
-		//	"boda": {
-		//		URL: "http://localhost:9090/mcp",
-		//	},
-		//},
 	}
 	cfg.ModelProviders[a.cfg.ProviderName] = jsonRpc.ModelProviderInfo{
 		BaseURL:            a.cfg.Provider.APIBaseURL,

@@ -68,13 +68,14 @@ type ModelProviderInfo struct {
 
 type MCPServer struct {
 	// Stdio 模式字段
+	Enabled *bool             `json:"enabled,omitempty"`
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
-
 	// SSE 模式字段
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	URL               string            `json:"url,omitempty"`
+	Headers           map[string]string `json:"http_headers,omitempty"`
+	BearerTokenEnvVar string            `json:"bearer_token_env_var,omitempty"`
 }
 
 // StartThreadResult 创建 Thread 返回结果
