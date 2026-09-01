@@ -22,10 +22,11 @@ import (
 )
 
 type codexTurn struct {
-	startTime      int64  //启动时间
-	threadID       string //线程ID
-	turnID         string //会话ID
-	lastUpdateTime int64  //最后消息时间
+	startTime      int64        //启动时间
+	threadID       string       //线程ID
+	turnID         string       //会话ID
+	lastUpdateTime int64        //最后消息时间
+	state          *types.State //消息状态
 }
 
 type Agent struct {
@@ -51,6 +52,10 @@ func NewAgent(cfg *config.AgentConfig) *Agent {
 
 func (a *Agent) AgentID() string {
 	return a.cfg.Name
+}
+
+func (a *Agent) Init() error {
+	return a.initProcess()
 }
 
 // RegisterTool 注册工具函数
@@ -94,6 +99,7 @@ func (a *Agent) initProcess() error {
 		ContainerName: "codex_" + a.cfg.Name,
 		ImageName:     "codex_run:v2",
 		WorkSpace:     filepath.Join(a.cfg.WorkSpace, "workspace"),
+		TmpSpace:      filepath.Join(a.cfg.WorkSpace, "tmp"),
 		CodexHome:     filepath.Join(a.cfg.WorkSpace, "root"),
 		APIBaseURL:    a.cfg.Provider.APIBaseURL,
 		//APIKey:        a.cfg.Provider.APIKey,
@@ -160,6 +166,7 @@ func (a *Agent) getThread(ctx context.Context, sessionID string) (*codex.Thread,
 	a.epMu.Lock()
 	defer a.epMu.Unlock()
 	thread := a.client.Thread()
+	thread.SubUnknowTurnEvent(a.unknowTurnEventHandler)
 	waitResume := true
 	turn, ok := a.eps[sessionID]
 	if !ok {
@@ -278,6 +285,7 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	a.epMu.Lock()
 	if ct, ok := a.eps[state.SessionID]; ok {
 		ct.turnID = turn.TurnID()
+		ct.state = state
 	}
 	a.epMu.Unlock()
 	// 保存turn
@@ -343,6 +351,40 @@ func (a *Agent) allEventHandler(event *codex.Event) {
 	if dbErr != nil {
 		slog.Error("fail to save db thread event", "error", dbErr.Error())
 	}
+}
+
+func (a *Agent) unknowTurnEventHandler(event *codex.Event) {
+	slog.Warn("未知的turn事件", "event", event)
+	turn := a.cfg.SessionDB.TurnQueryByID(context.Background(), event.TurnID)
+	if turn == nil {
+		slog.Error("fail to find turn", "turnID", event.TurnID)
+		return
+	}
+	var state *types.State
+	a.epMu.Lock()
+	if ct, ok := a.eps[turn.SessionID]; ok {
+		state = ct.state
+	}
+	a.epMu.Unlock()
+	if state == nil {
+		session := a.cfg.SessionDB.SessionQueryByID(context.Background(), turn.SessionID)
+		if session == nil {
+			slog.Error("fail to find session", "sessionID", turn.SessionID)
+			return
+		}
+		state = types.NewState(&types.InputMessage{
+			ID:        turn.ReqID,
+			Session:   turn.SessionID,
+			Channel:   session.Channel,
+			AccountID: session.AccountID,
+			SenderID:  session.UserID,
+			ChatID:    session.ChatID,
+			Content:   turn.Question,
+			AgentName: a.AgentID(),
+			Timestamp: time.Now(),
+		})
+	}
+	a.codexEventParse(state, event)
 }
 
 func (a *Agent) buildInput(turn *codex.Turn, message *types.InputMessage) []jsonRpc.InputItem {
@@ -453,7 +495,7 @@ func (a *Agent) codexRequestParse(state *types.State, request *codex.Event) {
 			slog.Error("request tool call error", "error", err.Error())
 			return
 		}
-		resp, err := a.dynamicToolDo(&itemEvt)
+		resp, err := a.dynamicToolDo(state, &itemEvt)
 		if err != nil {
 			slog.Error("request tool call result error", "error", err.Error())
 		}
@@ -578,28 +620,36 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 	}(item.Type, codex.NotificationMethod(notification.Method))
 }
 
-func (a *Agent) dynamicToolDo(call *jsonRpc.ToolCall) (*jsonRpc.ToolResponse, error) {
+func (a *Agent) dynamicToolDo(state *types.State, call *jsonRpc.ToolCall) (*jsonRpc.ToolResponse, error) {
 	slog.Info("dynamic tool do :" + call.Tool)
-	funcname := strings.TrimLeft(call.Tool, a.toolNamespace+"__")
+	funcname := strings.TrimPrefix(call.Tool, a.toolNamespace+"__")
 	for _, tool := range a.tools {
 		if tool.Name() == funcname {
-			result, err := tool.Execute(context.Background(), call.Arguments)
+			result, err := tool.Execute(context.Background(), state, call.Arguments)
 			if err != nil {
 				return nil, err
 			}
+			inputItems := make([]jsonRpc.InputItem, 0)
+			if result.Content != "" {
+				inputItems = append(inputItems, jsonRpc.InputItem{
+					Type: "inputText",
+					Text: result.Content,
+				})
+			}
 			return &jsonRpc.ToolResponse{
 				Success: true,
-				Content: []jsonRpc.InputItem{
-					{
-						Type: "inputText",
-						Text: result,
-					},
-				},
+				Content: inputItems,
 			}, nil
 		}
 	}
 	return &jsonRpc.ToolResponse{
 		Success: false,
+		Content: []jsonRpc.InputItem{
+			{
+				Type: "inputText",
+				Text: "错误:工具未找到",
+			},
+		},
 	}, errors.New("tool not found")
 }
 

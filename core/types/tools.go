@@ -20,15 +20,16 @@ type Tool interface {
 	Parameters() ToolParams
 
 	// Execute 执行工具
-	Execute(ctx context.Context, params map[string]any) (string, error)
+	Execute(ctx context.Context, state *State, params map[string]any) (*InputMessage, error)
 }
 
 // BaseTool 基础工具
 type BaseTool struct {
-	name        string
-	description string
-	parameters  ToolParams
-	executeFunc func(ctx context.Context, params map[string]any) (string, error)
+	name                 string
+	description          string
+	parameters           ToolParams
+	executeFunc          func(ctx context.Context, params map[string]any) (string, error)
+	executeFuncWithState func(ctx context.Context, state *State, params map[string]any) (string, error)
 }
 
 // NewBaseTool 创建基础工具
@@ -38,6 +39,16 @@ func NewBaseTool(name, description string, parameters ToolParams, executeFunc fu
 		description: description,
 		parameters:  parameters,
 		executeFunc: executeFunc,
+	}
+}
+
+// NewBaseToolWithState 创建基础工具
+func NewBaseToolWithState(name, description string, parameters ToolParams, executeFuncWithState func(ctx context.Context, state *State, params map[string]any) (string, error)) *BaseTool {
+	return &BaseTool{
+		name:                 name,
+		description:          description,
+		parameters:           parameters,
+		executeFuncWithState: executeFuncWithState,
 	}
 }
 
@@ -57,6 +68,18 @@ func (t *BaseTool) Parameters() ToolParams {
 }
 
 // Execute 执行工具
-func (t *BaseTool) Execute(ctx context.Context, params map[string]any) (string, error) {
-	return t.executeFunc(ctx, params)
+func (t *BaseTool) Execute(ctx context.Context, state *State, params map[string]any) (*InputMessage, error) {
+	var result string
+	var err error
+	if t.executeFuncWithState == nil {
+		result, err = t.executeFuncWithState(ctx, state, params)
+	} else {
+		result, err = t.executeFunc(ctx, params)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &InputMessage{
+		Content: result,
+	}, nil
 }

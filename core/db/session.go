@@ -69,6 +69,8 @@ type ISessionStorage interface {
 	Init()
 	// SessionSave session 保存
 	SessionSave(ctx context.Context, session *Session) error
+	// SessionQueryByID session 查询
+	SessionQueryByID(ctx context.Context, sessionID string) *Session
 	// ThreadSave session codex thread 保存
 	ThreadSave(ctx context.Context, thread *SessionThread) error
 	// LastThread 查询session对应的最后thread
@@ -77,6 +79,8 @@ type ISessionStorage interface {
 	RequestSave(ctx context.Context, reqID string, quest string, agent string) error
 	// TurnSave 会话信息保存
 	TurnSave(ctx context.Context, turn *SessionTurn) error
+	// TurnQueryByID 会话信息查询
+	TurnQueryByID(ctx context.Context, turnID string) *SessionTurn
 	// TurnEventSave 会话事件保存
 	TurnEventSave(ctx context.Context, turn *TurnEvent) error
 	// TurnTokenUsage 根据turnID更新token用量
@@ -86,6 +90,10 @@ type ISessionStorage interface {
 }
 
 type sessionDefautStorage struct{}
+
+func (s *sessionDefautStorage) SessionQueryByID(ctx context.Context, sessionID string) *Session {
+	return nil
+}
 
 func (s *sessionDefautStorage) Init() {
 }
@@ -107,6 +115,10 @@ func (s *sessionDefautStorage) RequestSave(ctx context.Context, reqID string, qu
 }
 
 func (s *sessionDefautStorage) TurnSave(ctx context.Context, turn *SessionTurn) error {
+	return nil
+}
+
+func (s *sessionDefautStorage) TurnQueryByID(ctx context.Context, turnID string) *SessionTurn {
 	return nil
 }
 
@@ -139,6 +151,15 @@ func (s *SessionStorage) SessionSave(ctx context.Context, session *Session) erro
 		session.CreateTime = time.Now()
 	}
 	return s.db.WithContext(ctx).Where(" session_id = ? ", session.SessionID).FirstOrCreate(session).Error
+}
+
+func (s *SessionStorage) SessionQueryByID(ctx context.Context, sessionID string) *Session {
+	var ret Session
+	s.db.WithContext(ctx).Where("session_id = ?", sessionID).First(&ret)
+	if ret.SessionID == "" {
+		return nil
+	}
+	return &ret
 }
 
 func (s *SessionStorage) ThreadSave(ctx context.Context, thread *SessionThread) error {
@@ -179,6 +200,15 @@ func (s *SessionStorage) RequestSave(ctx context.Context, reqID string, quest st
 
 func (s *SessionStorage) TurnSave(ctx context.Context, turn *SessionTurn) error {
 	return s.db.WithContext(ctx).Where("req_id = ?", turn.ReqID).Updates(turn).Error
+}
+
+func (s *SessionStorage) TurnQueryByID(ctx context.Context, turnID string) *SessionTurn {
+	var ret SessionTurn
+	s.db.WithContext(ctx).Where("turn_id = ?", turnID).First(&ret)
+	if ret.ReqID == "" {
+		return nil
+	}
+	return &ret
 }
 
 func (s *SessionStorage) TurnEventSave(ctx context.Context, turn *TurnEvent) error {

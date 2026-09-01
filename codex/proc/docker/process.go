@@ -24,6 +24,7 @@ type StartParam struct {
 	ContainerName  string                     `description:"容器名称"`
 	ImageName      string                     `description:"镜像名称"`
 	WorkSpace      string                     `description:"工作目录"`
+	TmpSpace       string                     `description:"临时文件目录"`
 	CodexHome      string                     `description:"Codex根目录"`
 	APIBaseURL     string                     `description:"模型请求地址"`
 	APIKey         string                     `description:"模型APIKey"`
@@ -90,11 +91,6 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 	}
 
 	if containerID == "" { // 创建并启动新容器
-		if opts.WorkSpace != "" { //检测workspace目录是否存在
-			if err = os.MkdirAll(opts.WorkSpace, 0755); err != nil {
-				return nil, fmt.Errorf("创建 Workspace 目录失败: %w", err)
-			}
-		}
 		// A. 容器基础配置
 		config := &container.Config{
 			Image: imageName,
@@ -125,11 +121,25 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 			},
 		}
 		if opts.WorkSpace != "" {
+			if err = os.MkdirAll(opts.WorkSpace, 0755); err != nil {
+				return nil, fmt.Errorf("创建 Workspace 目录失败: %w", err)
+			}
 			// B. 挂载用户代码/文档工作区
 			hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
 				Type:   mount.TypeBind,
 				Source: opts.WorkSpace,
 				Target: "/workspace",
+			})
+		}
+		if opts.TmpSpace != "" {
+			if err = os.MkdirAll(opts.TmpSpace, 0755); err != nil {
+				return nil, fmt.Errorf("创建 Tmp 目录失败: %w", err)
+			}
+			// C. 挂载临时文件地址
+			hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+				Type:   mount.TypeBind,
+				Source: opts.TmpSpace,
+				Target: "/tmp",
 			})
 		}
 		if opts.CodexHome != "" {

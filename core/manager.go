@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
 	"github.com/kinwyb/buibuiCodex/core/db"
+	"github.com/kinwyb/buibuiCodex/core/pathmap"
 	"github.com/kinwyb/buibuiCodex/core/types"
 )
 
@@ -33,17 +33,19 @@ type Manager struct {
 	wg           sync.WaitGroup
 	sequence     *sessionSequence
 	dataStorage  *db.Data
+	pathMapper   map[string]*pathmap.PathMapper // 路径映射器
 }
 
 // NewManager 创建 Agent 管理器
 func NewManager(msgBus *bus.MessageBus) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	ret := &Manager{
-		agents:   make(map[string]types.Agent),
-		bus:      msgBus,
-		ctx:      ctx,
-		cancel:   cancel,
-		cancelCh: make(chan string, 10),
+		agents:     make(map[string]types.Agent),
+		bus:        msgBus,
+		ctx:        ctx,
+		cancel:     cancel,
+		cancelCh:   make(chan string, 10),
+		pathMapper: make(map[string]*pathmap.PathMapper),
 	}
 	return ret
 }
@@ -132,17 +134,32 @@ func (m *Manager) InitFromConfig(ctx context.Context, cfg *config.ManagerConfig)
 		}
 		resolved.SessionDB = m.dataStorage.Session()
 
+		// 初始化路径映射器
+		agentPathMapper := pathmap.New(&pathmap.Config{
+			Mappings: []pathmap.PathMapping{
+				{
+					Host:      filepath.Join(resolved.WorkSpace, "workspace"),
+					Container: "/workspace",
+				},
+				{
+					Host:      filepath.Join(resolved.WorkSpace, "tmp"),
+					Container: "/tmp",
+				},
+			},
+		})
+		m.pathMapper[resolved.Name] = agentPathMapper
 		// 创建 Agent
 		ag := cdm.NewAgent(resolved)
-
-		ag.RegisterTool("base", "基本工具允许获取运行所需的基础信息", tos...)
+		agentTools := append(tos, NewSendFileTool(m.bus, agentPathMapper))
+		ag.RegisterTool("base", "基本工具允许获取运行所需的基础信息", agentTools...)
 
 		createdAgents[name] = ag
 
 		// 注册到 Manager
 		isDefault := name == defaultAgentName
 		m.RegisterAgent(name, ag, isDefault)
-
+		// agent初始化
+		ag.Init()
 		m.log(ctx, bus.LogLevelInfo, "manager", fmt.Sprintf("Agent '%s' registered (default=%v)", name, isDefault))
 	}
 
@@ -293,6 +310,9 @@ func (m *Manager) messageHandler(ctx context.Context, state *types.State) {
 	if skipAgent {
 		return
 	}
+	// 入站路径转换：本地路径 -> 宿主机路径（LLM 可见）
+	m.mapMediaToContainer(agent.AgentID(), state.Input)
+
 	// 处理消息
 	m.agentDo(ctx, state, agent)
 }
@@ -377,13 +397,12 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 
 	// 注册回调，通过闭包携带 msg 和 agentName 信息
 	eventSeq := 0
-	firstStart := true // 标记是否是第一次 start 事件
 	state.EventHandler = func(event *types.Event) {
 		if event == nil {
 			return
 		}
 		eventSeq++
-		m.handleAgentEvent(ctx, event, eventSeq, &firstStart)
+		m.handleAgentEvent(ctx, event, eventSeq, agent.AgentID())
 	}
 	//for i := range 100 {
 	//	event := state.BuildEvent()
@@ -513,123 +532,40 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 
 // handleAgentEvent 处理 Agent 事件，转发到消息总线
 // 使用 firstStart 标记确保每个请求只发送一次 start 状态
-func (m *Manager) handleAgentEvent(ctx context.Context, event *types.Event, seq int, firstStart *bool) {
+func (m *Manager) handleAgentEvent(ctx context.Context, event *types.Event, seq int, agentName string) {
 	event.ChunkIndex = seq
+	// 出站路径转换：宿主机路径（LLM 产生） -> 本地路径（channel 可用）
+	m.mapEventMediaToHost(agentName, event)
 	_ = m.bus.PublishEvent(ctx, event)
 }
 
-// publishStreamOutbound 发布流式 OutboundMessage
-// 根据 StreamingMode 决定发送增量或累积内容
-//func (m *Manager) publishStreamOutbound(ctx context.Context, msg *bus.InboundMessage, agentName string, event *agcore.Event, seq int) {
-//	// 获取累积模式配置
-//	accumulateMode := msg.StreamingMode == bus.StreamingModeAccumulate
-//	// 新增的内容
-//	contentToAdd := event.Message.Content
-//	thinkToAdd := event.Message.ReasoningContent
-//
-//	// 累积内容（使用入站消息ID作为标识，避免同chatID多条消息混淆）
-//	acc := m.getOrCreateAccumulator(msg.ID)
-//
-//	// 第一个 chunk 去掉开头的回车或空格
-//	if acc.content == "" {
-//		contentToAdd = strings.TrimLeftFunc(contentToAdd, unicode.IsSpace)
-//	}
-//	if acc.thinking == "" {
-//		thinkToAdd = strings.TrimLeftFunc(thinkToAdd, unicode.IsSpace)
-//		thinkToAdd = cleanModelOutput(thinkToAdd)
-//	}
-//
-//	var content, reasoning string
-//	if thinkToAdd != "" {
-//		acc.thinking += thinkToAdd
-//		if accumulateMode {
-//			reasoning = acc.thinking
-//			content = acc.content
-//		} else {
-//			reasoning = thinkToAdd
-//			content = ""
-//		}
-//	} else {
-//		acc.content += contentToAdd
-//		if accumulateMode {
-//			content = acc.content
-//			reasoning = acc.thinking
-//		} else {
-//			content = contentToAdd
-//			reasoning = ""
-//		}
-//	}
-//
-//	// 复制入站消息 metadata
-//	outboundMeta := make(map[string]interface{})
-//	outboundMeta[meta.KeyStreamingMode] = string(msg.StreamingMode)
-//	if msg.Metadata != nil {
-//		for k, v := range msg.Metadata {
-//			outboundMeta[k] = v
-//		}
-//	}
-//
-//	outbound := &bus.OutboundMessage{
-//		Channel:          msg.Channel,
-//		ChatID:           msg.ChatID,
-//		Content:          content,
-//		ReasoningContent: reasoning,
-//		IsStreaming:      true,
-//		IsThinking:       thinkToAdd != "",
-//		IsFinal:          false,
-//		ChunkIndex:       seq,
-//		ReplyTo:          getReplyTo(msg),
-//		Timestamp:        time.Now(),
-//		Metadata:         outboundMeta,
-//	}
-//	_ = m.bus.PublishOutbound(ctx, outbound)
-//}
-
-// publishEndOutbound 发布完整流式 OutboundMessage
-//func (m *Manager) publishEndOutbound(ctx context.Context, msg *bus.InboundMessage, isStreaming bool, event *agcore.Event, seq int) {
-//	// 清理累积器（使用入站消息ID）
-//	m.removeAccumulator(msg.ID)
-//
-//	// 复制入站消息 metadata
-//	outboundMeta := make(map[string]interface{})
-//	outboundMeta[meta.KeyStreamingMode] = string(msg.StreamingMode)
-//	if msg.Metadata != nil {
-//		for k, v := range msg.Metadata {
-//			outboundMeta[k] = v
-//		}
-//	}
-//	content := strings.TrimLeftFunc(event.Message.Content, unicode.IsSpace)
-//	think := strings.TrimLeftFunc(event.Message.ReasoningContent, unicode.IsSpace)
-//
-//	// 最终消息直接使用完整内容
-//	outbound := &bus.OutboundMessage{
-//		Channel:          msg.Channel,
-//		ChatID:           msg.ChatID,
-//		Content:          content,
-//		ReasoningContent: think,
-//		IsStreaming:      isStreaming,
-//		IsEnd:            true,
-//		IsThinking:       think != "",
-//		ChunkIndex:       seq,
-//		ReplyTo:          getReplyTo(msg),
-//		Timestamp:        time.Now(),
-//		Metadata:         outboundMeta,
-//	}
-//	_ = m.bus.PublishOutbound(ctx, outbound)
-//}
-
-func cleanModelOutput(raw string) string {
-	// 如果字符串不是以双引号开头，说明可能不是转义 JSON，直接返回
-	if !strings.HasPrefix(raw, "\"") {
-		return raw
+// mapMediaToContainer 将入站消息中的本地路径转换为宿主机路径（供 LLM 使用）
+func (m *Manager) mapMediaToContainer(agentName string, msg *types.InputMessage) {
+	if mapper, ok := m.pathMapper[agentName]; ok {
+		if mapper.IsNoop() || msg == nil {
+			return
+		}
+		for i := range msg.Media {
+			if msg.Media[i].URL != "" {
+				msg.Media[i].URL = mapper.ToContainer(msg.Media[i].URL)
+			}
+		}
 	}
+}
 
-	var decoded string
-	// 尝试将原始字符串解析为标准的 Go string
-	err := json.Unmarshal([]byte(raw), &decoded)
-	if err != nil {
-		// 如果解析失败（说明不是标准 JSON 格式），返回原始内容
-		return raw
+// mapEventMediaToHost 将出站事件中的宿主机路径转换为本地路径（供 channel 使用）
+func (m *Manager) mapEventMediaToHost(agentName string, event *types.Event) {
+	if event == nil || event.Message == nil {
+		return
 	}
-	return decoded
+	if mapper, ok := m.pathMapper[agentName]; ok {
+		if mapper.IsNoop() {
+			return
+		}
+		for i := range event.Message.Media {
+			if event.Message.Media[i].URL != "" {
+				event.Message.Media[i].URL = mapper.ToHost(event.Message.Media[i].URL)
+			}
+		}
+	}
 }

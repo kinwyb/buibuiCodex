@@ -57,10 +57,11 @@ func ThreadStartWithModelProvider(modelProvider string) ThreadStartOption {
 }
 
 type Thread struct {
-	client   *Client
-	threadID string
-	turnMux  sync.Mutex
-	turnSub  map[string]EventHandler
+	client        *Client
+	threadID      string
+	turnMux       sync.Mutex
+	turnSub       map[string]EventHandler
+	unknowTurnSub EventHandler
 }
 
 // NewThread 创建Thread
@@ -106,9 +107,17 @@ func (s *Thread) eventHandler(event *Event) {
 		if event.Method == string(TurnCompleted) {
 			s.UnSubScribeEvent(event.TurnID)
 		}
+		return
+	} else if s.unknowTurnSub != nil {
+		s.unknowTurnSub(event)
+		return
 	}
-	// 处理其他消息
 	slog.Debug("turn eventHandler => " + event.Method + " " + event.RawData.String())
+}
+
+// SubUnknowTurnEvent 订阅未知的Turn信息,这是因为turn如果中断，后续thread恢复后可能继续执行，而turn整个已经不存在于运行状态中了
+func (s *Thread) SubUnknowTurnEvent(handler EventHandler) {
+	s.unknowTurnSub = handler
 }
 
 // SubScribeEvent 订阅事件

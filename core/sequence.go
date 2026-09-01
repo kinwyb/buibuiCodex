@@ -66,6 +66,7 @@ func newSessionSequence(ctx context.Context, inputSub *bus.InboundSubscription) 
 		inBoundSub:      inputSub,
 		semaphore:       make(chan struct{}, MaxConcurrentSessions),
 		spawnLimit:      make(chan struct{}, maxInflightGoroutines),
+		pendingMessages: make(map[string][]*types.State),
 	}
 }
 

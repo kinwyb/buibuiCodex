@@ -9,6 +9,8 @@ import (
 type Agent interface {
 	// AgentID 返回agentID
 	AgentID() string
+	// Init 初始化agent
+	Init() error
 	// Prompt 对话请求
 	Prompt(ctx context.Context, state *State) error
 	// Approve 提交审批结果
