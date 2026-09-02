@@ -72,79 +72,83 @@ func NewThread(client *Client) *Thread {
 	}
 }
 
+func (t *Thread) ThreadID() string {
+	return t.threadID
+}
+
 // Start 启动一个线程,返回线程ID
-func (s *Thread) Start(ctx context.Context, params jsonRpc.StartThreadParams) (string, error) {
+func (t *Thread) Start(ctx context.Context, params jsonRpc.StartThreadParams) (string, error) {
 	var res jsonRpc.StartThreadResult
-	err := s.client.Call(ctx, ThreadStart, params, &res)
+	err := t.client.Call(ctx, ThreadStart, params, &res)
 	if err != nil {
 		return "", err
 	}
-	s.threadID = res.Thread.ID
-	s.client.SubScribeEvent(s.threadID, s.eventHandler)
+	t.threadID = res.Thread.ID
+	t.client.SubScribeEvent(t.threadID, t.eventHandler)
 	return res.Thread.ID, nil
 }
 
 // Resume 恢复一个线程
-func (s *Thread) Resume(ctx context.Context, threadID string) error {
+func (t *Thread) Resume(ctx context.Context, threadID string) error {
 	var res jsonRpc.StartThreadResult
-	err := s.client.Call(ctx, ThreadResume, map[string]string{
+	err := t.client.Call(ctx, ThreadResume, map[string]string{
 		"threadId": threadID,
 	}, &res)
 	if err != nil {
 		return err
 	}
-	s.threadID = res.Thread.ID
-	s.client.SubScribeEvent(s.threadID, s.eventHandler)
+	t.threadID = res.Thread.ID
+	t.client.SubScribeEvent(t.threadID, t.eventHandler)
 	return nil
 }
 
-func (s *Thread) eventHandler(event *Event) {
-	s.turnMux.Lock()
-	sub, ok := s.turnSub[event.TurnID]
-	s.turnMux.Unlock()
+func (t *Thread) eventHandler(event *Event) {
+	t.turnMux.Lock()
+	sub, ok := t.turnSub[event.TurnID]
+	t.turnMux.Unlock()
 	if ok {
 		sub(event)
 		if event.Method == string(TurnCompleted) {
-			s.UnSubScribeEvent(event.TurnID)
+			t.UnSubScribeEvent(event.TurnID)
 		}
 		return
-	} else if s.unknowTurnSub != nil {
-		s.unknowTurnSub(event)
+	} else if t.unknowTurnSub != nil {
+		t.unknowTurnSub(event)
 		return
 	}
 	slog.Debug("turn eventHandler => " + event.Method + " " + event.RawData.String())
 }
 
 // SubUnknowTurnEvent 订阅未知的Turn信息,这是因为turn如果中断，后续thread恢复后可能继续执行，而turn整个已经不存在于运行状态中了
-func (s *Thread) SubUnknowTurnEvent(handler EventHandler) {
-	s.unknowTurnSub = handler
+func (t *Thread) SubUnknowTurnEvent(handler EventHandler) {
+	t.unknowTurnSub = handler
 }
 
 // SubScribeEvent 订阅事件
-func (s *Thread) SubScribeEvent(turnID string, handler EventHandler) error {
+func (t *Thread) SubScribeEvent(turnID string, handler EventHandler) error {
 	if turnID == "" {
 		return fmt.Errorf("turn id is empty")
 	}
-	s.turnMux.Lock()
-	defer s.turnMux.Unlock()
-	s.turnSub[turnID] = handler
+	t.turnMux.Lock()
+	defer t.turnMux.Unlock()
+	t.turnSub[turnID] = handler
 	return nil
 }
 
 // UnSubScribeEvent 取消事件订阅
-func (s *Thread) UnSubScribeEvent(turnID string) {
+func (t *Thread) UnSubScribeEvent(turnID string) {
 	if turnID == "" {
 		return
 	}
-	s.turnMux.Lock()
-	defer s.turnMux.Unlock()
-	delete(s.turnSub, turnID)
+	t.turnMux.Lock()
+	defer t.turnMux.Unlock()
+	delete(t.turnSub, turnID)
 }
 
 // Turn 创建一个turn
-func (s *Thread) Turn() (*Turn, error) {
-	if s.threadID == "" {
+func (t *Thread) Turn() (*Turn, error) {
+	if t.threadID == "" {
 		return nil, errors.New("threadId is empty")
 	}
-	return NewTurn(s.client, s), nil
+	return NewTurn(t.client, t), nil
 }

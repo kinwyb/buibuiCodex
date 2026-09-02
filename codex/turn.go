@@ -35,6 +35,13 @@ func NewTurn(client *Client, thread *Thread) *Turn {
 	return &Turn{client: client, thread: thread}
 }
 
+func NewTurnWithID(thread *Thread, turnID string) (*Turn, error) {
+	if thread == nil {
+		return nil, fmt.Errorf("thread cannot be nil")
+	}
+	return &Turn{client: thread.client, thread: thread, turnID: turnID}, nil
+}
+
 func (t *Turn) ThreadID() string {
 	return t.thread.threadID
 }
@@ -87,6 +94,19 @@ func (t *Turn) Start(ctx context.Context, input []jsonRpc.InputItem, options ...
 	}
 	t.turnID = res.Turn.TurnID
 	t.thread.SubScribeEvent(t.turnID, t.eventHandler)
+	return nil
+}
+
+// Interrupt 停止中断一个turn
+func (t *Turn) Interrupt(ctx context.Context) error {
+	params := jsonRpc.TurnInterruptParams{
+		ThreadID: t.thread.threadID,
+		TurnID:   t.turnID,
+	}
+	err := t.client.Call(ctx, TurnInterrupt, params, nil)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

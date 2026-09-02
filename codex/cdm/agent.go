@@ -22,11 +22,12 @@ import (
 )
 
 type codexTurn struct {
-	startTime      int64        //启动时间
-	threadID       string       //线程ID
-	turnID         string       //会话ID
-	lastUpdateTime int64        //最后消息时间
-	state          *types.State //消息状态
+	startTime      int64         //启动时间
+	lastUpdateTime int64         //最后消息时间
+	threadID       string        //线程ID
+	thread         *codex.Thread //启动的线程
+	turn           *codex.Turn   //启动的会话
+	state          *types.State  //消息状态
 }
 
 type Agent struct {
@@ -176,7 +177,6 @@ func (a *Agent) getThread(ctx context.Context, sessionID string) (*codex.Thread,
 			turn = &codexTurn{
 				startTime:      dbThread.CreateTime.Unix(),
 				threadID:       dbThread.ThreadID,
-				turnID:         "",
 				lastUpdateTime: dbThread.LastUpdate.Unix(),
 			}
 		} else {
@@ -195,6 +195,7 @@ func (a *Agent) getThread(ctx context.Context, sessionID string) (*codex.Thread,
 			slog.Error(err.Error())
 			return nil, err
 		}
+		turn.thread = thread
 		turn.lastUpdateTime = time.Now().Unix()
 	}
 
@@ -248,6 +249,7 @@ func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID s
 		threadID:       threadID,
 		startTime:      time.Now().Unix(),
 		lastUpdateTime: time.Now().Unix(),
+		thread:         thread,
 	}
 	a.eps[sessionID] = turn
 
@@ -284,7 +286,7 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	}
 	a.epMu.Lock()
 	if ct, ok := a.eps[state.SessionID]; ok {
-		ct.turnID = turn.TurnID()
+		ct.turn = turn
 		ct.state = state
 	}
 	a.epMu.Unlock()
@@ -306,7 +308,7 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 			a.epMu.Lock()
 			if sessionID, ok := a.turnMap[event.TurnID]; ok {
 				if ct, ok2 := a.eps[sessionID]; ok2 {
-					ct.turnID = ""
+					ct.turn = nil
 					ct.lastUpdateTime = time.Now().Unix()
 				}
 				delete(a.turnMap, event.TurnID)
@@ -670,6 +672,14 @@ func (a *Agent) dynamicToolDo(state *types.State, call *jsonRpc.ToolCall) (*json
 }
 
 func (a *Agent) Cancel(ctx context.Context, sessionID string) error {
+	a.epMu.Lock()
+	ct, ok := a.eps[sessionID]
+	a.epMu.Unlock()
+	if ok {
+		if ct.turn != nil {
+			ct.turn.Interrupt(ctx)
+		}
+	}
 	return nil
 }
 

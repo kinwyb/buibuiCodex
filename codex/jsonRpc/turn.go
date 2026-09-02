@@ -38,3 +38,8 @@ type TurnEvent struct {
 type TurnStartEvent = TurnEvent
 
 type TurnCompletedEvent = TurnEvent
+
+type TurnInterruptParams struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId"`
+}
