@@ -507,6 +507,7 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 		outBound := state.BuildEvent()
 		outBound.Type = types.EventError
 		outBound.Message = &types.Message{
+			Role:    types.RoleSystem,
 			Content: "失败：" + err.Error(),
 		}
 		if pubErr := m.bus.PublishEvent(ctx, outBound); pubErr != nil {
@@ -514,6 +515,16 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 		}
 		return err
 	}
+	// 发布完成事件
+	outBound := state.BuildEvent()
+	outBound.Type = types.EventFinished
+	outBound.Message = &types.Message{
+		Role: types.RoleSystem,
+	}
+	if pubErr := m.bus.PublishEvent(ctx, outBound); pubErr != nil {
+		m.log(ctx, bus.LogLevelError, "manager", fmt.Sprintf("Failed to publish error outbound: %v", pubErr))
+	}
+	return err
 
 	return nil
 }
