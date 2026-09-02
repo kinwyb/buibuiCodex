@@ -609,7 +609,7 @@ func (c *Channel) handleSendFileRequest(ctx context.Context, event *types.Event)
 	}
 
 	filePath := request.Media[0].URL
-	fileType := request.Media[0].Type
+	fileType := string(request.Media[0].Type)
 	caption := ""
 	if request.Media[0].Metadata != nil {
 		if cap, ok := request.Media[0].Metadata["caption"].(string); ok {

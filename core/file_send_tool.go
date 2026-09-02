@@ -73,7 +73,7 @@ func (t *SendFileTool) Execute(ctx context.Context, state *types.State, params m
 	if c, ok := params["caption"].(string); ok {
 		caption = c
 	}
-	var fileType string
+	var fileType types.MediaType
 	// 验证文件存在
 	if !strings.HasPrefix(filePath, "http") {
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
@@ -111,7 +111,7 @@ func (t *SendFileTool) Execute(ctx context.Context, state *types.State, params m
 
 // detectFileType 根据文件扩展名推断 Media 类型
 // 返回 "image"（图片）或 "file"（其他文件），对应企业微信的 msgtype
-func detectFileType(filePath string) string {
+func detectFileType(filePath string) types.MediaType {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	// 常见图片扩展名
 	imageExts := map[string]bool{
@@ -119,11 +119,11 @@ func detectFileType(filePath string) string {
 		".bmp": true, ".webp": true, ".svg": true, ".ico": true,
 	}
 	if imageExts[ext] {
-		return "image"
+		return types.MediaTypeImage
 	}
 	// 通过 MIME 类型辅助判断
 	if mimeType := mime.TypeByExtension(ext); strings.HasPrefix(mimeType, "image/") {
-		return "image"
+		return types.MediaTypeImage
 	}
-	return "file"
+	return types.MediaTypeFile
 }

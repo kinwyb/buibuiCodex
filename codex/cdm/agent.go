@@ -393,8 +393,24 @@ func (a *Agent) buildInput(turn *codex.Turn, message *types.InputMessage) []json
 		result = turn.BuildInputWithText(message.Content, result...)
 	}
 	for _, item := range message.Media {
-		if item.Type == "image" {
-			result = turn.BuildInputWithImage(item.Base64, result...)
+		if item.Type == types.MediaTypeImage {
+			if item.URL != "" {
+				if strings.HasPrefix(item.URL, "http") {
+					result = turn.BuildInputWithImage(item.URL, result...)
+				} else {
+					result = turn.BuildInputWithLocalImage(item.URL, result...)
+				}
+			} else if item.Base64 != "" {
+				result = turn.BuildInputWithImage("data:"+item.MimeType+";base64,"+item.Base64, result...)
+			}
+		} else if item.Type == types.MediaTypeFile {
+			filename := item.Metadata["filename"].(string)
+			if filename == "" {
+				filename = uuid.NewV4().String()
+			}
+			if item.URL != "" {
+				result = turn.BuildInputWithText("文件["+filename+"]地址:"+item.URL, result...)
+			}
 		}
 	}
 	return result

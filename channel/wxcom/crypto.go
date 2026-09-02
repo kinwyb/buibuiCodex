@@ -238,13 +238,6 @@ func DownloadAndDecrypt(ctx context.Context, fileURL, aesKey string, timeout tim
 	return downloader.DownloadFile(ctx, fileURL, aesKey)
 }
 
-// SaveFile 保存文件数据到指定路径
-func SaveFile(data []byte, filepath string) error {
-	// 这里只返回数据，实际保存由调用者处理
-	// 在实际应用中可以使用 os.WriteFile
-	return nil
-}
-
 // DetectMimeType 从文件数据检测 MIME 类型
 func DetectMimeType(data []byte) string {
 	// 常见文件类型的魔数检测

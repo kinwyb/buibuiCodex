@@ -1,6 +1,9 @@
 package pathmap
 
 import (
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -73,6 +76,34 @@ func (pm *PathMapper) ToContainer(hostPath string) string {
 	return hostPath
 }
 
+// MoveFileToContainer 将宿主机中的文件移动到容器路径中,返回容器路径
+func (pm *PathMapper) MoveFileToContainer(hostPath string, containerPath string) string {
+	if len(pm.mappings) == 0 || strings.HasPrefix(hostPath, "http") {
+		return hostPath
+	}
+	var distDir string
+	for _, m := range pm.mappings {
+		if m.container == containerPath {
+			distDir = m.host
+		}
+	}
+	if distDir == "" {
+		distDir = pm.mappings[0].host
+	}
+	newPath, err := moveFileToDir(hostPath, distDir)
+	if err != nil {
+		return hostPath
+	}
+	cleaned := filepath.Clean(newPath)
+	for _, m := range pm.mappings {
+		if after, ok := strings.CutPrefix(cleaned, m.host); ok {
+			rel := after
+			return filepath.Join(m.container, rel)
+		}
+	}
+	return newPath
+}
+
 // ToHost 将容器路径转换为宿主机路径。
 // 如果路径不匹配任何映射规则，原样返回。
 func (pm *PathMapper) ToHost(containerPath string) string {
@@ -92,4 +123,65 @@ func (pm *PathMapper) ToHost(containerPath string) string {
 // IsNoop 是否为空映射（非 Docker 模式）
 func (pm *PathMapper) IsNoop() bool {
 	return len(pm.mappings) == 0
+}
+
+// 将指定文件移动到目标文件夹中，保持文件名不变
+// 返回值：(新文件路径, error)
+func moveFileToDir(srcFile, dstDir string) (string, error) {
+	// 1. 确保目标文件夹存在
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return "", fmt.Errorf("创建目标文件夹失败: %w", err)
+	}
+
+	// 2. 提取文件名，拼接出新文件的完整路径
+	fileName := filepath.Base(srcFile)
+	dstFile := filepath.Join(dstDir, fileName)
+
+	// 3. 优先使用 os.Rename（同磁盘/分区下极快）
+	err := os.Rename(srcFile, dstFile)
+	if err == nil {
+		return dstFile, nil
+	}
+
+	// 4. 如果跨磁盘/跨分区报错，降级采用“复制后删除”策略
+	if err := moveFileCrossDevice(srcFile, dstFile); err != nil {
+		return "", err
+	}
+
+	return dstFile, nil
+}
+
+// 跨分区移动处理函数
+func moveFileCrossDevice(src, dst string) error {
+	sf, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("打开源文件失败: %w", err)
+	}
+
+	df, err := os.Create(dst)
+	if err != nil {
+		sf.Close()
+		return fmt.Errorf("创建目标文件失败: %w", err)
+	}
+
+	_, copyErr := io.Copy(df, sf)
+
+	// 关闭文件句柄，避免 Windows 下文件占用
+	sf.Close()
+	syncErr := df.Sync()
+	df.Close()
+
+	if copyErr != nil {
+		return fmt.Errorf("拷贝文件失败: %w", copyErr)
+	}
+	if syncErr != nil {
+		return fmt.Errorf("刷盘失败: %w", syncErr)
+	}
+
+	// 拷贝成功后删除源文件
+	if err := os.Remove(src); err != nil {
+		return fmt.Errorf("删除原文件失败: %w", err)
+	}
+
+	return nil
 }

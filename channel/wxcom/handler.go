@@ -162,9 +162,9 @@ func (h *MessageHandler) ConvertToInbound(msg *WsMessage, channelName, accountID
 
 		switch msg.MsgType {
 		case MsgTypeImage:
-			media.Type = "image"
+			media.Type = types.MediaTypeImage
 		case MsgTypeFile:
-			media.Type = "document"
+			media.Type = types.MediaTypeFile
 		}
 
 		inbound.Media = []types.Media{media}

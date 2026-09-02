@@ -1,14 +1,11 @@
 package wxcom
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,7 +228,7 @@ func (c *Channel) processMedia(ctx context.Context, inbound *types.InputMessage)
 	for i := len(inbound.Media) - 1; i >= 0; i-- {
 		media := &inbound.Media[i]
 		switch media.Type {
-		case "image", "audio":
+		case types.MediaTypeImage, types.MediaTypeAudio:
 			data, filename, err := c.DownloadImage(ctx, media)
 			if err != nil {
 				c.logger.Warn("Failed to download media", "type", media.Type, "error", err)
@@ -245,7 +242,7 @@ func (c *Channel) processMedia(ctx context.Context, inbound *types.InputMessage)
 			}
 			media.Metadata["filename"] = filename
 
-		case "document":
+		case types.MediaTypeFile:
 			aesKey := ""
 			if media.Metadata != nil {
 				if key, ok := media.Metadata["aeskey"].(string); ok {
@@ -258,59 +255,17 @@ func (c *Channel) processMedia(ctx context.Context, inbound *types.InputMessage)
 				continue
 			}
 			tmpPathName := aesKey
-			text, filePath, ext := extractText(data, filename, tmpPathName)
-			if text != "" {
-				media.Base64 = base64.StdEncoding.EncodeToString([]byte(text))
-				media.URL = ""
-				media.MimeType = ext
-			} else {
-				media.URL = filePath
-				media.MimeType = ext
-			}
+			filePath, ext := extractText(data, filename, tmpPathName)
+			media.URL = filePath
+			media.MimeType = ext
 			media.Metadata["filename"] = filename
 		}
 	}
 }
 
-// 常见纯文本扩展名
-var textExtensions = map[string]bool{
-	".txt":  true,
-	".csv":  true,
-	".json": true,
-	".md":   true,
-	".xml":  true,
-	".yaml": true,
-	".yml":  true,
-	".log":  true,
-	".ini":  true,
-	".conf": true,
-	".cfg":  true,
-	".env":  true,
-	".sh":   true,
-	".html": true,
-	".htm":  true,
-	".sql":  true,
-	".js":   true,
-	".ts":   true,
-	".py":   true,
-	".go":   true,
-	".java": true,
-	".c":    true,
-	".h":    true,
-	".css":  true,
-}
-
 // extractText 从文件数据中提取文本内容
-func extractText(data []byte, filename string, tmpPathName string) (string, string, string) {
+func extractText(data []byte, filename string, tmpPathName string) (string, string) {
 	ext := strings.ToLower(filepath.Ext(filename))
-
-	// 纯文本文件：直接返回
-	if textExtensions[ext] {
-		if t := strings.TrimSpace(string(data)); t != "" {
-			return t, "", ext
-		}
-		return "(空文件)", "", ext
-	}
 
 	tmpFile := filepath.Join(TempFilePath, time.Now().Format("20060102"), tmpPathName)
 
@@ -318,42 +273,16 @@ func extractText(data []byte, filename string, tmpPathName string) (string, stri
 		if errors.Is(err, os.ErrNotExist) {
 			me := os.MkdirAll(tmpFile, os.ModePerm)
 			if me != nil {
-				return fmt.Sprintf("临时文件目录创建失败: %s", me.Error()), "", tmpFile
+				return fmt.Sprintf("临时文件目录创建失败: %s", me.Error()), ext
 			}
 		}
-	}
-	// ZIP 格式：docx / xlsx / pptx
-	if ext == ".zip" {
-		return extractZipText(data, ext, tmpFile), "", ext
 	}
 	tmp := filepath.Join(tmpFile, filename)
 	err := os.WriteFile(tmp, data, os.ModePerm)
 	if err != nil {
-		return fmt.Sprintf("文件下载失败：%s", err.Error()), "", ext
+		return fmt.Sprintf("文件下载失败：%s", err.Error()), ext
 	}
-	return "", tmp, ext
-}
-
-// extractZipText 从 ZIP 文件中提取文本
-func extractZipText(data []byte, filename, tmpFilePath string) string {
-	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return fmt.Sprintf("(ZIP 解析失败: %s)", err.Error())
-	}
-	sb := strings.Builder{}
-	sb.WriteString(filename + "这个zip压缩包中存在以下这些文件:\n")
-	for _, f := range r.File {
-		rc, err := f.Open()
-		if err != nil {
-			continue
-		}
-		xmlData, _ := io.ReadAll(rc)
-		rc.Close()
-		tmp := filepath.Join(tmpFilePath, f.Name)
-		_ = os.WriteFile(tmp, xmlData, f.Mode())
-		sb.WriteString(tmp + "\n")
-	}
-	return sb.String()
+	return tmp, ext
 }
 
 // computeMD5 计算数据的 MD5 值

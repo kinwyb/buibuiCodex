@@ -547,7 +547,7 @@ func (m *Manager) mapMediaToContainer(agentName string, msg *types.InputMessage)
 		}
 		for i := range msg.Media {
 			if msg.Media[i].URL != "" {
-				msg.Media[i].URL = mapper.ToContainer(msg.Media[i].URL)
+				msg.Media[i].URL = mapper.MoveFileToContainer(msg.Media[i].URL, "/tmp")
 			}
 		}
 	}
