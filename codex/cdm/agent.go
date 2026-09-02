@@ -30,18 +30,42 @@ type codexTurn struct {
 	state          *types.State  //消息状态
 }
 
+type toolGroup struct {
+	nameSpace string
+	spaceDesc string
+	tools     []types.Tool
+}
+
+func (t *toolGroup) ToDynamicTool() *jsonRpc.DynamicTool {
+	ret := &jsonRpc.DynamicTool{
+		Type:        "namespace",
+		Name:        t.nameSpace,
+		Description: t.spaceDesc,
+		Tools:       nil,
+	}
+	for _, tool := range t.tools {
+		dt := jsonRpc.ToolDescription{
+			Type:         "function",
+			Name:         tool.Name(),
+			Description:  tool.Description(),
+			DeferLoading: false,
+			InputSchema:  tool.Parameters(),
+		}
+		ret.Tools = append(ret.Tools, dt)
+	}
+	return ret
+}
+
 type Agent struct {
-	cfg               *config.AgentConfig
-	process           proc.Process
-	client            *codex.Client
-	epMu              sync.Mutex
-	eps               map[string]*codexTurn
-	turnMap           map[string]string //turnID => sessionID
-	isInit            bool
-	initMu            sync.Mutex
-	toolNamespace     string
-	toolNamespaceDesc string
-	tools             []types.Tool
+	cfg     *config.AgentConfig
+	process proc.Process
+	client  *codex.Client
+	epMu    sync.Mutex
+	eps     map[string]*codexTurn
+	turnMap map[string]string //turnID => sessionID
+	isInit  bool
+	initMu  sync.Mutex
+	tools   []*toolGroup
 }
 
 func NewAgent(cfg *config.AgentConfig) *Agent {
@@ -61,30 +85,32 @@ func (a *Agent) Init() error {
 
 // RegisterTool 注册工具函数
 func (a *Agent) RegisterTool(namespace string, desc string, tool ...types.Tool) {
-	a.toolNamespace = namespace
-	a.toolNamespaceDesc = desc
-	a.tools = append(a.tools, tool...)
+	var group *toolGroup
+	for _, t := range a.tools {
+		if t.nameSpace == namespace {
+			group = t
+			group.spaceDesc = desc
+		}
+	}
+	if group == nil {
+		group = &toolGroup{
+			nameSpace: namespace,
+			spaceDesc: desc,
+		}
+		a.tools = append(a.tools, group)
+	}
+	group.tools = append(group.tools, tool...)
 }
 
-func (a *Agent) dynamicTools() *jsonRpc.DynamicTool {
+func (a *Agent) dynamicTools() []jsonRpc.DynamicTool {
 	if len(a.tools) == 0 {
 		return nil
 	}
-	ret := &jsonRpc.DynamicTool{
-		Type:        "namespace",
-		Name:        a.toolNamespace,
-		Description: a.toolNamespaceDesc,
-		Tools:       nil,
-	}
-	for _, tool := range a.tools {
-		dt := jsonRpc.ToolDescription{
-			Type:         "function",
-			Name:         tool.Name(),
-			Description:  tool.Description(),
-			DeferLoading: false,
-			InputSchema:  tool.Parameters(),
+	var ret []jsonRpc.DynamicTool
+	for _, t := range a.tools {
+		if len(t.tools) > 0 {
+			ret = append(ret, *t.ToDynamicTool())
 		}
-		ret.Tools = append(ret.Tools, dt)
 	}
 	return ret
 }
@@ -231,8 +257,8 @@ func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID s
 	opts := []codex.ThreadStartOption{codex.ThreadStartWithConfig(cfg),
 		codex.ThreadStartWithSendbox(jsonRpc.SandboxModeDangerFullAccess), codex.ThreadStartWithModelProvider(a.cfg.ProviderName)}
 	dynamicTool := a.dynamicTools()
-	if dynamicTool != nil {
-		opts = append(opts, codex.ThreadStartWithDynamicTool(dynamicTool))
+	if len(dynamicTool) > 0 {
+		opts = append(opts, codex.ThreadStartWithDynamicTool(dynamicTool...))
 	}
 	if a.cfg.Description != "" {
 		opts = append(opts, codex.ThreadStartWithInstructions(a.cfg.Description))
@@ -640,24 +666,33 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 
 func (a *Agent) dynamicToolDo(state *types.State, call *jsonRpc.ToolCall) (*jsonRpc.ToolResponse, error) {
 	slog.Info("dynamic tool do :" + call.Tool)
-	funcname := strings.TrimPrefix(call.Tool, a.toolNamespace+"__")
-	for _, tool := range a.tools {
-		if tool.Name() == funcname {
-			result, err := tool.Execute(context.Background(), state, call.Arguments)
-			if err != nil {
-				return nil, err
+	sps := strings.SplitN(call.Tool, "__", 2)
+	if len(sps) != 2 {
+		return nil, fmt.Errorf("dynamic tool name format error : %s", call.Tool)
+	}
+	namespace := sps[0]
+	functionName := sps[1]
+	for _, toolNS := range a.tools {
+		if toolNS.nameSpace == namespace {
+			for _, tool := range toolNS.tools {
+				if tool.Name() == functionName {
+					result, err := tool.Execute(context.Background(), state, call.Arguments)
+					if err != nil {
+						return nil, err
+					}
+					inputItems := make([]jsonRpc.InputItem, 0)
+					if result.Content != "" {
+						inputItems = append(inputItems, jsonRpc.InputItem{
+							Type: "inputText",
+							Text: result.Content,
+						})
+					}
+					return &jsonRpc.ToolResponse{
+						Success: true,
+						Content: inputItems,
+					}, nil
+				}
 			}
-			inputItems := make([]jsonRpc.InputItem, 0)
-			if result.Content != "" {
-				inputItems = append(inputItems, jsonRpc.InputItem{
-					Type: "inputText",
-					Text: result.Content,
-				})
-			}
-			return &jsonRpc.ToolResponse{
-				Success: true,
-				Content: inputItems,
-			}, nil
 		}
 	}
 	return &jsonRpc.ToolResponse{

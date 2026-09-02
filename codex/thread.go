@@ -38,9 +38,9 @@ func ThreadStartWithConfig(config *jsonRpc.ThreadConfig) ThreadStartOption {
 }
 
 // ThreadStartWithDynamicTool 添加动态函数
-func ThreadStartWithDynamicTool(dyt *jsonRpc.DynamicTool) ThreadStartOption {
+func ThreadStartWithDynamicTool(dyts ...jsonRpc.DynamicTool) ThreadStartOption {
 	return func(params *jsonRpc.StartThreadParams) {
-		params.DynamicTools = append(params.DynamicTools, *dyt)
+		params.DynamicTools = append(params.DynamicTools, dyts...)
 	}
 }
 
