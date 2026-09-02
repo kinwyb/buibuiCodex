@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"uuid"
 
 	"github.com/kinwyb/buibuiCodex/codex/cdm"
 	"github.com/kinwyb/buibuiCodex/core/bus"
@@ -34,6 +35,7 @@ type Manager struct {
 	sequence     *sessionSequence
 	dataStorage  *db.Data
 	pathMapper   map[string]*pathmap.PathMapper // 路径映射器
+	agHandler    []types.AgentProcessHandler    // agent处理拦截器
 }
 
 // NewManager 创建 Agent 管理器
@@ -78,6 +80,11 @@ func (m *Manager) RegisterAgent(agentID string, agent types.Agent, isDefault boo
 	if isDefault {
 		m.defaultAgent = agent
 	}
+}
+
+// RegisterHandler 注册agent处理拦截器
+func (m *Manager) RegisterHandler(aghandler ...types.AgentProcessHandler) {
+	m.agHandler = append(m.agHandler, aghandler...)
 }
 
 // InitFromConfig 根据配置自动注册所有 agent
@@ -353,6 +360,22 @@ func (m *Manager) resolveAgent(ctx context.Context, msg *types.InputMessage) (ag
 
 	// 选择 Agent
 	agent = m.defaultAgent
+
+	// 拦截器处理
+	for _, h := range m.agHandler {
+		rs := h.RouterAgent(msg)
+		if rs == nil {
+			continue
+		}
+		if rs.TargetAgent != "" {
+			msg.AgentName = rs.TargetAgent
+		}
+		if rs.SkipAgent {
+			slog.Info("agent handler skip agent")
+			return nil, true, nil
+		}
+	}
+
 	if msg.AgentName != "" {
 		if ag, exists := m.agents[msg.AgentName]; exists {
 			agent = ag
@@ -370,17 +393,6 @@ func (m *Manager) resolveAgent(ctx context.Context, msg *types.InputMessage) (ag
 	return agent, false, nil
 }
 
-func (m *Manager) handleInboundContext(ctx context.Context, msg *types.InputMessage) context.Context {
-	// 设置 context values，工具可通过 ctx.Value() 获取
-	//ctx = context.WithValue(ctx, meta.KeyContextChannel, msg.Channel)
-	//ctx = context.WithValue(ctx, meta.KeyContextChatID, msg.ChatID)
-	//ctx = context.WithValue(ctx, meta.KeyContextAccountID, msg.AccountID)
-	//ctx = context.WithValue(ctx, meta.KeyContextSenderID, msg.SenderID)
-	//ctx = context.WithValue(ctx, agcore.MessageExtraReqIDKey, msg.ID)
-	//ctx = context.WithValue(ctx, meta.KeyContextAgentName, msg.Metadata[meta.KeyRouteAgent])
-	return ctx
-}
-
 // agent执行
 func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.Agent) error {
 
@@ -395,6 +407,37 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 		slog.Error("failed to save request", "error", dbErr)
 	}
 
+	for _, h := range m.agHandler {
+		skip, reply, err := h.BeforeAgent(ctx, state)
+		if err != nil {
+			slog.Error("Failed to before agent handler", "sessionKey", state.SessionID, "error", err)
+			return err
+		}
+		if skip {
+			// 跳过大模型处理，直接发布最终响应；不走 AfterAgent 保存
+			outbound := state.BuildEvent()
+			outbound.EventID = uuid.NewV4().String()
+			outbound.Type = types.EventMessageCompleted
+			outbound.Message = &types.Message{
+				Role:    types.RoleSystem,
+				IsDetla: false,
+				Content: reply,
+			}
+			_ = m.bus.PublishEvent(ctx, outbound)
+			dbErr = m.dataStorage.Session().TurnSave(ctx, &db.SessionTurn{
+				ReqID:       state.ReqID,
+				Answer:      "handler拦截返回:" + reply,
+				IsCompleted: true,
+				CompletedAt: time.Now(),
+			})
+			if dbErr != nil {
+				slog.Error("fail to save db completed turn ", "error", dbErr.Error())
+			}
+
+			return nil
+		}
+	}
+
 	// 注册回调，通过闭包携带 msg 和 agentName 信息
 	eventSeq := 0
 	state.EventHandler = func(event *types.Event) {
@@ -404,52 +447,7 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 		eventSeq++
 		m.handleAgentEvent(ctx, event, eventSeq, agent.AgentID())
 	}
-	//for i := range 100 {
-	//	event := state.BuildEvent()
-	//	event.EventID = uuid.NewV4().String()
-	//	if i == 0 {
-	//		event.Type = types.EventReasoningStart
-	//		event.Message = &types.Message{
-	//			Role: types.RoleAssistant,
-	//		}
-	//	} else if i < 50 {
-	//		event.Type = types.EventReasoningDelta
-	//		event.Message = &types.Message{
-	//			Role:             types.RoleAssistant,
-	//			IsDetla:          true,
-	//			ReasoningContent: fmt.Sprintf("%d", i),
-	//		}
-	//	} else if i == 50 {
-	//		event.Type = types.EventReasoningCompleted
-	//		event.Message = &types.Message{
-	//			Role:             types.RoleAssistant,
-	//			IsDetla:          false,
-	//			ReasoningContent: "1.....50",
-	//		}
-	//	} else if i == 51 {
-	//		event.Type = types.EventMessageStart
-	//		event.Message = &types.Message{
-	//			Role: types.RoleAssistant,
-	//		}
-	//	} else if i == 99 {
-	//		event.Type = types.EventMessageCompleted
-	//		event.Message = &types.Message{
-	//			Role:    types.RoleAssistant,
-	//			IsDetla: false,
-	//			Content: "51....99",
-	//		}
-	//	} else if i > 50 {
-	//		event.Type = types.EventMessageDelta
-	//		event.Message = &types.Message{
-	//			Role:    types.RoleAssistant,
-	//			IsDetla: true,
-	//			Content: fmt.Sprintf("%d", i),
-	//		}
-	//	}
-	//	time.Sleep(100 * time.Millisecond)
-	//	state.EventHandler(event)
-	//}
-	//var err error
+
 	// 使用 Agent 处理消息
 	err := agent.Prompt(ctx, state)
 	eventSeq++
@@ -469,13 +467,13 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 		slog.Error("fail to save db completed turn ", "error", dbErr.Error())
 	}
 
-	//for _, h := range m.agHandler {
-	//	isContinue := h.AfterAgent(ctx, state, err)
-	//	if !isContinue {
-	//		slog.Warn("stop continue to execute agent handler", "sessionKey", state.SessionID, "error", err)
-	//		return err
-	//	}
-	//}
+	for _, h := range m.agHandler {
+		isContinue := h.AfterAgent(ctx, state, err)
+		if !isContinue {
+			slog.Warn("stop continue to execute agent handler", "sessionKey", state.SessionID, "error", err)
+			return err
+		}
+	}
 
 	if err != nil {
 		// 同时发布 OutboundMessage，确保调用方能收到响应不会卡住
@@ -489,43 +487,6 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 		}
 		return err
 	}
-
-	//if len(state.NewMessage) == 0 {
-	//	// 没有响应，发布空响应确保调用方不会卡住
-	//	outbound := &bus.OutboundMessage{
-	//		Channel:     msg.Channel,
-	//		ChatID:      msg.ChatID,
-	//		Content:     "no response",
-	//		ReplyTo:     getReplyTo(msg),
-	//		IsStreaming: agent.IsStreaming(),
-	//		IsFinal:     true,
-	//		Timestamp:   time.Now(),
-	//		ChunkIndex:  eventSeq,
-	//		Metadata:    msg.Metadata,
-	//	}
-	//	if pubErr := m.bus.PublishOutbound(ctx, outbound); pubErr != nil {
-	//		m.log(ctx, bus.LogLevelError, "manager", fmt.Sprintf("Failed to publish empty outbound: %v", pubErr))
-	//	}
-	//	return nil
-	//}
-	//
-	//// 这是一条特殊的消息，收到这条消息代表整个事件处理完成了
-	//outbound := &bus.OutboundMessage{
-	//	Channel:     msg.Channel,
-	//	ChatID:      msg.ChatID,
-	//	ReplyTo:     getReplyTo(msg),
-	//	IsStreaming: agent.IsStreaming(),
-	//	IsFinal:     true,
-	//	ChunkIndex:  eventSeq,
-	//	Timestamp:   time.Now(),
-	//	Metadata:    msg.Metadata,
-	//}
-	//if err = m.bus.PublishOutbound(ctx, outbound); err != nil {
-	//	return err
-	//}
-	//
-	//// 发布 complete 事件（状态通知）
-	//m.publishChatEvent(ctx, msg.Channel, msg.ChatID, agentName, bus.EventTypeComplete, eventSeq, msg.ID, nil, msg.Metadata)
 
 	return nil
 }
