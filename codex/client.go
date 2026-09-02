@@ -289,8 +289,8 @@ func (c *Client) Call(ctx context.Context, method ClientRequestMethod, params an
 }
 
 // Response 底层 JSON-RPC 同步请求封装（支持 Context 超时控制）
-func (c *Client) Response(id any, result any, err error) error {
-	return c.conn.Response(id, result, err)
+func (c *Client) Response(id any, result any) error {
+	return c.conn.Response(id, result)
 }
 
 // --- 业务层 API 便捷方法 ---

@@ -197,7 +197,8 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 			case types.EventReasoningDelta,
 				types.EventReasoningCompleted,
 				types.EventMessageDelta,
-				types.EventMessageCompleted:
+				types.EventMessageCompleted,
+				types.EventFinished:
 				if err := ch.Send(ctx, msg); err != nil {
 					slog.Error("failed to send message to channel", "channel", ch.Name(), "err", err)
 					// 记录错误，但不中断分发

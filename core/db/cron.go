@@ -8,15 +8,15 @@ import (
 )
 
 type Task struct {
-	ID          string   `json:"task_id" gorm:"uniqueIndex;type:varchar(128)"` // 任务唯一ID
-	Name        string   `json:"name" gorm:"type:varchar(128)"`                // 任务名称
-	Description string   `json:"description" gorm:"type:varchar(128)"`         // 任务描述
-	Enabled     bool     `json:"enabled" gorm:"default:true"`                  // 是否启用
-	OneTime     bool     `json:"one_time" gorm:"default:false"`                // 是否为一次性任务
-	Cron        string   `json:"cron" gorm:"type:varchar(30)"`                 // 定时配置
-	SessionID   string   `json:"session_id" gorm:"index;type:varchar(128)"`    //session_id
-	Content     string   `json:"content" gorm:"type:text"`                     // 任务内容,发送给ai的内容
-	Session     *Session `json:"-" gorm:"-"`                                   //session信息
+	ID          string   `json:"task_id" gorm:"primaryKey;type:varchar(128)"` // 任务唯一ID
+	Name        string   `json:"name" gorm:"type:varchar(128)"`               // 任务名称
+	Description string   `json:"description" gorm:"type:varchar(128)"`        // 任务描述
+	Enabled     bool     `json:"enabled" gorm:"default:true"`                 // 是否启用
+	OneTime     bool     `json:"one_time" gorm:"default:false"`               // 是否为一次性任务
+	Cron        string   `json:"cron" gorm:"type:varchar(30)"`                // 定时配置
+	SessionID   string   `json:"session_id" gorm:"index;type:varchar(128)"`   //session_id
+	Content     string   `json:"content" gorm:"type:text"`                    // 任务内容,发送给ai的内容
+	Session     *Session `json:"-" gorm:"-"`                                  //session信息
 }
 
 // ITask 任务状态存储接口
@@ -111,12 +111,12 @@ func (t *taskStorage) Delete(ctx context.Context, taskID string) error {
 
 func (t *taskStorage) QueryByID(ctx context.Context, taskID string) (*Task, error) {
 	var task Task
-	err := t.db.WithContext(ctx).Where(" task_id = ?", taskID).First(&task).Error
+	err := t.db.WithContext(ctx).Where(" id = ?", taskID).First(&task).Error
 	if err != nil {
 		return nil, err
 	}
 	var session Session
-	err = t.db.WithContext(ctx).Where(" session_id = ? ", task.SessionID).First(&session, task.SessionID).Error
+	err = t.db.WithContext(ctx).Where(" session_id = ? ", task.SessionID).First(&session).Error
 	if err != nil {
 		return nil, err
 	}

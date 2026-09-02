@@ -105,13 +105,11 @@ func (b *StreamBuffer) Push(event *types.Event) {
 		msg.IsDetla = true
 	}
 	rb.latest = event
-	rb.isFinal = !msg.IsDetla
-	if rb.isFinal { //如果是完成，那么清空累计内容
-		rb.reasoning = ""
-		rb.content = ""
-	}
+	rb.isFinal = event.Type == types.EventFinished
 	b.mu.Unlock()
 	if !msg.IsDetla { //如果是完整消息，必须处理完才能继续,避免多次回复消息被覆盖
+		rb.reasoning = ""
+		rb.content = ""
 		rb.wake <- struct{}{}
 		return
 	}
@@ -145,9 +143,6 @@ func (b *StreamBuffer) work(rb *replyBuffer) {
 		rb.latest = nil
 		isFinal := rb.isFinal
 		b.mu.Unlock()
-		if event == nil {
-			slog.Info("streamBuffer work end", "reqID", rb.key)
-		}
 		if event != nil && event.Message != nil {
 			msg := event.Message
 			// msg 的 Content 已包含累积完整内容（Push 中已处理）

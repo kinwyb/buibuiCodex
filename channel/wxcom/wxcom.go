@@ -326,7 +326,9 @@ func (c *Channel) Send(ctx context.Context, event *types.Event) error {
 	if !c.IsRunning() {
 		return nil
 	}
-	//slog.Info("receve msg", "event", fmt.Sprintf("%v", event), "message", fmt.Sprintf("%v", event.Message))
+	if !event.Message.IsDetla {
+		slog.Info("receve msg", "event", fmt.Sprintf("%v", event), "message", fmt.Sprintf("%v", event.Message))
+	}
 	if c.streamBuf != nil {
 		c.streamBuf.Push(event)
 		return nil

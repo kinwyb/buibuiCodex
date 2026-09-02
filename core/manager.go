@@ -248,10 +248,6 @@ func (m *Manager) Start(ctx context.Context) error {
 // Stop 停止所有 Agent
 func (m *Manager) Stop() error {
 
-	if m.dataStorage != nil {
-		m.dataStorage.Close()
-	}
-
 	if m.cronManager != nil {
 		m.cronManager.Stop()
 	}
@@ -276,6 +272,10 @@ func (m *Manager) Stop() error {
 		if err := agent.Stop(); err != nil {
 			m.log(context.Background(), bus.LogLevelError, "manager", fmt.Sprintf("Failed to stop agent %s: %v", id, err))
 		}
+	}
+
+	if m.dataStorage != nil {
+		m.dataStorage.Close()
 	}
 	return nil
 }

@@ -27,7 +27,7 @@ type rpc interface {
 	Call(ctx context.Context, method ClientRequestMethod, params any, result any) error
 
 	// Response 回复消息
-	Response(id any, result any, err error) error
+	Response(id any, result any) error
 
 	// Close 关闭
 	Close()
@@ -129,7 +129,7 @@ func (j *jsonRpcV2) Call(ctx context.Context, method ClientRequestMethod, params
 	}
 }
 
-func (j *jsonRpcV2) Response(id any, result any, err error) error {
+func (j *jsonRpcV2) Response(id any, result any) error {
 	resultRaw, merr := json.Marshal(result)
 	if merr != nil {
 		return fmt.Errorf("marshal RPC result failed: %w", merr)
@@ -139,16 +139,9 @@ func (j *jsonRpcV2) Response(id any, result any, err error) error {
 		ID:      id,
 		Result:  resultRaw,
 	}
-	if err != nil {
-		req.Error = &jsonRpc.RPCError{
-			Code:    500,
-			Message: err.Error(),
-			Data:    nil,
-		}
-	}
 	// 发送消息
 	j.sendMu.Lock()
-	err = j.conn.WriteJSON(req)
+	err := j.conn.WriteJSON(req)
 	j.sendMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("write websocket json failed: %w", err)

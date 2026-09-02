@@ -46,7 +46,7 @@ func (t *toolGroup) ToDynamicTool() *jsonRpc.DynamicTool {
 	for _, tool := range t.tools {
 		dt := jsonRpc.ToolDescription{
 			Type:         "function",
-			Name:         tool.Name(),
+			Name:         t.nameSpace + "__" + tool.Name(),
 			Description:  tool.Description(),
 			DeferLoading: false,
 			InputSchema:  tool.Parameters(),
@@ -359,7 +359,7 @@ func (a *Agent) Approve(reqID any, approve jsonRpc.ApprovalDecision) error {
 	approveResult := &jsonRpc.ApprovalResult{
 		Decision: approve,
 	}
-	err := a.client.Response(reqID, approveResult, nil)
+	err := a.client.Response(reqID, approveResult)
 	if err != nil {
 		slog.Error("response approve request error", "error", err.Error())
 	}
@@ -540,14 +540,25 @@ func (a *Agent) codexRequestParse(state *types.State, request *codex.Event) {
 			slog.Error("request tool call error", "error", err.Error())
 			return
 		}
+		slog.Info("request tool call", "request id", request.ID, "call_id", itemEvt.CallId)
 		resp, err := a.dynamicToolDo(state, &itemEvt)
 		if err != nil {
 			slog.Error("request tool call result error", "error", err.Error())
+			resp = &jsonRpc.ToolResponse{
+				Success: false,
+				Content: []jsonRpc.InputItem{
+					{
+						Type: "inputText",
+						Text: "工具执行错误：" + err.Error(),
+					},
+				},
+			}
 		}
-		err = a.client.Response(request.ID, resp, err)
+		err = a.client.Response(request.ID, resp)
 		if err != nil {
 			slog.Error("response tool request error", "error", err.Error())
 		}
+		slog.Info("request tool call result success", "request id", request.ID, "call_id", itemEvt.CallId, "result", resp)
 	case codex.ItemCommandExecutionRequestApproval, codex.ExecCommandApproval,
 		codex.ItemPermissionsRequestApproval, codex.ItemFileChangeRequestApproval:
 		itemEvt, err := request.To[jsonRpc.BaseApprovalEvent]()
@@ -666,34 +677,44 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 }
 
 func (a *Agent) dynamicToolDo(state *types.State, call *jsonRpc.ToolCall) (*jsonRpc.ToolResponse, error) {
-	slog.Info("dynamic tool do :" + call.Tool)
-	sps := strings.SplitN(call.Tool, "__", 2)
-	if len(sps) != 2 {
-		return nil, fmt.Errorf("dynamic tool name format error : %s", call.Tool)
+	slog.Info("dynamic tool do :" + call.Tool + " => " + call.CallId)
+	var tGroup *toolGroup
+	for _, toolNs := range a.tools {
+		if toolNs.nameSpace == call.Namespace {
+			tGroup = toolNs
+			break
+		}
 	}
-	namespace := sps[0]
-	functionName := sps[1]
-	for _, toolNS := range a.tools {
-		if toolNS.nameSpace == namespace {
-			for _, tool := range toolNS.tools {
-				if tool.Name() == functionName {
-					result, err := tool.Execute(context.Background(), state, call.Arguments)
-					if err != nil {
-						return nil, err
-					}
-					inputItems := make([]jsonRpc.InputItem, 0)
-					if result.Content != "" {
-						inputItems = append(inputItems, jsonRpc.InputItem{
-							Type: "inputText",
-							Text: result.Content,
-						})
-					}
-					return &jsonRpc.ToolResponse{
-						Success: true,
-						Content: inputItems,
-					}, nil
-				}
+	if tGroup == nil {
+		return nil, fmt.Errorf("dynamic tool namespace %s not found", call.Namespace)
+	}
+	if after, ok := strings.CutPrefix(call.Tool, call.Namespace+"__"); ok {
+		// 如果以名称区间开头的，参数去掉命名空间进行匹配，如果能匹配到，就直接返回
+		call.Tool = after
+		for _, tool := range tGroup.tools {
+			if tool.Name() == after {
+				call.Tool = after
+				break
 			}
+		}
+	}
+	for _, tool := range tGroup.tools {
+		if tool.Name() == call.Tool {
+			result, err := tool.Execute(context.Background(), state, call.Arguments)
+			if err != nil {
+				return nil, err
+			}
+			inputItems := make([]jsonRpc.InputItem, 0)
+			if result.Content != "" {
+				inputItems = append(inputItems, jsonRpc.InputItem{
+					Type: "inputText",
+					Text: result.Content,
+				})
+			}
+			return &jsonRpc.ToolResponse{
+				Success: true,
+				Content: inputItems,
+			}, nil
 		}
 	}
 	return &jsonRpc.ToolResponse{

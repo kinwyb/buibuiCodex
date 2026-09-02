@@ -21,6 +21,7 @@ const (
 	EventToolCompleted      EventType = "tool_completed"
 	EventError              EventType = "error"
 	EventApproval           EventType = "approval"
+	EventFinished           EventType = "finished"
 )
 
 type Event struct {
