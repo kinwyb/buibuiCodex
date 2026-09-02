@@ -26,6 +26,7 @@ type StartParam struct {
 	WorkSpace      string                     `description:"工作目录"`
 	TmpSpace       string                     `description:"临时文件目录"`
 	CodexHome      string                     `description:"Codex根目录"`
+	SkillDir       string                     `description:"技能目录"`
 	APIBaseURL     string                     `description:"模型请求地址"`
 	APIKey         string                     `description:"模型APIKey"`
 	Env            []string                   `description:"环境变量"`
@@ -158,6 +159,35 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 				Source: opts.CodexHome, // 宿主机保存该用户历史的目录
 				Target: "/root/.codex",
 			})
+		}
+
+		if opts.SkillDir != "" {
+			// 加载技能目录
+			dirInfo, err := os.Stat(opts.SkillDir)
+			if err == nil || os.IsExist(err) {
+				if dirInfo.IsDir() {
+					// D. 挂载技能目录
+					hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+						Type:   mount.TypeBind,
+						Source: opts.SkillDir,
+						Target: "/root/.codex/skills",
+					})
+				}
+			}
+		}
+
+		// 挂载工作区的技能目录
+		workspaceSkillDir := filepath.Join(opts.WorkSpace, "skills")
+		dirInfo, err := os.Stat(workspaceSkillDir)
+		if err == nil || os.IsExist(err) {
+			if dirInfo.IsDir() {
+				// D. 挂载技能目录
+				hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+					Type:   mount.TypeBind,
+					Source: workspaceSkillDir,
+					Target: "/workspace/skills",
+				})
+			}
 		}
 
 		// C. 创建容器

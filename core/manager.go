@@ -16,6 +16,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/codex/cdm"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
+	"github.com/kinwyb/buibuiCodex/core/cron"
 	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/pathmap"
 	"github.com/kinwyb/buibuiCodex/core/types"
@@ -36,6 +37,7 @@ type Manager struct {
 	dataStorage  *db.Data
 	pathMapper   map[string]*pathmap.PathMapper // 路径映射器
 	agHandler    []types.AgentProcessHandler    // agent处理拦截器
+	cronManager  *cron.Manager
 }
 
 // NewManager 创建 Agent 管理器
@@ -101,6 +103,8 @@ func (m *Manager) InitFromConfig(ctx context.Context, cfg *config.ManagerConfig)
 		return err
 	}
 	m.dataStorage = db.NewData(sqlite)
+	m.cronManager = cron.NewManager(ctx, m.dataStorage.Cron(), m.bus)
+	m.cronManager.RegisterTools()
 
 	// 解析所有 agent 配置
 	agentNames := make([]string, 0, len(cfg.Agents))
@@ -121,7 +125,7 @@ func (m *Manager) InitFromConfig(ctx context.Context, cfg *config.ManagerConfig)
 		cfg.Agent = defaultAgentName
 	}
 
-	tos := GetTools()
+	tGroups := types.GetToolGroups()
 
 	for _, name := range agentNames {
 		resolved, err := cfg.ResolveAgentConfig(name)
@@ -157,8 +161,23 @@ func (m *Manager) InitFromConfig(ctx context.Context, cfg *config.ManagerConfig)
 		m.pathMapper[resolved.Name] = agentPathMapper
 		// 创建 Agent
 		ag := cdm.NewAgent(resolved)
-		agentTools := append(tos, NewSendFileTool(m.bus, agentPathMapper))
-		ag.RegisterTool("base", "基本工具允许获取运行所需的基础信息", agentTools...)
+
+		baseToolGroup := types.GetToolGroupByName("base")
+		if baseToolGroup == nil {
+			baseToolGroup = &types.ToolGroup{
+				GroupName: "base",
+				GroupDesc: "基本工具允许获取运行所需的基础信息",
+			}
+		}
+		baseTools := append(baseToolGroup.Tools, NewSendFileTool(m.bus, agentPathMapper))
+		ag.RegisterTool(baseToolGroup.GroupName, baseToolGroup.GroupDesc, baseTools...)
+
+		for _, group := range tGroups {
+			if group.GroupName == "base" || len(group.Tools) < 1 {
+				continue
+			}
+			ag.RegisterTool(group.GroupName, group.GroupDesc, group.Tools...)
+		}
 
 		createdAgents[name] = ag
 
@@ -219,6 +238,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.wg.Add(1)
 	go m.processCancel()
 
+	if m.cronManager != nil {
+		m.cronManager.Start()
+	}
+
 	return nil
 }
 
@@ -227,6 +250,10 @@ func (m *Manager) Stop() error {
 
 	if m.dataStorage != nil {
 		m.dataStorage.Close()
+	}
+
+	if m.cronManager != nil {
+		m.cronManager.Stop()
 	}
 
 	// 先取消 context，让 processMessages 和 scheduler 退出

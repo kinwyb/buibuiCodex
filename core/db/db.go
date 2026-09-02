@@ -9,7 +9,8 @@ type IStorage interface {
 
 type Data struct {
 	storage IStorage
-	session ISessionStorage
+	session ISession
+	cron    ITask
 }
 
 func NewData(storage IStorage) *Data {
@@ -18,17 +19,26 @@ func NewData(storage IStorage) *Data {
 	}
 	if storage != nil && storage.GetDB() != nil {
 		db := storage.GetDB()
-		ret.session = NewSessionStorage(db)
+		ret.session = newSessionStorage(db)
+		ret.cron = newTaskStorage(db)
 		ret.session.Init()
+		ret.cron.Init()
 	}
 	return ret
 }
 
-func (d *Data) Session() ISessionStorage {
+func (d *Data) Session() ISession {
 	if d.storage == nil {
 		d.session = &sessionDefautStorage{}
 	}
 	return d.session
+}
+
+func (d *Data) Cron() ITask {
+	if d.cron == nil {
+		d.cron = &taskDefaultStorage{}
+	}
+	return d.cron
 }
 
 func (d *Data) Close() {

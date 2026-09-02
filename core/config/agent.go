@@ -27,7 +27,8 @@ type AgentConfig struct {
 	MCPProvider  map[string]*MCPConfig `json:"mcp_provider,omitempty"`
 	WorkSpace    string                `json:"-"` //agent工作区
 	Provider     *ProviderConfig       `json:"-"` //供应商配置
-	SessionDB    db.ISessionStorage    `json:"-"`
+	SessionDB    db.ISession           `json:"-"`
+	SkillDir     string                `json:"-"`
 }
 
 // GetAgent 获取指定名称的 agent 配置
@@ -105,5 +106,6 @@ func (cfg *ManagerConfig) ResolveAgentConfig(name string) (*AgentConfig, error) 
 		Provider:     provider,
 		Model:        model,
 		MCPProvider:  agent.MCPProvider,
+		SkillDir:     filepath.Join(cfg.Workspace, "skills"),
 	}, nil
 }

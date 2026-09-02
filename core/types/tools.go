@@ -83,3 +83,47 @@ func (t *BaseTool) Execute(ctx context.Context, state *State, params map[string]
 		Content: result,
 	}, nil
 }
+
+type ToolGroup struct {
+	GroupName string `description:"分组名称"`
+	GroupDesc string `description:"分组描述"`
+	Tools     []Tool `description:"工具集合"`
+}
+
+var tGroup map[string]*ToolGroup
+
+func RegisterBaseTool(tool Tool) {
+	if tGroup == nil {
+		tGroup = make(map[string]*ToolGroup)
+	}
+	group, ok := tGroup["base"]
+	if !ok {
+		group = &ToolGroup{
+			GroupName: "base",
+			GroupDesc: "基本工具允许获取运行所需的基础信息",
+		}
+		tGroup["base"] = group
+	}
+	group.Tools = append(group.Tools, tool)
+}
+
+func GetToolGroups() map[string]*ToolGroup {
+	return tGroup
+}
+
+// RegisterToolGroup 注册工具组
+func RegisterToolGroup(group string, groupDesc string, tools ...Tool) {
+	if tGroup == nil {
+		tGroup = make(map[string]*ToolGroup)
+	}
+	tGroup[group] = &ToolGroup{
+		GroupName: group,
+		GroupDesc: groupDesc,
+		Tools:     tools,
+	}
+}
+
+// GetToolGroupByName 根据分组名称获取工具分组
+func GetToolGroupByName(group string) *ToolGroup {
+	return tGroup[group]
+}

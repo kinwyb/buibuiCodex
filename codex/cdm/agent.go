@@ -129,6 +129,7 @@ func (a *Agent) initProcess() error {
 		TmpSpace:      filepath.Join(a.cfg.WorkSpace, "tmp"),
 		CodexHome:     filepath.Join(a.cfg.WorkSpace, "root"),
 		APIBaseURL:    a.cfg.Provider.APIBaseURL,
+		SkillDir:      a.cfg.SkillDir,
 		//APIKey:        a.cfg.Provider.APIKey,
 		Env: []string{
 			"OPENAI_API_KEY_" + a.cfg.ProviderName + "=" + a.cfg.Provider.APIKey,

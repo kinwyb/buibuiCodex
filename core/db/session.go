@@ -65,7 +65,7 @@ type TurnEvent struct {
 	CreateTime time.Time `json:"create_time" gorm:"index;not null"`
 }
 
-type ISessionStorage interface {
+type ISession interface {
 	Init()
 	// SessionSave session 保存
 	SessionSave(ctx context.Context, session *Session) error
@@ -134,26 +134,26 @@ func (s *sessionDefautStorage) ThreadTokenUsage(ctx context.Context, threadID st
 	return nil
 }
 
-type SessionStorage struct {
+type sessionStorage struct {
 	db *gorm.DB
 }
 
-func NewSessionStorage(db *gorm.DB) *SessionStorage {
-	return &SessionStorage{db: db}
+func newSessionStorage(db *gorm.DB) *sessionStorage {
+	return &sessionStorage{db: db}
 }
 
-func (s *SessionStorage) Init() {
+func (s *sessionStorage) Init() {
 	s.db.AutoMigrate(&Session{}, &SessionThread{}, &SessionTurn{}, &TurnEvent{})
 }
 
-func (s *SessionStorage) SessionSave(ctx context.Context, session *Session) error {
+func (s *sessionStorage) SessionSave(ctx context.Context, session *Session) error {
 	if session.CreateTime.IsZero() {
 		session.CreateTime = time.Now()
 	}
 	return s.db.WithContext(ctx).Where(" session_id = ? ", session.SessionID).FirstOrCreate(session).Error
 }
 
-func (s *SessionStorage) SessionQueryByID(ctx context.Context, sessionID string) *Session {
+func (s *sessionStorage) SessionQueryByID(ctx context.Context, sessionID string) *Session {
 	var ret Session
 	s.db.WithContext(ctx).Where("session_id = ?", sessionID).First(&ret)
 	if ret.SessionID == "" {
@@ -162,7 +162,7 @@ func (s *SessionStorage) SessionQueryByID(ctx context.Context, sessionID string)
 	return &ret
 }
 
-func (s *SessionStorage) ThreadSave(ctx context.Context, thread *SessionThread) error {
+func (s *sessionStorage) ThreadSave(ctx context.Context, thread *SessionThread) error {
 	if thread.CreateTime.IsZero() {
 		thread.CreateTime = time.Now()
 	}
@@ -176,7 +176,7 @@ func (s *SessionStorage) ThreadSave(ctx context.Context, thread *SessionThread) 
 	}).Create(&thread).Error
 }
 
-func (s *SessionStorage) LastThread(ctx context.Context, sessionID string, agent string) *SessionThread {
+func (s *sessionStorage) LastThread(ctx context.Context, sessionID string, agent string) *SessionThread {
 	var thread = &SessionThread{}
 	// 查询最近1小时内的thread
 	err := s.db.WithContext(ctx).Model(thread).
@@ -188,7 +188,7 @@ func (s *SessionStorage) LastThread(ctx context.Context, sessionID string, agent
 	return thread
 }
 
-func (s *SessionStorage) RequestSave(ctx context.Context, reqID string, quest string, agent string) error {
+func (s *sessionStorage) RequestSave(ctx context.Context, reqID string, quest string, agent string) error {
 	req := &SessionTurn{
 		ReqID:     reqID,
 		Question:  quest,
@@ -198,11 +198,11 @@ func (s *SessionStorage) RequestSave(ctx context.Context, reqID string, quest st
 	return s.db.WithContext(ctx).Save(req).Error
 }
 
-func (s *SessionStorage) TurnSave(ctx context.Context, turn *SessionTurn) error {
+func (s *sessionStorage) TurnSave(ctx context.Context, turn *SessionTurn) error {
 	return s.db.WithContext(ctx).Where("req_id = ?", turn.ReqID).Updates(turn).Error
 }
 
-func (s *SessionStorage) TurnQueryByID(ctx context.Context, turnID string) *SessionTurn {
+func (s *sessionStorage) TurnQueryByID(ctx context.Context, turnID string) *SessionTurn {
 	var ret SessionTurn
 	s.db.WithContext(ctx).Where("turn_id = ?", turnID).First(&ret)
 	if ret.ReqID == "" {
@@ -211,17 +211,17 @@ func (s *SessionStorage) TurnQueryByID(ctx context.Context, turnID string) *Sess
 	return &ret
 }
 
-func (s *SessionStorage) TurnEventSave(ctx context.Context, turn *TurnEvent) error {
+func (s *sessionStorage) TurnEventSave(ctx context.Context, turn *TurnEvent) error {
 	if turn.CreateTime.IsZero() {
 		turn.CreateTime = time.Now()
 	}
 	return s.db.WithContext(ctx).Save(turn).Error
 }
 
-func (s *SessionStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage) error {
+func (s *sessionStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage) error {
 	return s.db.WithContext(ctx).Where("turn_id = ?", turnID).Updates(&SessionTurn{TokenUsage: tokenUsage}).Error
 }
 
-func (s *SessionStorage) ThreadTokenUsage(ctx context.Context, threadID string, tokenUsage TokenUsage) error {
+func (s *sessionStorage) ThreadTokenUsage(ctx context.Context, threadID string, tokenUsage TokenUsage) error {
 	return s.db.WithContext(ctx).Where("thread_id = ?", threadID).Updates(&SessionThread{TokenUsage: tokenUsage}).Error
 }
