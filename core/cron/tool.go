@@ -18,7 +18,7 @@ type addTaskTool struct {
 }
 
 func (a *addTaskTool) Name() string {
-	return "cron_task"
+	return "task_add"
 }
 
 func (a *addTaskTool) Description() string {

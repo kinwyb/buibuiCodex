@@ -46,8 +46,8 @@ func (t *toolGroup) ToDynamicTool() *jsonRpc.DynamicTool {
 	for _, tool := range t.tools {
 		dt := jsonRpc.ToolDescription{
 			Type:         "function",
-			Name:         t.nameSpace + "__" + tool.Name(),
-			Description:  tool.Description(),
+			Name:         tool.Name(),
+			Description:  tool.Description() + "【注意】调用时请指定正确的命名空间[" + t.nameSpace + "]",
 			DeferLoading: false,
 			InputSchema:  tool.Parameters(),
 		}
@@ -193,17 +193,17 @@ func (a *Agent) initProcess() error {
 	return nil
 }
 
-func (a *Agent) getThread(ctx context.Context, sessionID string) (*codex.Thread, error) {
+func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (*codex.Thread, error) {
 	a.epMu.Lock()
 	defer a.epMu.Unlock()
 	thread := a.client.Thread()
 	thread.SubUnknowTurnEvent(a.unknowTurnEventHandler)
 	waitResume := true
 	turn, ok := a.eps[sessionID]
-	if !ok {
+	if cmd.newThread || !ok {
 		// 查询数据库中使用过的thread
 		dbThread := a.cfg.SessionDB.LastThread(ctx, sessionID, a.AgentID())
-		if dbThread != nil {
+		if !cmd.newThread && dbThread != nil {
 			turn = &codexTurn{
 				startTime:      dbThread.CreateTime.Unix(),
 				threadID:       dbThread.ThreadID,
@@ -293,7 +293,9 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	if err != nil {
 		return err
 	}
-	thread, err := a.getThread(ctx, state.SessionID)
+	cmd := commandParse(state.Input.Content)
+	state.Input.Content = cmd.msg
+	thread, err := a.getThread(ctx, state.SessionID, cmd)
 	if err != nil {
 		return err
 	}
