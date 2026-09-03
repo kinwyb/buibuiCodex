@@ -1,6 +1,9 @@
 # 使用基于 Debian 的 Node.js 官方轻量镜像
 FROM node:26.7-bookworm-slim
 
+# 设置环境变量 ENV
+ENV TZ=Asia/Shanghai
+
 # 1. 安装 Python3、Git 以及基础构建/工具链
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bubblewrap \

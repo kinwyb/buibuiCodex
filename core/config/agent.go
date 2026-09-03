@@ -9,12 +9,13 @@ import (
 )
 
 type ManagerConfig struct {
-	Providers map[string]*ProviderConfig `json:"providers"`
-	Provider  string                     `json:"provider"`
-	Agent     string                     `json:"agent"`
-	Workspace string                     `json:"workspace"` // 工作区根目录（所有 agent 共享）
-	Agents    []*AgentConfig             `json:"agents"`
-	MCP       []*MCPConfig               `json:"mcp"` //mcp配置
+	Providers   map[string]*ProviderConfig `json:"providers"`
+	Provider    string                     `json:"provider"`
+	Agent       string                     `json:"agent"`
+	Workspace   string                     `json:"workspace"` // 工作区根目录（所有 agent 共享）
+	Agents      []*AgentConfig             `json:"agents"`
+	MCP         []*MCPConfig               `json:"mcp"` //mcp配置
+	DockerImage string                     `json:"docker_image"`
 }
 
 // AgentConfig agent 配置
@@ -25,6 +26,7 @@ type AgentConfig struct {
 	Model        string                `json:"model"`
 	Mcp          []string              `json:"mcp,omitempty"` //mcp配置
 	MCPProvider  map[string]*MCPConfig `json:"mcp_provider,omitempty"`
+	DockerImage  string                `json:"docker_image"`
 	WorkSpace    string                `json:"-"` //agent工作区
 	Provider     *ProviderConfig       `json:"-"` //供应商配置
 	SessionDB    db.ISession           `json:"-"`
@@ -97,6 +99,10 @@ func (cfg *ManagerConfig) ResolveAgentConfig(name string) (*AgentConfig, error) 
 		}
 		agent.MCPProvider[v.Name] = v
 	}
+	dockerImage := agent.DockerImage
+	if dockerImage == "" {
+		dockerImage = cfg.DockerImage
+	}
 
 	return &AgentConfig{
 		Name:         agent.Name,
@@ -107,5 +113,6 @@ func (cfg *ManagerConfig) ResolveAgentConfig(name string) (*AgentConfig, error) 
 		Model:        model,
 		MCPProvider:  agent.MCPProvider,
 		SkillDir:     filepath.Join(cfg.Workspace, "skills"),
+		DockerImage:  dockerImage,
 	}, nil
 }

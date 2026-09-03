@@ -80,6 +80,9 @@ func (a *Agent) AgentID() string {
 }
 
 func (a *Agent) Init() error {
+	if a.cfg.DockerImage == "" {
+		return errors.New("docker image is required")
+	}
 	return a.initProcess()
 }
 
@@ -124,7 +127,7 @@ func (a *Agent) initProcess() error {
 	// docker容器运行方式
 	startParam := docker.StartParam{
 		ContainerName: "codex_" + a.cfg.Name,
-		ImageName:     "codex_run:v2",
+		ImageName:     a.cfg.DockerImage,
 		WorkSpace:     filepath.Join(a.cfg.WorkSpace, "workspace"),
 		TmpSpace:      filepath.Join(a.cfg.WorkSpace, "tmp"),
 		CodexHome:     filepath.Join(a.cfg.WorkSpace, "root"),

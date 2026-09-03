@@ -352,7 +352,7 @@ func (c *Channel) sendStream(ctx context.Context, event *types.Event) error {
 		return c.sendEventReply(ctx, reqID, eventType, msg)
 	}
 
-	if reqID == "" {
+	if reqID == "" || strings.HasPrefix(reqID, "task_") {
 		reqID = generateReqID(WsCmdSendMsg)
 		cmd = WsCmdSendMsg
 	}
