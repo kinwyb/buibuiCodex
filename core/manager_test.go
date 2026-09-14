@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"testing"
 
@@ -12,19 +13,24 @@ import (
 	_ "github.com/kinwyb/buibuiCodex/channel/wxcom"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
+	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
+	"github.com/kinwyb/buibuiCodex/mcp"
 )
 
 func TestNewManager(t *testing.T) {
-	// 1. 定义 Handler 选项，将日志级别设置为 LevelDebug
-	opts := &slog.HandlerOptions{
-		Level: slog.LevelDebug, // 开启 Debug 级别（会输出 Debug, Info, Warn, Error）
-	}
-	// 2. 使用选项创建 Handler（可选 slog.NewTextHandler 或 slog.NewJSONHandler）
-	handler := slog.NewTextHandler(os.Stdout, opts)
-	// 3. 构建并设置为默认 Logger
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	go func() {
+		mcp.Start()
+	}()
+	//// 1. 定义 Handler 选项，将日志级别设置为 LevelDebug
+	//opts := &slog.HandlerOptions{
+	//	Level: slog.LevelDebug, // 开启 Debug 级别（会输出 Debug, Info, Warn, Error）
+	//}
+	//// 2. 使用选项创建 Handler（可选 slog.NewTextHandler 或 slog.NewJSONHandler）
+	//handler := slog.NewTextHandler(os.Stdout, opts)
+	//// 3. 构建并设置为默认 Logger
+	//logger := slog.New(handler)
+	//slog.SetDefault(logger)
 
 	ctx := t.Context()
 	cfg, err := config.Load("/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/buibui.json")
@@ -46,7 +52,12 @@ func TestNewManager(t *testing.T) {
 		return
 	}
 	defer channel.StopAll()
-	manager := NewManager(msgBus)
+	sqlite, err := db.NewSQLiteStorage(filepath.Join(cfg.Workspace, "buibui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataStorage := db.NewData(sqlite)
+	manager := NewManager(msgBus, dataStorage)
 	defer manager.Stop()
 	err = manager.InitFromConfig(ctx, &cfg.ManagerConfig)
 	if err != nil {

@@ -41,15 +41,19 @@ type Manager struct {
 }
 
 // NewManager 创建 Agent 管理器
-func NewManager(msgBus *bus.MessageBus) *Manager {
+func NewManager(msgBus *bus.MessageBus, dbStorage *db.Data) *Manager {
+	if dbStorage == nil {
+		dbStorage = db.NewData(nil)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ret := &Manager{
-		agents:     make(map[string]types.Agent),
-		bus:        msgBus,
-		ctx:        ctx,
-		cancel:     cancel,
-		cancelCh:   make(chan string, 10),
-		pathMapper: make(map[string]*pathmap.PathMapper),
+		agents:      make(map[string]types.Agent),
+		bus:         msgBus,
+		ctx:         ctx,
+		cancel:      cancel,
+		cancelCh:    make(chan string, 10),
+		pathMapper:  make(map[string]*pathmap.PathMapper),
+		dataStorage: dbStorage,
 	}
 	return ret
 }
@@ -98,11 +102,7 @@ func (m *Manager) InitFromConfig(ctx context.Context, cfg *config.ManagerConfig)
 	if cfg == nil || len(cfg.Agents) == 0 {
 		return errors.New("no agents in config")
 	}
-	sqlite, err := db.NewSQLiteStorage(filepath.Join(cfg.Workspace, "buibui.db"))
-	if err != nil {
-		return err
-	}
-	m.dataStorage = db.NewData(sqlite)
+
 	m.cronManager = cron.NewManager(ctx, m.dataStorage.Cron(), m.bus)
 	m.cronManager.RegisterTools()
 
