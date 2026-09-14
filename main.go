@@ -62,13 +62,16 @@ func main() {
 		slog.Error("register agents failed ", "error", err)
 		return
 	}
+	mcpConfig := cfg.McpServer
+	mcpConfig.SetDefaults()
 	ms := mcp.NewMcp(&mcp.Config{
-		Name:      "boda",
+		Name:      mcpConfig.Name,
 		WorkSpace: filepath.Join(cfg.Workspace, "mcp"),
-		Address:   ":9090",
-		Version:   "1.0.0",
-		BaseURL:   "http://192.168.9.10:82/v1/boda",
-		UserMap:   map[string]string{},
+		Address:   fmt.Sprintf(":%d", mcpConfig.Port),
+		Version:   mcpConfig.Version,
+		BaseURL:   mcpConfig.BaseURL,
+		UserMap:   mcpConfig.UserMap,
+		Host:      mcpConfig.Host,
 	})
 	go ms.Start(ctx)
 	defer ms.Stop(ctx)

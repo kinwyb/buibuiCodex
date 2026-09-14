@@ -24,6 +24,7 @@ type Config struct {
 	Version   string            `description:"mcp服务版本"`
 	BaseURL   string            `description:"基础信息"`
 	UserMap   map[string]string `description:"用户映射"`
+	Host      string            `description:"公开地址"`
 }
 
 type Mcp struct {
@@ -55,7 +56,7 @@ func (m *Mcp) Start(ctx context.Context) error {
 	if _, perr := os.Stat(m.tmpPath); os.IsNotExist(perr) {
 		_ = os.MkdirAll(m.tmpPath, 0755)
 	}
-	serv.TmpUrl = "http://10.0.110.80:9090/tmp_file"
+	serv.TmpUrl = m.cfg.Host + "/tmp_file"
 	cache, err := edp.NewTokenCache(filepath.Join(m.cfg.WorkSpace, "token"), m.cfg.UserMap)
 	if err != nil {
 		return err

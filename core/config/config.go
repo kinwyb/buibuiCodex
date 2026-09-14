@@ -11,6 +11,7 @@ type Config struct {
 	Channels  *ChannelsConfig  `json:"channels"`
 	Log       *LogConfig       `json:"log"`       // 日志配置
 	WebSocket *WebSocketConfig `json:"websocket"` // WebSocket 服务配置
+	McpServer *MCPServerConfig `json:"mcp_server"`
 }
 
 // ProviderConfig 供应商配置
