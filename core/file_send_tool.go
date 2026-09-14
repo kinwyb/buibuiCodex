@@ -125,5 +125,5 @@ func detectFileType(filePath string) types.MediaType {
 	if mimeType := mime.TypeByExtension(ext); strings.HasPrefix(mimeType, "image/") {
 		return types.MediaTypeImage
 	}
-	return types.MediaTypeFile
+	return "file" //注意微信临时文件上传时文件类型是：file
 }
