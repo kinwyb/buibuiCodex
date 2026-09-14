@@ -72,6 +72,7 @@ func buildMcpTool(tool IMcpTool) server.ServerTool {
 
 // TmpDir 临时文件路径
 var TmpDir string
+var TmpUrl string
 
 func OrgID(org string) string {
 	if org == "越南" || org == "BANGJIE KNITTING(Viet Nam)COMPANY LIMITED/棒杰针织（越南）有限公司" {
@@ -98,7 +99,7 @@ func bigDataHandler(data string) string {
 	if err == nil {
 		fileName = fmt.Sprintf("%d.json", time.Now().UnixNano())
 	}
-
+	fileUrl := TmpUrl + "?file=" + fileName
 	// 执行存入临时文件逻辑...
 	if TmpDir == "" {
 		exePath, err := os.Executable()
@@ -117,37 +118,35 @@ func bigDataHandler(data string) string {
 		return data
 	}
 	sb := &strings.Builder{}
-	sb.WriteString("结果内容过大,已临时存在")
-	sb.WriteString(fileName)
-	sb.WriteString("这个文件中,")
-	if len(tb.DataShort) > 0 {
-		if len(tb.Data) < 3 {
-			sb.WriteString("其中的json结构中data_short记录的是各个字段名称的数组,data是一个数据集.请按需读取或用jq等工具解析需要的内容")
-		} else {
-			sb.WriteString("其中的json结构中\ndata_short记录的是各个字段名称内容如下: ")
-			sb.WriteString(strings.Join(tb.DataShort, ","))
-			sb.WriteString("\ndata是一个数据集共包含了")
-			sb.WriteString(fmt.Sprintf("%d行数据.", len(tb.Data)))
-			sb.WriteString("以下是前")
-			maxLen := len(tb.Data) - 1
-			if maxLen > 3 {
-				maxLen = 3
-			}
-			sb.WriteString(fmt.Sprintf("%d行数据内容:\n```json\n", maxLen))
-			topData := tb.Data[:maxLen]
-			bs, _ := json.MarshalIndent(topData, "", "  ")
-			sb.WriteString(string(bs))
-			sb.WriteString("\n```\n更多数据请按需读取或用jq等工具解析需要的内容")
+	sb.WriteString("### 完整数据位置\n完整数据: ")
+	sb.WriteString(fileUrl)
+	sb.WriteString(fmt.Sprintf("\n大小: %d | 行数: %d\n\n", len(data), len(tb.Data)))
+	//sb.WriteString("### 数据表头字段\n")
+	//sb.WriteString(strings.Join(tb.Columns, ","))
+	//sb.WriteString("\n\n")
+	if len(tb.Data) > 3 {
+		sb.WriteString("### 真实的JSON结构及样本(仅展示data的前3条)\n```json\n")
+		maxLen := min(len(tb.Data)-1, 3)
+		topData := tb.Data[:maxLen]
+		tmpData := dataJson{
+			Columns: tb.Columns,
+			Data:    topData,
 		}
-	} else {
-		sb.WriteString("请从该文件中分批读取内容。切勿一次性读取完整数据")
+		bs, _ := json.MarshalIndent(tmpData, "", "  ")
+		sb.WriteString(string(bs))
+		sb.WriteString("\n```\n\n")
 	}
+	sb.WriteString("### 必须遵守的操作流程\n" +
+		"1. 不要尝试从本响应来推断或回答关于完整数据的问题\n" +
+		"2. 不要尝试将完整的文件内容加载到上下文中,请按需读取或用jq等工具解析需要的内容\n" +
+		"3. 请用脚本从完整数据路径中下载完整内容，使用代码或者jq等解析工具获取问题所需的结果再返回给用户\n" +
+		"4. 文件中的json结构如下：{\"columns\":[\"column1\",\"column2\"....],\"data\":[{\"column1\":\"value1\",\"column2\":\"value2\"},....]")
 	return sb.String()
 }
 
 type dataJson struct {
-	DataShort []string            `json:"data_short"`
-	Data      []map[string]string `json:"data"`
+	Columns []string            `json:"columns"`
+	Data    []map[string]string `json:"data"`
 }
 
 type Param map[string]any

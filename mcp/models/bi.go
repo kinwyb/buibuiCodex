@@ -56,16 +56,16 @@ func (t *TableData) ToJson() string {
 		return "数据结果空"
 	}
 	dJson := dataJson{
-		DataShort: t.Headers,
-		Data:      t.DataVals,
+		Columns: t.Headers,
+		Data:    t.DataVals,
 	}
 	data, _ := json.Marshal(dJson)
 	return string(data)
 }
 
 type dataJson struct {
-	DataShort []string            `json:"data_short"`
-	Data      []map[string]string `json:"data"`
+	Columns []string            `json:"columns"`
+	Data    []map[string]string `json:"data"`
 }
 
 // BIArg 报表查询请求参数
