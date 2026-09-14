@@ -12,6 +12,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const wsFrameDebug = false
+
 // WsManager WebSocket连接管理器
 // 负责维护与企业微信的WebSocket长连接，包括心跳、重连、认证、串行回复队列等
 type WsManager struct {
@@ -264,7 +266,9 @@ func (m *WsManager) handleFrame(frame *WsFrame) {
 
 	// 消息推送
 	if cmd == WsCmdCallback {
-		m.logger.Debug("Received push message")
+		if wsFrameDebug {
+			m.logger.Debug("Received push message")
+		}
 		if m.onMessage != nil {
 			m.onMessage(frame)
 		}
@@ -273,7 +277,9 @@ func (m *WsManager) handleFrame(frame *WsFrame) {
 
 	// 事件推送
 	if cmd == WsCmdEventCallback {
-		m.logger.Debug("Received event callback")
+		if wsFrameDebug {
+			m.logger.Debug("Received event callback")
+		}
 		if m.onEvent != nil {
 			m.onEvent(frame)
 		}
@@ -323,7 +329,9 @@ func (m *WsManager) handleFrame(frame *WsFrame) {
 			return
 		}
 		m.missedPongCount = 0
-		m.logger.Debug("Received heartbeat ack")
+		if wsFrameDebug {
+			m.logger.Debug("Received heartbeat ack")
+		}
 		return
 	}
 
@@ -343,6 +351,7 @@ func (m *WsManager) startHeartbeat() {
 
 	go m.heartbeatLoop(ctx)
 	m.logger.Debug("Heartbeat timer started", "interval", m.config.HeartbeatInterval)
+
 }
 
 // stopHeartbeat 停止心跳
@@ -572,7 +581,9 @@ func (m *WsManager) replyWorkerLoop(workerID int) {
 			m.logger.Debug("Reply worker stopped", "worker_id", workerID)
 			return
 		case reqID := <-m.replyNotifyCh:
-			m.logger.Debug("Worker received task", "worker_id", workerID, "req_id", reqID)
+			if wsFrameDebug {
+				m.logger.Debug("Worker received task", "worker_id", workerID, "req_id", reqID)
+			}
 			m.processReplyQueueForReqID(reqID)
 			// 处理完后清除标记
 			m.processingMu.Lock()
@@ -621,7 +632,9 @@ func (m *WsManager) sendAndWaitAck(frame *WsFrame, reqID string) (*WsFrame, erro
 		return nil, err
 	}
 
-	m.logger.Debug("Reply message sent", "req_id", reqID)
+	if wsFrameDebug {
+		m.logger.Debug("Reply message sent", "req_id", reqID)
+	}
 
 	// 创建 ack channel
 	ackResultCh := make(chan *WsFrame, 1)
@@ -662,7 +675,9 @@ func (m *WsManager) handleReplyAck(reqID string, frame *WsFrame, ack *pendingAck
 		m.logger.Warn("Reply ack error", "req_id", reqID, "errcode", frame.ErrCode, "errmsg", frame.ErrMsg)
 		ack.err <- fmt.Errorf("reply ack error: %s (code: %d)", frame.ErrMsg, frame.ErrCode)
 	} else {
-		m.logger.Debug("Reply ack received", "req_id", reqID)
+		if wsFrameDebug {
+			m.logger.Debug("Reply ack received", "req_id", reqID)
+		}
 		ack.result <- frame
 	}
 }
