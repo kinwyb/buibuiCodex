@@ -113,7 +113,7 @@ func bigDataHandler(data string) string {
 	if err == nil {
 		fileName = fmt.Sprintf("%d.json", time.Now().UnixNano())
 	}
-	fileUrl := TmpUrl + "?file=" + fileName
+	fileUrl := TmpUrl + "?file=" + time.Now().Format("20060102") + fileName
 	// 执行存入临时文件逻辑...
 	if TmpDir == "" {
 		exePath, err := os.Executable()

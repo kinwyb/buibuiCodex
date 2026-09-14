@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kinwyb/buibuiCodex/mcp/edp"
 	"github.com/kinwyb/buibuiCodex/mcp/serv"
@@ -82,7 +83,7 @@ func (m *Mcp) Start(ctx context.Context) error {
 	}
 	m.httpServer = server.NewStreamableHTTPServer(s, server.WithDisableLocalhostProtection(true), server.WithStreamableHTTPServer(httpMux))
 	mux.Handle("/mcp", m.httpServer)
-	mux.Handle("/tmp_file", m.httpServer)
+	mux.Handle("/tmp_file", m)
 	go func() {
 		if err := m.httpServer.Start(":9090"); err != nil {
 			log.Fatalf("启动失败: %v", err)
@@ -114,9 +115,20 @@ func (m *Mcp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 2. 防路径穿越安全处理 (Path Traversal Clean)
 	// 清理文件名，防止攻击者传入 "../../etc/passwd" 等危险相对路径
 	cleanFileName := filepath.Clean(fileName)
+	if len(cleanFileName) < 7 {
+		http.Error(w, "invalid file name", http.StatusBadRequest)
+		return
+	}
+	date := cleanFileName[:8]
+	fileDate, te := time.ParseInLocation("20060102", date, time.Local)
+	if te != nil {
+		http.Error(w, "invalid file name", http.StatusBadRequest)
+		return
+	}
+	cleanFileName = cleanFileName[8:]
 
 	// 拼接目标文件的完整路径
-	filePath := filepath.Join(m.tmpPath, cleanFileName)
+	filePath := filepath.Join(m.tmpPath, fileDate.Format(time.DateOnly), cleanFileName)
 
 	// 3. 严格检查：确保解析后的真实路径必须在 baseDir 允许的范围内
 	if !strings.HasPrefix(filePath, filepath.Clean(m.tmpPath)) {
