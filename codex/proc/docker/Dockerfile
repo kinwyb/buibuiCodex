@@ -29,7 +29,7 @@ ENV LANG=C.UTF-8 \
     CODEX_HOME=/root/.codex
 
 # 3. 创建必要的目录（用于挂载 Socket 及 Workspace）
-RUN mkdir -p /var/run/codex /workspace /root/.codex
+RUN mkdir -p /var/run/codex /workspace/.codex /root/.codex
 
 # 4. 将 .codex 声明为 Volume（可选，提示 Docker 这是一个数据卷）
 VOLUME ["/root/.codex", "/workspace"]

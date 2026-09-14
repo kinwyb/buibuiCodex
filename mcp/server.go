@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -85,7 +86,7 @@ func (m *Mcp) Start(ctx context.Context) error {
 	mux.Handle("/mcp", m.httpServer)
 	mux.Handle("/tmp_file", m)
 	go func() {
-		if err := m.httpServer.Start(":9090"); err != nil {
+		if err := m.httpServer.Start(m.cfg.Address); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("启动失败: %v", err)
 		}
 	}()

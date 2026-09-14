@@ -359,7 +359,9 @@ func (m *WsManager) stopHeartbeat() {
 	if m.heartbeatCancel != nil {
 		m.heartbeatCancel()
 		m.heartbeatCancel = nil
-		m.logger.Debug("Heartbeat timer stopped")
+		if wsFrameDebug {
+			m.logger.Debug("Heartbeat timer stopped")
+		}
 	}
 }
 
@@ -578,7 +580,9 @@ func (m *WsManager) replyWorkerLoop(workerID int) {
 	for {
 		select {
 		case <-m.replyWorkerCtx.Done():
-			m.logger.Debug("Reply worker stopped", "worker_id", workerID)
+			if wsFrameDebug {
+				m.logger.Debug("Reply worker stopped", "worker_id", workerID)
+			}
 			return
 		case reqID := <-m.replyNotifyCh:
 			if wsFrameDebug {

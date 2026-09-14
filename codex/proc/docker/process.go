@@ -177,7 +177,7 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 		}
 
 		// 挂载工作区的技能目录
-		workspaceSkillDir := filepath.Join(opts.WorkSpace, "skills")
+		workspaceSkillDir := filepath.Join(filepath.Dir(opts.WorkSpace), "skills")
 		dirInfo, err := os.Stat(workspaceSkillDir)
 		if err == nil || os.IsExist(err) {
 			if dirInfo.IsDir() {
@@ -185,7 +185,7 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 				hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
 					Type:   mount.TypeBind,
 					Source: workspaceSkillDir,
-					Target: "/workspace/skills",
+					Target: "/workspace/.codex/skills",
 				})
 			}
 		}

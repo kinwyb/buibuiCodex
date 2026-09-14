@@ -156,7 +156,7 @@ func (j *jsonRpcV2) Requests() <-chan *jsonRpc.RPCRequest {
 func (j *jsonRpcV2) readLoop() {
 	defer func() {
 		if err := recover(); err != nil {
-			slog.Error("jsonRpcV2 readLoop recover err:", err)
+			slog.Error("jsonRpcV2 readLoop recover err", "error", err)
 			go j.readLoop()
 		}
 	}()
