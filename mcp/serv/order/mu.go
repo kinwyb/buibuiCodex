@@ -2,7 +2,6 @@ package order
 
 import (
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -40,15 +39,11 @@ func (o *orderMu) Parameters() *types.ToolParams {
 	}
 }
 
-func (o *orderMu) Execute(userID string, params serv.Param) (string, error) {
-	token, err := edp.GetToken(userID)
-	if err != nil {
-		return "", fmt.Errorf("获取 token 失败: %w", err)
-	}
+func (o *orderMu) Execute(info *serv.UserInfo, params serv.Param) (string, error) {
 	orgID, _ := params.Get[string]("org")
 	orgID = serv.OrgID(orgID)
 	orderCode, _ := params.Get[string]("orderCode")
-	return bi101200(token, orderCode, orgID)
+	return bi101200(info.Token, orderCode, orgID)
 }
 
 // 101200.订单MU分析

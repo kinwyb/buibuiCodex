@@ -2,7 +2,6 @@ package order
 
 import (
 	"errors"
-	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -44,11 +43,7 @@ func (o *orderProcess) Parameters() *types.ToolParams {
 	}
 }
 
-func (o *orderProcess) Execute(userID string, params serv.Param) (string, error) {
-	token, err := edp.GetToken(userID)
-	if err != nil {
-		return "", fmt.Errorf("获取 token 失败: %w", err)
-	}
+func (o *orderProcess) Execute(info *serv.UserInfo, params serv.Param) (string, error) {
 	orgID, _ := params.Get[string]("org")
 	if orgID == "" {
 		orgID = "义乌"
@@ -57,10 +52,11 @@ func (o *orderProcess) Execute(userID string, params serv.Param) (string, error)
 	orderCode, _ := params.Get[string]("orderCode")
 	detail, _ := params.Get[bool]("detail")
 	var data string
+	var err error
 	if detail {
-		data, err = bi104110(token, orderCode, orgID)
+		data, err = bi104110(info.Token, orderCode, orgID)
 	} else {
-		data, err = bi104740(token, orderCode, orgID)
+		data, err = bi104740(info.Token, orderCode, orgID)
 	}
 	if err != nil {
 		return "", err

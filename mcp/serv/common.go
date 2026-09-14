@@ -12,11 +12,18 @@ import (
 
 	"gitee.com/kinwyb/conv"
 	"github.com/kinwyb/buibuiCodex/core/types"
+	"github.com/kinwyb/buibuiCodex/mcp/edp"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 var tools []IMcpTool
+
+// UserInfo 用户信息
+type UserInfo struct {
+	UserID string
+	Token  string
+}
 
 type IMcpTool interface {
 	// Name 工具名称
@@ -29,7 +36,7 @@ type IMcpTool interface {
 	Parameters() *types.ToolParams
 
 	// Execute 执行工具
-	Execute(userID string, params Param) (string, error)
+	Execute(info *UserInfo, params Param) (string, error)
 }
 
 // RegisterTool 注册工具
@@ -59,8 +66,15 @@ func buildMcpTool(tool IMcpTool) server.ServerTool {
 		Tool: t,
 		Handler: func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			// todo 获取用户ID
-			userID := ""
-			result, err := tool.Execute(userID, request.GetArguments())
+			userID := "000000"
+			token, err := edp.GetToken(userID)
+			if err != nil {
+				return nil, fmt.Errorf("获取 token 失败: %w", err)
+			}
+			result, err := tool.Execute(&UserInfo{
+				UserID: userID,
+				Token:  token,
+			}, request.GetArguments())
 			if err != nil {
 				return nil, err
 			}

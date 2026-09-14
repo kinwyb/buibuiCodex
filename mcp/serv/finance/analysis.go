@@ -48,11 +48,7 @@ func (a *anlalysis) Parameters() *types.ToolParams {
 	}
 }
 
-func (a *anlalysis) Execute(userID string, params serv.Param) (string, error) {
-	token, err := edp.GetToken(userID)
-	if err != nil {
-		return "", fmt.Errorf("获取 token 失败: %w", err)
-	}
+func (a *anlalysis) Execute(info *serv.UserInfo, params serv.Param) (string, error) {
 	orderCode, err := params.Get[string]("orderCode")
 	if err != nil {
 		return "", fmt.Errorf("订单号参数获取异常: %w", err)
@@ -66,7 +62,7 @@ func (a *anlalysis) Execute(userID string, params serv.Param) (string, error) {
 	if org == "" {
 		org = "义乌"
 	}
-	return bi101190(token, orderCode, startPeriod, endPeriod, serv.OrgID(org))
+	return bi101190(info.Token, orderCode, startPeriod, endPeriod, serv.OrgID(org))
 }
 
 type unitCostStructure struct{}
@@ -104,11 +100,7 @@ func (u *unitCostStructure) Parameters() *types.ToolParams {
 	}
 }
 
-func (u *unitCostStructure) Execute(userID string, params serv.Param) (string, error) {
-	token, err := edp.GetToken(userID)
-	if err != nil {
-		return "", fmt.Errorf("获取 token 失败: %w", err)
-	}
+func (u *unitCostStructure) Execute(info *serv.UserInfo, params serv.Param) (string, error) {
 	orderCode, err := params.Get[string]("orderCode")
 	if err != nil {
 		return "", fmt.Errorf("订单号参数获取异常: %w", err)
@@ -122,7 +114,7 @@ func (u *unitCostStructure) Execute(userID string, params serv.Param) (string, e
 	if org == "" {
 		org = "义乌"
 	}
-	return bi101191(token, orderCode, startPeriod, endPeriod, serv.OrgName(org))
+	return bi101191(info.Token, orderCode, startPeriod, endPeriod, serv.OrgName(org))
 }
 
 type inputOutput struct{}
@@ -164,11 +156,7 @@ func (i *inputOutput) Parameters() *types.ToolParams {
 	}
 }
 
-func (i *inputOutput) Execute(userID string, params serv.Param) (string, error) {
-	token, err := edp.GetToken(userID)
-	if err != nil {
-		return "", fmt.Errorf("获取 token 失败: %w", err)
-	}
+func (i *inputOutput) Execute(info *serv.UserInfo, params serv.Param) (string, error) {
 	orderCode, err := params.Get[string]("orderCode")
 	if err != nil {
 		return "", fmt.Errorf("订单号参数获取异常: %w", err)
@@ -186,7 +174,7 @@ func (i *inputOutput) Execute(userID string, params serv.Param) (string, error) 
 	if org == "" {
 		org = "义乌"
 	}
-	return bi101192(token, orderCode, materialCode, startPeriod, endPeriod, serv.OrgName(org))
+	return bi101192(info.Token, orderCode, materialCode, startPeriod, endPeriod, serv.OrgName(org))
 }
 
 type inventoryLedger struct{}
@@ -224,11 +212,7 @@ func (i *inventoryLedger) Parameters() *types.ToolParams {
 	}
 }
 
-func (i *inventoryLedger) Execute(userID string, params serv.Param) (string, error) {
-	token, err := edp.GetToken(userID)
-	if err != nil {
-		return "", fmt.Errorf("获取 token 失败: %w", err)
-	}
+func (i *inventoryLedger) Execute(info *serv.UserInfo, params serv.Param) (string, error) {
 	materialCode, err := params.Get[string]("materialCode")
 	if err != nil {
 		return "", fmt.Errorf("物料编码参数获取异常,该查询必须要有物料编码: %w", err)
@@ -242,7 +226,7 @@ func (i *inventoryLedger) Execute(userID string, params serv.Param) (string, err
 	if org == "" {
 		org = "义乌"
 	}
-	return bi101193(token, materialCode, startPeriod, endPeriod, serv.OrgName(org))
+	return bi101193(info.Token, materialCode, startPeriod, endPeriod, serv.OrgName(org))
 }
 
 func fillDefaultPeriods(startPeriod, endPeriod *string) error {

@@ -51,11 +51,7 @@ func (o *orderEfficiency) Parameters() *types.ToolParams {
 	}
 }
 
-func (o *orderEfficiency) Execute(userID string, params serv.Param) (string, error) {
-	token, err := edp.GetToken(userID)
-	if err != nil {
-		return "", fmt.Errorf("获取 token 失败: %w", err)
-	}
+func (o *orderEfficiency) Execute(info *serv.UserInfo, params serv.Param) (string, error) {
 	startDate, err := params.Get[string]("startDate")
 	if err != nil {
 		return "", fmt.Errorf("开始日期参数获取失败: %w", err)
@@ -68,9 +64,9 @@ func (o *orderEfficiency) Execute(userID string, params serv.Param) (string, err
 	deptNo, _ := params.Get[string]("deptNo")
 	detail, _ := params.Get[bool]("detail")
 	if detail {
-		return biEfficiencyDetail(token, startDate, endDate, deptNo, employeeNo)
+		return biEfficiencyDetail(info.Token, startDate, endDate, deptNo, employeeNo)
 	}
-	return biEfficiencySummary(token, startDate, endDate, deptNo)
+	return biEfficiencySummary(info.Token, startDate, endDate, deptNo)
 }
 
 // biEfficiencyDetail 效率查询明细
