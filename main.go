@@ -6,12 +6,17 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/kinwyb/buibuiCodex/channel"
+	_ "github.com/kinwyb/buibuiCodex/channel/wxcom"
 	"github.com/kinwyb/buibuiCodex/core"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
+	"github.com/kinwyb/buibuiCodex/core/db"
+	"github.com/kinwyb/buibuiCodex/core/types"
+	"github.com/kinwyb/buibuiCodex/mcp"
 )
 
 func main() {
@@ -45,13 +50,69 @@ func main() {
 		return
 	}
 	defer channel.StopAll()
-	manager := core.NewManager(msgBus)
+	sqlite, err := db.NewSQLiteStorage(filepath.Join(cfg.Workspace, "buibui.db"))
+	if err != nil {
+		panic(err)
+	}
+	dataStorage := db.NewData(sqlite)
+	manager := core.NewManager(msgBus, dataStorage)
 	defer manager.Stop()
 	err = manager.InitFromConfig(ctx, &cfg.ManagerConfig)
 	if err != nil {
 		slog.Error("register agents failed ", "error", err)
 		return
 	}
+	ms := mcp.NewMcp(&mcp.Config{
+		Name:      "boda",
+		WorkSpace: filepath.Join(cfg.Workspace, "mcp"),
+		Address:   ":9090",
+		Version:   "1.0.0",
+		BaseURL:   "http://192.168.9.10:82/v1/boda",
+		UserMap:   map[string]string{},
+	})
+	go ms.Start(ctx)
+	defer ms.Stop(ctx)
+	go func() {
+		echan, err := msgBus.SubscribeEvent()
+		if err != nil {
+			slog.Error("msgBus.SubscribeEvent failed", "error", err)
+			return
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				event, ok := echan.Consume(ctx)
+				if ok {
+					switch event.Type {
+					case types.EventMessageStart:
+						fmt.Println("\n↩️ 回复开始: [" + event.EventID + "]")
+					case types.EventMessageDelta:
+						//fmt.Print(event.Message.Content)
+					case types.EventMessageCompleted:
+						fmt.Println("\n✅ 完整回复: [" + event.EventID + "]\n" + event.Message.Content)
+					case types.EventReasoningStart:
+						fmt.Println("\n🤔思考中...[" + event.EventID + "]")
+					case types.EventReasoningDelta:
+						//fmt.Print(event.Message.ReasoningContent)
+					case types.EventReasoningCompleted:
+						fmt.Println("\n😊思考完成：[" + event.EventID + "] \n" + event.Message.ReasoningContent)
+					case types.EventToolStart:
+						for _, tool := range event.Message.ToolCalls {
+							fmt.Printf("🔧工具调用: [%s]%s\n", tool.Type, tool.Params)
+						}
+					case types.EventToolCompleted:
+						for _, tool := range event.Message.ToolCalls {
+							fmt.Printf("🔧工具调用结束: [%s]%s => %s\n", tool.Type, tool.Params, tool.Result)
+						}
+					case types.EventError:
+						slog.Error("🙅 error: " + event.Message.Content)
+					}
+				}
+			}
+		}
+	}()
 	err = manager.Start(ctx)
 	if err != nil {
 		slog.Error("manager.Start failed", "error", err)
@@ -62,7 +123,5 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
-
 	fmt.Println("\n正在安全关闭 Go 服务与 app-server 进程...")
-
 }

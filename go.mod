@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	gitee.com/kinwyb/conv v0.0.0-20211105064504-a0a4178b4406 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect

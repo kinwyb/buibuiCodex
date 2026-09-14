@@ -15,13 +15,9 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/config"
 	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
-	"github.com/kinwyb/buibuiCodex/mcp"
 )
 
 func TestNewManager(t *testing.T) {
-	go func() {
-		mcp.Start()
-	}()
 	//// 1. 定义 Handler 选项，将日志级别设置为 LevelDebug
 	//opts := &slog.HandlerOptions{
 	//	Level: slog.LevelDebug, // 开启 Debug 级别（会输出 Debug, Info, Warn, Error）
