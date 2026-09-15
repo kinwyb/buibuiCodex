@@ -97,6 +97,7 @@ func (a *Agent) initProcess() error {
 		//APIKey:        a.cfg.Provider.APIKey,
 		Env: []string{
 			"OPENAI_API_KEY_" + a.cfg.ProviderName + "=" + a.cfg.Provider.APIKey,
+			"RUST_LOG=debug",
 		},
 		MCP:            make(map[string]docker.MCPServerConfig),
 		ModelProviders: make(map[string]docker.ModelProvider),

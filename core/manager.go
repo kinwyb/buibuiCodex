@@ -166,7 +166,7 @@ func (m *Manager) InitFromConfig(ctx context.Context, cfg *config.ManagerConfig)
 		if baseToolGroup == nil {
 			baseToolGroup = &types.ToolGroup{
 				GroupName: "base",
-				GroupDesc: "基本工具允许获取运行所需的基础信息",
+				GroupDesc: "提供运行所需的基础操作",
 			}
 		}
 		baseTools := append(baseToolGroup.Tools, NewSendFileTool(m.bus, agentPathMapper))

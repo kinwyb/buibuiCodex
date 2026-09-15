@@ -20,7 +20,7 @@ type toolGroup struct {
 func (t *toolGroup) ToDynamicTool() *jsonRpc.DynamicTool {
 	ret := &jsonRpc.DynamicTool{
 		Type:        "namespace",
-		Name:        t.nameSpace,
+		Name:        "heldiam" + t.nameSpace,
 		Description: t.spaceDesc,
 		Tools:       nil,
 	}
@@ -28,7 +28,7 @@ func (t *toolGroup) ToDynamicTool() *jsonRpc.DynamicTool {
 		dt := jsonRpc.ToolDescription{
 			Type:         "function",
 			Name:         tool.Name(),
-			Description:  tool.Description() + "【注意】调用时请指定正确的命名空间[" + t.nameSpace + "]",
+			Description:  tool.Description() + "【注意】调用时请指定正确的命名空间[" + ret.Name + "]",
 			DeferLoading: false,
 			InputSchema:  tool.Parameters(),
 		}

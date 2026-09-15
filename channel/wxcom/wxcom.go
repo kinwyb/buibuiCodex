@@ -612,6 +612,9 @@ func (c *Channel) handleSendFileRequest(ctx context.Context, event *types.Event)
 
 	filePath := request.Media[0].URL
 	fileType := string(request.Media[0].Type)
+	if fileType == string(types.MediaTypeFile) {
+		fileType = "file" //注意微信临时文件上传时文件类型是：file
+	}
 	caption := ""
 	if request.Media[0].Metadata != nil {
 		if cap, ok := request.Media[0].Metadata["caption"].(string); ok {
