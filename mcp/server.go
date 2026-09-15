@@ -33,6 +33,7 @@ type Mcp struct {
 	httpServer *server.StreamableHTTPServer `description:"http服务"`
 	tmpPath    string                       `description:"临时文件目录"`
 	tokenCache *edp.TokenCache              `description:"token缓存"`
+	oauthMid   *authMiddleware              `description:"oauth中间认证"`
 }
 
 func NewMcp(cfg *Config) *Mcp {
@@ -45,7 +46,8 @@ func NewMcp(cfg *Config) *Mcp {
 		}
 	}
 	return &Mcp{
-		cfg: cfg,
+		cfg:      cfg,
+		oauthMid: NewAuthMiddleware(nil),
 	}
 }
 
@@ -76,22 +78,40 @@ func (m *Mcp) Start(ctx context.Context) error {
 	// 启动 http 服务提供mcp服务
 	// 自定义路由
 	mux := http.NewServeMux()
-	//if s.protectedResourceMetadataHandler != nil && s.protectedResourceMetadataPath != s.endpointPath {
-	//	mux.Handle(s.protectedResourceMetadataPath, s.protectedResourceMetadataHandler)
-	//}
 	httpMux := &http.Server{
 		Addr:    m.cfg.Address,
 		Handler: mux,
 	}
-	m.httpServer = server.NewStreamableHTTPServer(s, server.WithDisableLocalhostProtection(true), server.WithStreamableHTTPServer(httpMux))
-	mux.Handle("/mcp", m.httpServer)
+	options := []server.StreamableHTTPOption{server.WithDisableLocalhostProtection(true),
+		server.WithStreamableHTTPServer(httpMux)}
+	oauth := m.oauth()
+	if oauth != nil {
+		options = append(options, server.WithProtectedResourceMetadata(*oauth), server.WithStreamableHTTPCORS(
+			server.WithCORSAllowedOrigins("*"),
+			server.WithCORSAllowCredentials(),
+			server.WithCORSMaxAge(3600),
+		))
+	}
+	m.httpServer = server.NewStreamableHTTPServer(s, options...)
 	mux.Handle("/tmp_file", m)
+	mux.Handle("/mcp", m.oauthMid.Middleware(m.httpServer))
+	mux.Handle("/", m.httpServer)
 	go func() {
 		if err := m.httpServer.Start(m.cfg.Address); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("启动失败: %v", err)
 		}
 	}()
 	return nil
+}
+
+func (m *Mcp) oauth() *server.ProtectedResourceMetadataConfig {
+	return &server.ProtectedResourceMetadataConfig{
+		Resource:               "https://my-mcp-server.com",
+		AuthorizationServers:   []string{"https://auth.example.com"},
+		ScopesSupported:        []string{"mcp:read", "mcp:write"},
+		BearerMethodsSupported: []string{"header"},
+		ResourceName:           "Boda MCP Server",
+	}
 }
 
 func (m *Mcp) Stop(ctx context.Context) error {
