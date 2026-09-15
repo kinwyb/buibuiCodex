@@ -31,22 +31,25 @@ type codexTurn struct {
 }
 
 type Agent struct {
-	cfg     *config.AgentConfig
-	process proc.Process
-	client  *codex.Client
-	epMu    sync.Mutex
-	eps     map[string]*codexTurn
-	turnMap map[string]string //turnID => sessionID
-	isInit  bool
-	initMu  sync.Mutex
-	tools   []*toolGroup
+	cfg          *config.AgentConfig
+	process      proc.Process
+	client       *codex.Client
+	epMu         sync.Mutex
+	eps          map[string]*codexTurn
+	turnMap      map[string]string //turnID => sessionID
+	isInit       bool
+	initMu       sync.Mutex
+	tools        []*toolGroup
+	historyTurnN int
 }
 
-func NewAgent(cfg *config.AgentConfig) *Agent {
-	return &Agent{
-		cfg: cfg,
-		eps: make(map[string]*codexTurn),
+func NewAgent(cfg *config.AgentConfig, historyTurnN int) *Agent {
+	ret := &Agent{
+		cfg:          cfg,
+		eps:          make(map[string]*codexTurn),
+		historyTurnN: historyTurnN,
 	}
+	return ret
 }
 
 func (a *Agent) AgentID() string {
@@ -155,9 +158,11 @@ func (a *Agent) initProcess() error {
 	return nil
 }
 
-func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (*codex.Thread, error) {
+// getThread 获取线程，返回：线程,历史消息,错误
+func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (*codex.Thread, string, error) {
 	a.epMu.Lock()
 	defer a.epMu.Unlock()
+	historyContent := ""
 	thread := a.client.Thread()
 	thread.SubUnknowTurnEvent(a.unknowTurnEventHandler)
 	waitResume := true
@@ -165,6 +170,9 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (
 	if cmd.newThread || !ok {
 		// 查询数据库中使用过的thread
 		dbThread := a.cfg.SessionDB.LastThread(ctx, sessionID, a.AgentID())
+		if dbThread != nil && time.Now().Sub(dbThread.LastUpdate) > 1*time.Hour {
+			dbThread = nil
+		}
 		if !cmd.newThread && dbThread != nil {
 			turn = &codexTurn{
 				startTime:      dbThread.CreateTime.Unix(),
@@ -174,9 +182,13 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (
 		} else {
 			// 没有有效的thread，创建新的thread
 			waitResume = false
+			if !cmd.newThread && a.historyTurnN > 0 { //用户没有指定要求新开线程，注入历史消息内容
+				history := NewHistory(filepath.Join(a.cfg.WorkSpace, "root"), a.cfg.SessionDB, a.historyTurnN)
+				historyContent = history.History(sessionID, a.AgentID())
+			}
 			nTurn, err := a.newThread(ctx, thread, sessionID)
 			if err != nil {
-				return nil, err
+				return nil, historyContent, err
 			}
 			turn = nTurn
 		}
@@ -185,7 +197,7 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (
 		err := thread.Resume(ctx, turn.threadID)
 		if err != nil {
 			slog.Error(err.Error())
-			return nil, err
+			return nil, historyContent, err
 		}
 		turn.thread = thread
 		turn.lastUpdateTime = time.Now().Unix()
@@ -202,7 +214,7 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (
 	if dbErr != nil {
 		slog.Error("fail to save db thread ", "error", dbErr.Error())
 	}
-	return thread, nil
+	return thread, historyContent, nil
 }
 
 func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID string) (*codexTurn, error) {
@@ -257,7 +269,7 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	}
 	cmd := commandParse(state.Input.Content)
 	state.Input.Content = cmd.msg
-	thread, err := a.getThread(ctx, state.SessionID, cmd)
+	thread, hisotryContent, err := a.getThread(ctx, state.SessionID, cmd)
 	if err != nil {
 		return err
 	}
@@ -272,7 +284,12 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 		Type:          jsonRpc.SandboxPolicyTypeDangerFullAccess,
 		NetworkAccess: true,
 	}), codex.TurnStartWithApprovalPolicy(jsonRpc.Never))
-	err = turn.Start(ctx, a.buildInput(turn, state.Input), opts...)
+	var inputs []jsonRpc.InputItem
+	if hisotryContent != "" {
+		inputs = append(inputs, turn.BuildInputWithText(hisotryContent)...)
+	}
+	inputs = a.buildInput(turn, state.Input, inputs...)
+	err = turn.Start(ctx, inputs, opts...)
 	if err != nil {
 		err = fmt.Errorf("turn start fail: %w", err)
 		slog.Error(err.Error())
@@ -383,8 +400,8 @@ func (a *Agent) unknowTurnEventHandler(event *codex.Event) {
 	a.codexEventParse(state, event)
 }
 
-func (a *Agent) buildInput(turn *codex.Turn, message *types.InputMessage) []jsonRpc.InputItem {
-	var result []jsonRpc.InputItem
+func (a *Agent) buildInput(turn *codex.Turn, message *types.InputMessage, inputs ...jsonRpc.InputItem) []jsonRpc.InputItem {
+	var result = inputs
 	if message.Content != "" {
 		result = turn.BuildInputWithText(message.Content, result...)
 	}

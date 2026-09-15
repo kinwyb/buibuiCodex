@@ -160,7 +160,7 @@ func (m *Manager) InitFromConfig(ctx context.Context, cfg *config.ManagerConfig)
 		})
 		m.pathMapper[resolved.Name] = agentPathMapper
 		// 创建 Agent
-		ag := cdm.NewAgent(resolved)
+		ag := cdm.NewAgent(resolved, 5)
 
 		baseToolGroup := types.GetToolGroupByName("base")
 		if baseToolGroup == nil {

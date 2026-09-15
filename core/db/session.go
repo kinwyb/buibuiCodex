@@ -180,7 +180,7 @@ func (s *sessionStorage) LastThread(ctx context.Context, sessionID string, agent
 	var thread = &SessionThread{}
 	// 查询最近1小时内的thread
 	err := s.db.WithContext(ctx).Model(thread).
-		Where("session_id = ? AND agent = ? AND last_update > ? ", sessionID, agent, time.Now().Add(-1*time.Hour)).
+		Where(" session_id = ? AND agent = ? ", sessionID, agent).
 		Order("last_update desc").First(thread).Error
 	if err != nil {
 		return nil
