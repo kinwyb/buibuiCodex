@@ -72,6 +72,9 @@ func main() {
 		BaseURL:   mcpConfig.BaseURL,
 		UserMap:   mcpConfig.UserMap,
 		Host:      mcpConfig.Host,
+		Issuer:    mcpConfig.Issuer,
+		Audience:  mcpConfig.Audience,
+		JWKSURL:   mcpConfig.JWKSURL,
 	})
 	go ms.Start(ctx)
 	defer ms.Stop(ctx)

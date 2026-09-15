@@ -25,6 +25,31 @@ type Config struct {
 	BaseURL   string            `description:"基础信息"`
 	UserMap   map[string]string `description:"用户映射"`
 	Host      string            `description:"公开地址"`
+	Issuer    string            `description:"授权服务器issuer"`
+	Audience  string            `description:"资源标识(本服务对外地址)"`
+	JWKSURL   string            `description:"授权服务器JWKS地址"`
+}
+
+// applyOAuthDefaults 为 OAuth 相关字段补默认值。
+// Resource、Issuer 与 JWKS 地址必须与实际校验逻辑一致，否则会导致令牌校验失败。
+func (c *Config) applyOAuthDefaults() {
+	if c.Host == "" {
+		c.Host = "http://127.0.0.1:9090"
+	}
+	if c.Audience == "" {
+		c.Audience = "http://localhost:9090"
+	}
+	if c.Issuer == "" {
+		c.Issuer = "https://localhost"
+	}
+	if c.JWKSURL == "" {
+		c.JWKSURL = strings.TrimSuffix(c.Issuer, "/") + "/.well-known/jwks.json"
+	}
+}
+
+// resourceMetadataURL 返回本服务的受保护资源元数据地址（RFC 9728）。
+func (c *Config) resourceMetadataURL() string {
+	return strings.TrimSuffix(c.Host, "/") + "/.well-known/oauth-protected-resource"
 }
 
 type Mcp struct {
@@ -45,9 +70,11 @@ func NewMcp(cfg *Config) *Mcp {
 			BaseURL:   "http://127.0.0.1:8080",
 		}
 	}
+	cfg.applyOAuthDefaults()
 	return &Mcp{
-		cfg:      cfg,
-		oauthMid: NewAuthMiddleware(nil),
+		cfg: cfg,
+		// 使用授权服务器公布的 JWKS 公钥验签（RS256），不再使用对称密钥。
+		oauthMid: NewAuthMiddleware(cfg.Issuer, cfg.Audience, cfg.JWKSURL, cfg.resourceMetadataURL()),
 	}
 }
 
@@ -106,9 +133,9 @@ func (m *Mcp) Start(ctx context.Context) error {
 
 func (m *Mcp) oauth() *server.ProtectedResourceMetadataConfig {
 	return &server.ProtectedResourceMetadataConfig{
-		Resource:               "https://my-mcp-server.com",
-		AuthorizationServers:   []string{"https://auth.example.com"},
-		ScopesSupported:        []string{"mcp:read", "mcp:write"},
+		Resource:               m.cfg.Audience,
+		AuthorizationServers:   []string{m.cfg.Issuer},
+		ScopesSupported:        []string{"openid", "profile", "email", "offline_access"},
 		BearerMethodsSupported: []string{"header"},
 		ResourceName:           "Boda MCP Server",
 	}
