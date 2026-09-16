@@ -29,9 +29,16 @@ func main() {
 	// 3. 构建并设置为默认 Logger
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
+	cfgPath, err := getConfigPath()
+	//cfgPath = "/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/buibui.json"
+	//err = nil
+	if err != nil {
+		slog.Error("config path err", "error", err)
+		return
+	}
 
 	ctx := context.Background()
-	cfg, err := config.Load("/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/buibui.json")
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		slog.Error("load config failed: ", "error", err)
 		return
@@ -140,4 +147,17 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 	fmt.Println("\n正在安全关闭 Go 服务与 app-server 进程...")
+}
+
+func getConfigPath() (string, error) {
+	// 1. 获取当前正在执行的可执行文件的绝对路径
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("failed to get executable path: %w", err)
+	}
+	// 2. 解析出可执行文件所在的目录
+	exeDir := filepath.Dir(exePath)
+	// 3. 拼接配置文件路径
+	configPath := filepath.Join(exeDir, "buibui.json")
+	return configPath, nil
 }
