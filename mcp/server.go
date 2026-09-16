@@ -3,7 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -129,8 +129,9 @@ func (m *Mcp) Start(ctx context.Context) error {
 	mux.Handle("/mcp", m.oauthMid.Middleware(m.httpServer))
 	mux.Handle("/", m.httpServer)
 	go func() {
+		slog.Info("MCP server started")
 		if err := m.httpServer.Start(m.cfg.Address); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("启动失败: %v", err)
+			slog.Error("启动失败", "error", err)
 		}
 	}()
 	return nil

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -66,6 +67,8 @@ func buildMcpTool(tool IMcpTool) server.ServerTool {
 	return server.ServerTool{
 		Tool: t,
 		Handler: func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			slog.Debug("mcp call tool: ", tool.Name())
+			defer slog.Debug("mcp call tool [" + tool.Name() + "] finished")
 			var userID string
 			// 查询请求头是否附带了状态数据，如果存在，从请求头的状态数据获取用户信息
 			if UserQueryFun != nil && request.Params.Meta != nil && len(request.Params.Meta.AdditionalFields) > 0 {
