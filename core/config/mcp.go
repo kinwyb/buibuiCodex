@@ -9,6 +9,7 @@ type MCPServerConfig struct {
 	Version   string            `description:"mcp服务版本" json:"version"`
 	BaseURL   string            `description:"基础信息" json:"baseURL"`
 	UserMap   map[string]string `description:"用户映射" json:"userMap"`
+	TokenMap  map[string]string `description:"authorization授权对应用户" json:"tokenMap"`
 	Host      string            `description:"公共路径" json:"host"`
 	Issuer    string            `description:"授权服务器issuer" json:"issuer"`
 	Audience  string            `description:"资源标识(令牌audience)" json:"audience"`

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/mcp/edp"
 	"github.com/kinwyb/buibuiCodex/mcp/serv"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/finance"
@@ -24,6 +25,7 @@ type Config struct {
 	Version   string            `description:"mcp服务版本"`
 	BaseURL   string            `description:"基础信息"`
 	UserMap   map[string]string `description:"用户映射"`
+	TokenMap  map[string]string `description:"授权映射"`
 	Host      string            `description:"公开地址"`
 	Issuer    string            `description:"授权服务器issuer"`
 	Audience  string            `description:"资源标识(本服务对外地址)"`
@@ -59,9 +61,10 @@ type Mcp struct {
 	tmpPath    string                       `description:"临时文件目录"`
 	tokenCache *edp.TokenCache              `description:"token缓存"`
 	oauthMid   *authMiddleware              `description:"oauth中间认证"`
+	sess       db.ISession                  `description:"session信息"`
 }
 
-func NewMcp(cfg *Config) *Mcp {
+func NewMcp(cfg *Config, sess db.ISession) *Mcp {
 	if cfg == nil {
 		cfg = &Config{
 			Name:      "buibui",
@@ -72,9 +75,10 @@ func NewMcp(cfg *Config) *Mcp {
 	}
 	cfg.applyOAuthDefaults()
 	return &Mcp{
-		cfg: cfg,
+		cfg:  cfg,
+		sess: sess,
 		// 使用授权服务器公布的 JWKS 公钥验签（RS256），不再使用对称密钥。
-		oauthMid: NewAuthMiddleware(cfg.Issuer, cfg.Audience, cfg.JWKSURL, cfg.resourceMetadataURL()),
+		oauthMid: NewAuthMiddleware(cfg.Issuer, cfg.Audience, cfg.JWKSURL, cfg.resourceMetadataURL(), cfg.TokenMap),
 	}
 }
 
@@ -92,6 +96,7 @@ func (m *Mcp) Start(ctx context.Context) error {
 	}
 	m.tokenCache = cache
 	edp.NewAPIClient(m.cfg.BaseURL)
+	serv.UserQueryFun = m.codexThreadParseUser
 	// 初始化 MCP 服务
 	s := server.NewMCPServer(m.cfg.Name, m.cfg.Version, server.WithToolCapabilities(true),
 		server.WithLogging())
@@ -211,4 +216,19 @@ func (m *Mcp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 方案 B（备选）：如果只需要简单地复制原生字节流
 	// w.Header().Set("Content-Type", "application/octet-stream")
 	// io.Copy(w, file)
+}
+
+func (m *Mcp) codexThreadParseUser(ctx context.Context, threadID string) string {
+	if m.sess == nil {
+		return ""
+	}
+	thread := m.sess.ThreadQueryByID(ctx, threadID)
+	if thread == nil {
+		return ""
+	}
+	session := m.sess.SessionQueryByID(ctx, thread.SessionID)
+	if session == nil {
+		return ""
+	}
+	return session.UserID
 }

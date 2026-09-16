@@ -71,6 +71,8 @@ type ISession interface {
 	SessionSave(ctx context.Context, session *Session) error
 	// SessionQueryByID session 查询
 	SessionQueryByID(ctx context.Context, sessionID string) *Session
+	// ThreadQueryByID 线程信息查询
+	ThreadQueryByID(ctx context.Context, sessionID string) *SessionThread
 	// ThreadSave session codex thread 保存
 	ThreadSave(ctx context.Context, thread *SessionThread) error
 	// LastThread 查询session对应的最后thread
@@ -90,6 +92,10 @@ type ISession interface {
 }
 
 type sessionDefautStorage struct{}
+
+func (s *sessionDefautStorage) ThreadQueryByID(ctx context.Context, sessionID string) *SessionThread {
+	return nil
+}
 
 func (s *sessionDefautStorage) SessionQueryByID(ctx context.Context, sessionID string) *Session {
 	return nil
@@ -157,6 +163,15 @@ func (s *sessionStorage) SessionQueryByID(ctx context.Context, sessionID string)
 	var ret Session
 	s.db.WithContext(ctx).Where("session_id = ?", sessionID).First(&ret)
 	if ret.SessionID == "" {
+		return nil
+	}
+	return &ret
+}
+
+func (s *sessionStorage) ThreadQueryByID(ctx context.Context, threadID string) *SessionThread {
+	var ret SessionThread
+	s.db.WithContext(ctx).Where("thread_id = ?", threadID).First(&ret)
+	if ret.ThreadID == "" {
 		return nil
 	}
 	return &ret

@@ -3,6 +3,7 @@ package serv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,8 +66,25 @@ func buildMcpTool(tool IMcpTool) server.ServerTool {
 	return server.ServerTool{
 		Tool: t,
 		Handler: func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			// todo 获取用户ID
-			userID := "000000"
+			var userID string
+			// 查询请求头是否附带了状态数据，如果存在，从请求头的状态数据获取用户信息
+			if UserQueryFun != nil && request.Params.Meta != nil && len(request.Params.Meta.AdditionalFields) > 0 {
+				if threadID, ok := request.Params.Meta.AdditionalFields["threadId"].(string); ok {
+					userID = UserQueryFun(ctx, threadID)
+				}
+			}
+			if userID == "" { // 没有获取到用户信息的，从上下文中获取
+				user := ctx.Value("user")
+				if user != nil {
+					if id, ok := user.(string); ok {
+						userID = id
+					}
+				}
+			}
+			if userID == "" { //获取不到用户信息返回无效请求
+				return nil, errors.New("invalid request")
+			}
+
 			token, err := edp.GetToken(userID)
 			if err != nil {
 				return nil, fmt.Errorf("获取 token 失败: %w", err)
@@ -87,6 +105,9 @@ func buildMcpTool(tool IMcpTool) server.ServerTool {
 // TmpDir 临时文件路径
 var TmpDir string
 var TmpUrl string
+
+// UserQueryFun 用户查询对象
+var UserQueryFun func(ctx context.Context, threadID string) string
 
 func OrgID(org string) string {
 	if org == "越南" || org == "BANGJIE KNITTING(Viet Nam)COMPANY LIMITED/棒杰针织（越南）有限公司" {
