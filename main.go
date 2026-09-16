@@ -50,11 +50,20 @@ func main() {
 		return
 	}
 	defer channel.StopAll()
-	sqlite, err := db.NewSQLiteStorage(filepath.Join(cfg.Workspace, "buibui.db"))
-	if err != nil {
-		panic(err)
+	var dataStorage *db.Data
+	if cfg.DataBase != nil {
+		ms, err := db.NewMysqlStorage(cfg.DataBase.Username, cfg.DataBase.Password, cfg.DataBase.Server, cfg.DataBase.Database)
+		if err != nil {
+			panic(err)
+		}
+		dataStorage = db.NewData(ms)
+	} else {
+		sqlite, err := db.NewSQLiteStorage(filepath.Join(cfg.Workspace, "buibui.db"))
+		if err != nil {
+			panic(err)
+		}
+		dataStorage = db.NewData(sqlite)
 	}
-	dataStorage := db.NewData(sqlite)
 	manager := core.NewManager(msgBus, dataStorage)
 	defer manager.Stop()
 	err = manager.InitFromConfig(ctx, &cfg.ManagerConfig)

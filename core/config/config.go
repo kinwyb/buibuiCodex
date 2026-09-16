@@ -12,6 +12,14 @@ type Config struct {
 	Log       *LogConfig       `json:"log"`       // 日志配置
 	WebSocket *WebSocketConfig `json:"websocket"` // WebSocket 服务配置
 	McpServer *MCPServerConfig `json:"mcp_server"`
+	DataBase  *DBConfig        `json:"database"`
+}
+
+type DBConfig struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Server   string `json:"server"`
+	Database string `json:"database"`
 }
 
 // ProviderConfig 供应商配置
