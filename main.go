@@ -102,12 +102,10 @@ func main() {
 				event, ok := echan.Consume(ctx)
 				if ok {
 					switch event.Type {
-					case types.EventMessageStart:
-						fmt.Println("\n↩️ 回复开始: [" + event.EventID + "]")
-					case types.EventMessageDelta:
-						//fmt.Print(event.Message.Content)
-					case types.EventMessageCompleted:
-						fmt.Println("\n✅ 完整回复: [" + event.EventID + "]\n" + event.Message.Content)
+					case types.EventUserMessageStart:
+						fmt.Println("\n⌛️ 用户提问: [" + event.EventID + "]")
+					case types.EventUserMessageCompleted:
+						fmt.Println("\n☑️ 提问接受: [" + event.Message.Content + "]")
 					case types.EventReasoningStart:
 						fmt.Println("\n🤔思考中...[" + event.EventID + "]")
 					case types.EventReasoningDelta:
@@ -124,6 +122,12 @@ func main() {
 						}
 					case types.EventError:
 						slog.Error("🙅 error: " + event.Message.Content)
+					case types.EventMessageStart:
+						fmt.Println("\n↩️ 回复开始: [" + event.EventID + "]")
+					case types.EventMessageDelta:
+						//fmt.Print(event.Message.Content)
+					case types.EventMessageCompleted:
+						fmt.Println("\n✅ 完整回复: [" + event.EventID + "]\n" + event.Message.Content)
 					}
 				}
 			}

@@ -11,17 +11,19 @@ const (
 type EventType string
 
 const (
-	EventReasoningStart     EventType = "reasoning_start"
-	EventReasoningDelta     EventType = "reasoning_delta"
-	EventReasoningCompleted EventType = "reasoning_completed"
-	EventMessageStart       EventType = "message_start"
-	EventMessageDelta       EventType = "message_delta"
-	EventMessageCompleted   EventType = "message_completed"
-	EventToolStart          EventType = "tool_start"
-	EventToolCompleted      EventType = "tool_completed"
-	EventError              EventType = "error"
-	EventApproval           EventType = "approval"
-	EventFinished           EventType = "finished"
+	EventUserMessageStart     EventType = "user_message_start"
+	EventUserMessageCompleted EventType = "user_message_completed"
+	EventReasoningStart       EventType = "reasoning_start"
+	EventReasoningDelta       EventType = "reasoning_delta"
+	EventReasoningCompleted   EventType = "reasoning_completed"
+	EventMessageStart         EventType = "message_start"
+	EventMessageDelta         EventType = "message_delta"
+	EventMessageCompleted     EventType = "message_completed"
+	EventToolStart            EventType = "tool_start"
+	EventToolCompleted        EventType = "tool_completed"
+	EventError                EventType = "error"
+	EventApproval             EventType = "approval"
+	EventFinished             EventType = "finished"
 )
 
 type Event struct {
