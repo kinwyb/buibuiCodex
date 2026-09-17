@@ -118,11 +118,12 @@ func (h *History) History(sessionID string, agent string) string {
 	}
 	// 拼装上下文 Prompt
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("【前情历史上下文】\n以下是之前最后%d轮的对话记录与工具执行结果，可用于参考：\n\n", len(historys)))
+	builder.WriteString(fmt.Sprintf("<history> 以下是之前最后%d轮的对话记录与工具执行结果，可用于参考：\n\n", len(historys)))
 	for i, hs := range historys {
 		builder.WriteString(fmt.Sprintf("=== Turn %d ===\n", i+1))
 		builder.WriteString(hs.String())
 	}
+	builder.WriteString(" </history>")
 	return builder.String()
 }
 
@@ -230,10 +231,10 @@ func extractLastNTurns(filePath string, n int) ([]*historyTurnSession, error) {
 						if strings.HasPrefix(strings.TrimSpace(c.Text), "<environment_context>") {
 							continue
 						}
-						// 过滤掉历史消息的会话内容？
-						//if strings.HasPrefix(strings.TrimSpace(c.Text), "【前情历史上下文】") {
-						//	continue
-						//}
+						// 过滤掉历史消息的会话内容
+						if strings.HasPrefix(strings.TrimSpace(c.Text), "<history>") {
+							continue
+						}
 						session.Message = append(session.Message, historyMessage{
 							Role:    "user",
 							Content: c.Text,
