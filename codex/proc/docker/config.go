@@ -16,6 +16,17 @@ type CodexConfig struct {
 	SandboxMode    string                     `toml:"sandbox_mode,omitempty"`
 	ModelProviders map[string]ModelProvider   `toml:"model_providers,omitempty"`
 	MCPServers     map[string]MCPServerConfig `toml:"mcp_servers,omitempty"`
+	Features       *Features                  `toml:"features,omitempty"`
+	Memories       *Memories                  `toml:"memories,omitempty"`
+}
+
+type Features struct {
+	Memory *bool `toml:"memories,omitempty" description:"记忆是否启用"`
+}
+
+type Memories struct {
+	Use      *bool `toml:"use_memories,omitempty" description:"是否在会话中注入记忆"`
+	Generate *bool `toml:"generate_memories,omitempty" description:"是否使用会话生成记忆"`
 }
 
 // ModelProvider 模型供应商配置
@@ -49,21 +60,12 @@ func ensureCodexConfig(codexHome string, cfg CodexConfig) error {
 
 	configPath := filepath.Join(codexHome, "config.toml")
 
-	// 读取现有配置
-	existing, err := loadConfig(configPath)
-	if err != nil {
-		return err
-	}
-
-	// 合并配置（新配置覆盖旧配置）
-	merged := mergeConfig(existing, cfg)
-
 	// 写入配置
-	if err := saveConfig(configPath, merged); err != nil {
+	if err := saveConfig(configPath, &cfg); err != nil {
 		return err
 	}
 
-	slog.Info(fmt.Sprintf("已更新 Codex 配置: %s", configPath))
+	slog.Info(fmt.Sprintf("Codex 配置已生成: %s", configPath))
 	return nil
 }
 
@@ -96,39 +98,4 @@ func saveConfig(path string, cfg *CodexConfig) error {
 		return fmt.Errorf("写入 config.toml 失败: %w", err)
 	}
 	return nil
-}
-
-// mergeConfig 合并配置，新配置覆盖旧配置
-func mergeConfig(existing *CodexConfig, update CodexConfig) *CodexConfig {
-	result := *existing
-
-	// 基础字段：非空则覆盖
-	if update.OpenAIBaseURL != "" {
-		result.OpenAIBaseURL = update.OpenAIBaseURL
-	}
-	if update.SandboxMode != "" {
-		result.SandboxMode = update.SandboxMode
-	}
-
-	// ModelProviders：合并 map
-	if len(update.ModelProviders) > 0 {
-		if result.ModelProviders == nil {
-			result.ModelProviders = make(map[string]ModelProvider)
-		}
-		for name, provider := range update.ModelProviders {
-			result.ModelProviders[name] = provider
-		}
-	}
-
-	// MCPServers：合并 map
-	if len(update.MCPServers) > 0 {
-		if result.MCPServers == nil {
-			result.MCPServers = make(map[string]MCPServerConfig)
-		}
-		for name, server := range update.MCPServers {
-			result.MCPServers[name] = server
-		}
-	}
-
-	return &result
 }

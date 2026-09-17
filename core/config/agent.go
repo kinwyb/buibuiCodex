@@ -27,6 +27,7 @@ type AgentConfig struct {
 	Mcp          []string              `json:"mcp,omitempty"` //mcp配置
 	MCPProvider  map[string]*MCPConfig `json:"mcp_provider,omitempty"`
 	DockerImage  string                `json:"docker_image"`
+	EnableMemory bool                  `json:"enable_memory"`
 	WorkSpace    string                `json:"-"` //agent工作区
 	Provider     *ProviderConfig       `json:"-"` //供应商配置
 	SessionDB    db.ISession           `json:"-"`
@@ -114,5 +115,6 @@ func (cfg *ManagerConfig) ResolveAgentConfig(name string) (*AgentConfig, error) 
 		MCPProvider:  agent.MCPProvider,
 		SkillDir:     filepath.Join(cfg.Workspace, "skills"),
 		DockerImage:  dockerImage,
+		EnableMemory: agent.EnableMemory,
 	}, nil
 }

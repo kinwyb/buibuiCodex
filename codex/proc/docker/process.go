@@ -32,6 +32,7 @@ type StartParam struct {
 	Env            []string                   `description:"环境变量"`
 	ModelProviders map[string]ModelProvider   `description:"模型供应商"`
 	MCP            map[string]MCPServerConfig `description:"MCP配置"`
+	Memories       bool                       `description:"是否启用记忆"`
 }
 
 func (s *StartParam) ToCodexConfig() CodexConfig {
@@ -40,6 +41,13 @@ func (s *StartParam) ToCodexConfig() CodexConfig {
 		SandboxMode:    "workspace-write",
 		ModelProviders: s.ModelProviders,
 		MCPServers:     s.MCP,
+		Memories: &Memories{
+			Use:      new(true),
+			Generate: new(true),
+		},
+	}
+	if s.Memories {
+		codexConfig.Features = &Features{Memory: new(true)}
 	}
 	return codexConfig
 }

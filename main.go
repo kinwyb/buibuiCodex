@@ -21,9 +21,9 @@ import (
 )
 
 func main() {
-	cfgPath, err := getConfigPath()
-	//cfgPath = "/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/buibui.json"
-	//err = nil
+	//cfgPath, err := getConfigPath()
+	cfgPath := "/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/buibui.json"
+	var err error
 	if err != nil {
 		slog.Error("config path err", "error", err)
 		return

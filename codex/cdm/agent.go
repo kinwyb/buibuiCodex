@@ -103,6 +103,7 @@ func (a *Agent) initProcess() error {
 		},
 		MCP:            make(map[string]docker.MCPServerConfig),
 		ModelProviders: make(map[string]docker.ModelProvider),
+		Memories:       a.cfg.EnableMemory,
 	}
 	startParam.ModelProviders[a.cfg.ProviderName] = docker.ModelProvider{
 		BaseURL:            a.cfg.Provider.APIBaseURL,
