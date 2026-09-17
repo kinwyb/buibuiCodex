@@ -3,6 +3,7 @@ FROM node:26.7-bookworm-slim
 
 # 设置环境变量 ENV
 ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # 1. 安装 Python3、Git 以及基础构建/工具链
 RUN apt-get update && apt-get install -y --no-install-recommends \
