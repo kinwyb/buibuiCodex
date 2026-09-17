@@ -38,7 +38,7 @@ type SessionTurn struct {
 	Answer             string     `json:"answer" gorm:"type:text"`           // AI回答
 	IsCompleted        bool       `json:"is_completed" gorm:"default:false"` // 是否已完整回答
 	CreatedAt          time.Time  `json:"created_at" gorm:"index;not null"`  // 创建时间
-	CompletedAt        time.Time  `json:"completed_at"`                      // 完成时间
+	CompletedAt        *time.Time `json:"completed_at"`                      // 完成时间
 	ModelContextWindow int64      `json:"modelContextWindow"`                // 模型最大上下文窗口
 	TokenUsage         TokenUsage `json:"last" gorm:"embedded"`              // 本轮交互用量
 }

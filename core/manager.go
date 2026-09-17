@@ -455,7 +455,7 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 				ReqID:       state.ReqID,
 				Answer:      "handler拦截返回:" + reply,
 				IsCompleted: true,
-				CompletedAt: time.Now(),
+				CompletedAt: new(time.Now()),
 			})
 			if dbErr != nil {
 				slog.Error("fail to save db completed turn ", "error", dbErr.Error())
@@ -488,7 +488,7 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 		ReqID:       state.ReqID,
 		Answer:      answer,
 		IsCompleted: true,
-		CompletedAt: time.Now(),
+		CompletedAt: new(time.Now()),
 	})
 	if dbErr != nil {
 		slog.Error("fail to save db completed turn ", "error", dbErr.Error())
