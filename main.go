@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/gookit/rotatefile"
 	"github.com/kinwyb/buibuiCodex/channel"
 	_ "github.com/kinwyb/buibuiCodex/channel/wxcom"
 	"github.com/kinwyb/buibuiCodex/core"
@@ -20,15 +21,6 @@ import (
 )
 
 func main() {
-	// 1. 定义 Handler 选项，将日志级别设置为 LevelDebug
-	opts := &slog.HandlerOptions{
-		Level: slog.LevelDebug, // 开启 Debug 级别（会输出 Debug, Info, Warn, Error）
-	}
-	// 2. 使用选项创建 Handler（可选 slog.NewTextHandler 或 slog.NewJSONHandler）
-	handler := slog.NewTextHandler(os.Stdout, opts)
-	// 3. 构建并设置为默认 Logger
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
 	cfgPath, err := getConfigPath()
 	//cfgPath = "/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/buibui.json"
 	//err = nil
@@ -43,6 +35,7 @@ func main() {
 		slog.Error("load config failed: ", "error", err)
 		return
 	}
+	initLog(cfg.Log)
 	msgBus := bus.NewMessageBus(100)
 
 	channel := channel.NewManager(msgBus)
@@ -160,4 +153,43 @@ func getConfigPath() (string, error) {
 	// 3. 拼接配置文件路径
 	configPath := filepath.Join(exeDir, "buibui.json")
 	return configPath, nil
+}
+
+func initLog(cfg *config.LogConfig) {
+	if cfg == nil {
+		cfg = &config.LogConfig{
+			Level:      "info",
+			MaxBackups: 7,
+			MaxSize:    100,
+			Compress:   false,
+		}
+	}
+	logLevel := slog.LevelDebug
+	switch cfg.Level {
+	case "info":
+		logLevel = slog.LevelInfo
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	}
+	opts := &slog.HandlerOptions{
+		Level: logLevel,
+	}
+	if cfg.File != "" {
+		// 配置 rotatefile：按天轮转，保留 30 天
+		w, _ := rotatefile.NewConfig(cfg.File, func(c *rotatefile.Config) {
+			c.MaxSize = uint64(cfg.MaxSize) * rotatefile.OneMByte
+			c.RotateTime = rotatefile.EveryDay
+			c.BackupNum = uint(cfg.MaxBackups)
+			c.Compress = cfg.Compress
+		}).Create()
+
+		logger := slog.New(slog.NewJSONHandler(w, opts))
+		slog.SetDefault(logger)
+	} else {
+		// 设置为默认 Logger
+		logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
+		slog.SetDefault(logger)
+	}
 }

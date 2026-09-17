@@ -49,7 +49,6 @@ type LogConfig struct {
 	File       string `json:"file"`        // 日志文件路径（可选），为空则输出到 stdout
 	MaxSize    int    `json:"max_size"`    // 单个日志文件最大大小（MB），默认 100
 	MaxBackups int    `json:"max_backups"` // 保留的旧日志文件数量，默认 3
-	MaxAge     int    `json:"max_age"`     // 保留旧日志文件的最大天数，默认 7
 	Compress   bool   `json:"compress"`    // 是否压缩旧日志文件，默认 false
 }
 
