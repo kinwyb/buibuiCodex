@@ -155,6 +155,13 @@ func (a *Agent) initProcess() error {
 	client.RegisterDefaultEventHandler(a.clientEvent)
 	a.client = client
 	a.isInit = true
+	// 禁用默认的skill
+	// 默认的图片生成skill
+	skill := codex.NewSkill(client)
+	skilErr := skill.Disable(context.Background(), "/root/.codex/skills/.system/imagegen/SKILL.md")
+	if skilErr != nil {
+		slog.Error("disable system imagegen skill failed", "error", skilErr)
+	}
 	return nil
 }
 
