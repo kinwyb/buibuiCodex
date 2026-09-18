@@ -310,6 +310,18 @@ func (m *Manager) Cancel(sessionKey string) {
 func (m *Manager) CancelSession(sessionKey string) bool {
 	// 要从sequence中获取到运行的状态，进行取消
 	slog.Info("取消 agent 会话", "sessionKey", sessionKey)
+	agent := m.defaultAgent
+	m.sessionAgentMux.Lock()
+	agentName := m.sessionAgent[sessionKey]
+	m.sessionAgentMux.Unlock()
+	if agentName != "" {
+		if ag, exists := m.agents[agentName]; exists {
+			agent = ag
+		}
+	}
+	if agent != nil {
+		agent.Cancel(m.ctx, sessionKey)
+	}
 	return true
 }
 
