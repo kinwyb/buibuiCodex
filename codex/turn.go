@@ -110,6 +110,20 @@ func (t *Turn) Interrupt(ctx context.Context) error {
 	return nil
 }
 
+// Steer 添加额外的用户信息给当前的运行的trun
+func (t *Turn) Steer(ctx context.Context, input []jsonRpc.InputItem) error {
+	params := jsonRpc.TurnSteerParams{
+		ThreadID: t.thread.threadID,
+		TurnID:   t.turnID,
+		Input:    input,
+	}
+	err := t.client.Call(ctx, TurnSteer, params, nil)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // RegisterEventHandler 注册事件处理
 func (t *Turn) RegisterEventHandler(handler EventHandler) {
 	t.event = handler

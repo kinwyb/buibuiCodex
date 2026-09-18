@@ -24,20 +24,22 @@ import (
 
 // Manager 管理多个 Agent 实例
 type Manager struct {
-	agents       map[string]types.Agent // agentID -> Agent
-	defaultAgent types.Agent            // 默认 Agent
-	bus          *bus.MessageBus
-	workspace    string // 工作区根目录
-	mu           sync.RWMutex
-	cancelCh     chan string // sessionKey 取消信号 channel
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	sequence     *sessionSequence
-	dataStorage  *db.Data
-	pathMapper   map[string]*pathmap.PathMapper // 路径映射器
-	agHandler    []types.AgentProcessHandler    // agent处理拦截器
-	cronManager  *cron.Manager
+	agents          map[string]types.Agent // agentID -> Agent
+	defaultAgent    types.Agent            // 默认 Agent
+	bus             *bus.MessageBus
+	workspace       string // 工作区根目录
+	mu              sync.RWMutex
+	cancelCh        chan string // sessionKey 取消信号 channel
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
+	sequence        *sessionSequence
+	sessionAgentMux sync.Mutex
+	sessionAgent    map[string]string //session当前运行的agent
+	dataStorage     *db.Data
+	pathMapper      map[string]*pathmap.PathMapper // 路径映射器
+	agHandler       []types.AgentProcessHandler    // agent处理拦截器
+	cronManager     *cron.Manager
 }
 
 // NewManager 创建 Agent 管理器
@@ -47,13 +49,14 @@ func NewManager(msgBus *bus.MessageBus, dbStorage *db.Data) *Manager {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ret := &Manager{
-		agents:      make(map[string]types.Agent),
-		bus:         msgBus,
-		ctx:         ctx,
-		cancel:      cancel,
-		cancelCh:    make(chan string, 10),
-		pathMapper:  make(map[string]*pathmap.PathMapper),
-		dataStorage: dbStorage,
+		agents:       make(map[string]types.Agent),
+		bus:          msgBus,
+		ctx:          ctx,
+		cancel:       cancel,
+		cancelCh:     make(chan string, 10),
+		pathMapper:   make(map[string]*pathmap.PathMapper),
+		dataStorage:  dbStorage,
+		sessionAgent: make(map[string]string),
 	}
 	return ret
 }
@@ -422,7 +425,14 @@ func (m *Manager) resolveAgent(ctx context.Context, msg *types.InputMessage) (ag
 
 // agent执行
 func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.Agent) error {
-
+	m.sessionAgentMux.Lock()
+	m.sessionAgent[state.SessionID] = agent.AgentID()
+	m.sessionAgentMux.Unlock()
+	defer func() {
+		m.sessionAgentMux.Lock()
+		delete(m.sessionAgent, state.SessionID)
+		m.sessionAgentMux.Unlock()
+	}()
 	// 保存请求信息
 	quest := state.Input.Content
 	if quest == "" {
@@ -525,8 +535,66 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 		m.log(ctx, bus.LogLevelError, "manager", fmt.Sprintf("Failed to publish error outbound: %v", pubErr))
 	}
 	return err
+}
 
-	return nil
+// agent执行中附加信息
+func (m *Manager) agentSteer(ctx context.Context, state *types.State) {
+
+	msg := state.Input
+	agent := m.defaultAgent
+	m.sessionAgentMux.Lock()
+	agentName := m.sessionAgent[state.SessionID]
+	m.sessionAgentMux.Unlock()
+	if agentName != "" {
+		if ag, exists := m.agents[agentName]; exists {
+			agent = ag
+		} else {
+			m.log(ctx, bus.LogLevelWarn, "manager", fmt.Sprintf("Target agent '%s' not found, using default", msg.AgentName))
+		}
+	}
+
+	// 入站路径转换：本地路径 -> 宿主机路径（LLM 可见）
+	m.mapMediaToContainer(agent.AgentID(), state.Input)
+	// 保存请求信息
+	quest := state.Input.Content
+	if quest == "" {
+		questV, _ := json.Marshal(state.Input.Media)
+		quest = "附加信息：" + string(questV)
+	}
+	dbErr := m.dataStorage.Session().RequestSave(ctx, state.ReqID, quest, agent.AgentID())
+	if dbErr != nil {
+		slog.Error("failed to save request", "error", dbErr)
+	}
+
+	// 使用 Agent 处理消息
+	err := agent.Steer(ctx, state)
+	if err != nil {
+		// 保存进数据库turn完成
+		answer := "成功"
+		if err != nil {
+			answer = "失败：" + err.Error()
+		}
+		dbErr = m.dataStorage.Session().TurnSave(ctx, &db.SessionTurn{
+			ReqID:       state.ReqID,
+			Answer:      answer,
+			IsCompleted: true,
+			CompletedAt: new(time.Now()),
+		})
+		if dbErr != nil {
+			slog.Error("fail to save db completed turn ", "error", dbErr.Error())
+		}
+
+		// 同时发布 OutboundMessage，确保调用方能收到响应不会卡住
+		outBound := state.BuildEvent()
+		outBound.Type = types.EventError
+		outBound.Message = &types.Message{
+			Role:    types.RoleSystem,
+			Content: "失败：" + err.Error(),
+		}
+		if pubErr := m.bus.PublishEvent(ctx, outBound); pubErr != nil {
+			m.log(ctx, bus.LogLevelError, "manager", fmt.Sprintf("Failed to publish error outbound: %v", pubErr))
+		}
+	}
 }
 
 // handleAgentEvent 处理 Agent 事件，转发到消息总线

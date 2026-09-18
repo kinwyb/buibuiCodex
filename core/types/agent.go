@@ -15,6 +15,8 @@ type Agent interface {
 	Prompt(ctx context.Context, state *State) error
 	// Approve 提交审批结果
 	Approve(approvalID any, approve jsonRpc.ApprovalDecision) error
+	// Steer 运行中附加信息
+	Steer(ctx context.Context, state *State) error
 	// Cancel 取消
 	Cancel(ctx context.Context, sessionID string) error
 	// Stop 停止Agent

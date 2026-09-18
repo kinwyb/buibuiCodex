@@ -166,7 +166,7 @@ func (a *Agent) initProcess() error {
 }
 
 // getThread 获取线程，返回：线程,历史消息,错误
-func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (*codex.Thread, string, error) {
+func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *Command) (*codex.Thread, string, error) {
 	a.epMu.Lock()
 	defer a.epMu.Unlock()
 	historyContent := ""
@@ -174,13 +174,13 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (
 	thread.SubUnknowTurnEvent(a.unknowThreadEventHandler)
 	waitResume := true
 	turn, ok := a.eps[sessionID]
-	if cmd.newThread || !ok {
+	if cmd.NewThread || !ok {
 		// 查询数据库中使用过的thread
 		dbThread := a.cfg.SessionDB.LastThread(ctx, sessionID, a.AgentID())
 		if dbThread != nil && time.Now().Sub(dbThread.LastUpdate) > 1*time.Hour {
 			dbThread = nil
 		}
-		if !cmd.newThread && dbThread != nil {
+		if !cmd.NewThread && dbThread != nil {
 			turn = &codexTurn{
 				startTime:      dbThread.CreateTime.Unix(),
 				threadID:       dbThread.ThreadID,
@@ -189,7 +189,7 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *command) (
 		} else {
 			// 没有有效的thread，创建新的thread
 			waitResume = false
-			if !cmd.newThread && a.historyTurnN > 0 { //用户没有指定要求新开线程，注入历史消息内容
+			if !cmd.NewThread && a.historyTurnN > 0 { //用户没有指定要求新开线程，注入历史消息内容
 				history := NewHistory(filepath.Join(a.cfg.WorkSpace, "root"), a.cfg.SessionDB, a.historyTurnN)
 				historyContent = history.History(sessionID, a.AgentID())
 			}
@@ -274,8 +274,8 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	if err != nil {
 		return err
 	}
-	cmd := commandParse(state.Input.Content)
-	state.Input.Content = cmd.msg
+	cmd := CommandParse(state.Input.Content)
+	state.Input.Content = cmd.Msg
 	thread, hisotryContent, err := a.getThread(ctx, state.SessionID, cmd)
 	if err != nil {
 		return err
@@ -337,6 +337,26 @@ func (a *Agent) Approve(reqID any, approve jsonRpc.ApprovalDecision) error {
 		slog.Error("response approve request error", "error", err.Error())
 	}
 	return err
+}
+
+// Steer 请求运行时添加附带信息
+func (a *Agent) Steer(ctx context.Context, state *types.State) error {
+	a.epMu.Lock()
+	ct, ok := a.eps[state.SessionID]
+	a.epMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no running turn instance for session %s", state.SessionID)
+	}
+	turn := ct.turn
+	if turn == nil {
+		return fmt.Errorf("no running turn instance for session %s", state.SessionID)
+	}
+	inputs := a.buildInput(turn, state.Input)
+	err := turn.Steer(ctx, inputs)
+	if err != nil {
+		return fmt.Errorf("turn steer fail: %w", err)
+	}
+	return nil
 }
 
 func (a *Agent) buildInput(turn *codex.Turn, message *types.InputMessage, inputs ...jsonRpc.InputItem) []jsonRpc.InputItem {

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kinwyb/buibuiCodex/codex/cdm"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/types"
 )
@@ -13,6 +14,7 @@ import (
 type sessionHandler interface {
 	messageHandler(ctx context.Context, state *types.State)
 	busyNotification(ctx context.Context, msg *types.InputMessage, isStore bool)
+	agentSteer(ctx context.Context, state *types.State)
 	log(ctx context.Context, level, source, message string)
 }
 
@@ -57,6 +59,10 @@ func (s *sessionSequence) log(ctx context.Context, level, source, message string
 	slog.Debug("[sessionSequence] message log")
 }
 
+func (s *sessionSequence) agentSteer(ctx context.Context, state *types.State) {
+	slog.Debug("[sessionSequence] message agent steer")
+}
+
 func newSessionSequence(ctx context.Context, inputSub *bus.InboundSubscription) *sessionSequence {
 	nctx, cancel := context.WithCancel(ctx)
 	return &sessionSequence{
@@ -93,6 +99,14 @@ func (s *sessionSequence) Start(handler sessionHandler) error {
 		msg, ok := s.inBoundSub.Consume(s.ctx)
 		if !ok {
 			return nil
+		}
+		if msg.Content != "" {
+			cmd := cdm.CommandParse(msg.Content)
+			if cmd != nil && cmd.Steer {
+				msg.Content = cmd.Msg
+				state := types.NewState(msg)
+				s.handler.agentSteer(s.ctx, state)
+			}
 		}
 		select {
 		case s.spawnLimit <- struct{}{}:

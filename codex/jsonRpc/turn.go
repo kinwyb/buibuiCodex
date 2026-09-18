@@ -43,3 +43,10 @@ type TurnInterruptParams struct {
 	ThreadID string `json:"threadId"`
 	TurnID   string `json:"turnId"`
 }
+
+// TurnSteerParams 附加 Turn 信息请求参数
+type TurnSteerParams struct {
+	ThreadID string      `json:"threadId"`       // 小驼峰
+	Input    []InputItem `json:"input"`          // 注意：这里必须是数组 sequence
+	TurnID   string      `json:"expectedTurnId"` //执行的turnID
+}

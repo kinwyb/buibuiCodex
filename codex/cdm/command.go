@@ -2,22 +2,29 @@ package cdm
 
 import "strings"
 
-type command struct {
-	msg       string
-	newThread bool //新线程
+type Command struct {
+	Msg       string
+	NewThread bool //新线程
+	Steer     bool //附加消息
 }
 
-// commandParse 命令解析
-func commandParse(msg string) *command {
+// CommandParse 命令解析
+func CommandParse(msg string) *Command {
 	if msg != "" {
 		if after, ok := strings.CutPrefix(msg, "/new "); ok {
-			return &command{
-				msg:       after,
-				newThread: true,
+			return &Command{
+				Msg:       after,
+				NewThread: true,
+			}
+		}
+		if after, ok := strings.CutPrefix(msg, "/steer "); ok {
+			return &Command{
+				Msg:   after,
+				Steer: true,
 			}
 		}
 	}
-	return &command{
-		msg: msg,
+	return &Command{
+		Msg: msg,
 	}
 }
