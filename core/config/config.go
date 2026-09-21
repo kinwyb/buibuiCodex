@@ -44,12 +44,6 @@ type MCPConfig struct {
 }
 
 func (m *MCPConfig) merger(s *MCPConfig) {
-	if s.Name != m.Name {
-		return
-	}
-	if s.Enabled != m.Enabled {
-		return
-	}
 	if s.Command != "" {
 		m.Command = s.Command
 	}

@@ -84,7 +84,6 @@ func main() {
 		Issuer:    mcpConfig.Issuer,
 		Audience:  mcpConfig.Audience,
 		JWKSURL:   mcpConfig.JWKSURL,
-		TokenMap:  mcpConfig.TokenMap,
 	}, dataStorage.Session())
 	go ms.Start(ctx)
 	defer ms.Stop(ctx)

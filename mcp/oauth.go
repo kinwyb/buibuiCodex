@@ -53,11 +53,13 @@ func (m *authMiddleware) Middleware(next http.Handler) http.Handler {
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
-		claims, err := m.validateAuthenticate(token)
-		if err != nil {
+		var claims *Claims
+		var err error
+		if after, found := strings.CutPrefix(token, "boda-"); found {
+			claims, err = m.validateAuthenticate(after)
+		} else {
 			claims, err = m.validateJWT(token)
 		}
-
 		if err != nil {
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
