@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/mcp/serv"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/finance"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/order"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -99,7 +101,7 @@ func (m *Mcp) Start(ctx context.Context) error {
 	serv.UserQueryFun = m.codexThreadParseUser
 	// 初始化 MCP 服务
 	s := server.NewMCPServer(m.cfg.Name, m.cfg.Version, server.WithToolCapabilities(true),
-		server.WithLogging())
+		server.WithLogging(), server.WithToolFilter(m.toolFilter))
 	// 注册工具
 	order.InitTool()
 	finance.InitTool()
@@ -232,4 +234,24 @@ func (m *Mcp) codexThreadParseUser(ctx context.Context, threadID string) string 
 		return ""
 	}
 	return session.UserID
+}
+
+func (m *Mcp) toolFilter(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
+	role := ctx.Value("role")
+	if role == nil {
+		return tools
+	}
+	roleString, ok := role.(string)
+	if !ok || roleString == "" {
+		return tools
+	}
+	roles := strings.Split(roleString, ",")
+	var activeTools []mcp.Tool
+	for _, tool := range tools {
+		namePrefix, _, found := strings.Cut(tool.GetName(), "_")
+		if found && slices.Contains(roles, namePrefix) {
+			activeTools = append(activeTools, tool)
+		}
+	}
+	return activeTools
 }

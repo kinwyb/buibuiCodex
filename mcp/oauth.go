@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/kinwyb/buibuiCodex/mcp/edp"
 )
 
 // authMiddleware 校验 Authorization 头中的 OAuth2 Bearer Token。
@@ -54,21 +55,18 @@ func (m *authMiddleware) Middleware(next http.Handler) http.Handler {
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
-		if len(m.authenticate) > 0 {
-			if user, ok := m.authenticate[token]; ok {
-				ctx := context.WithValue(r.Context(), "user", user)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
+		claims, err := m.validateAuthenticate(token)
+		if err != nil {
+			claims, err = m.validateJWT(token)
 		}
 
-		claims, err := m.validateJWT(token)
 		if err != nil {
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), "user", claims.UserID)
+		ctx = context.WithValue(ctx, "role", claims.Role)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -108,6 +106,23 @@ func (m *authMiddleware) validateJWT(tokenString string) (*Claims, error) {
 		claims.UserID = claims.Subject
 	}
 	return claims, nil
+}
+
+func (m *authMiddleware) validateAuthenticate(auth string) (*Claims, error) {
+	// aes揭秘获取用户以及访问权限
+	authDate, err := edp.Decrypto(auth)
+	if err != nil {
+		return nil, errors.New("invalid token")
+	}
+	before, after, found := strings.Cut(authDate, "_")
+	if !found {
+		return nil, errors.New("invalid token")
+	}
+	return &Claims{
+		UserID:           before,
+		Role:             after,
+		RegisteredClaims: jwt.RegisteredClaims{},
+	}, nil
 }
 
 // Claims 是令牌中本服务关心的字段。
