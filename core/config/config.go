@@ -43,6 +43,33 @@ type MCPConfig struct {
 	Headers map[string]string `json:"http_headers,omitempty"`
 }
 
+func (m *MCPConfig) merger(s *MCPConfig) {
+	if s.Name != m.Name {
+		return
+	}
+	if s.Enabled != m.Enabled {
+		return
+	}
+	if s.Command != "" {
+		m.Command = s.Command
+	}
+	if len(s.Args) > 0 {
+		m.Args = s.Args
+	}
+	if s.Env != nil {
+		m.Env = s.Env
+	}
+	if s.Auth != "" {
+		m.Auth = s.Auth
+	}
+	if s.URL != "" {
+		m.URL = s.URL
+	}
+	if s.Headers == nil {
+		m.Headers = s.Headers
+	}
+}
+
 // LogConfig 日志配置
 type LogConfig struct {
 	Level      string `json:"level"`       // 日志级别: debug, info, warn, error

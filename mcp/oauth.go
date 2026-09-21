@@ -22,18 +22,16 @@ type authMiddleware struct {
 	audience string // 期望的 aud（本服务的资源标识），为空则跳过校验
 	// resourceMetadataURL 用于在 401 响应中通过 WWW-Authenticate 告知客户端去哪里发现元数据
 	resourceMetadataURL string
-	authenticate        map[string]string
 }
 
 // NewAuthMiddleware 创建认证中间件。
 // jwksURL 为授权服务器的 JWKS 端点，例如 https://localhost/.well-known/jwks.json
-func NewAuthMiddleware(issuer, audience, jwksURL, resourceMetadataURL string, authMap map[string]string) *authMiddleware {
+func NewAuthMiddleware(issuer, audience, jwksURL, resourceMetadataURL string) *authMiddleware {
 	return &authMiddleware{
 		keys:                newKeyStore(jwksURL),
 		issuer:              issuer,
 		audience:            audience,
 		resourceMetadataURL: resourceMetadataURL,
-		authenticate:        authMap,
 	}
 }
 

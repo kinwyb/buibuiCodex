@@ -98,7 +98,11 @@ func (cfg *ManagerConfig) ResolveAgentConfig(name string) (*AgentConfig, error) 
 		if agent.MCPProvider == nil {
 			agent.MCPProvider = make(map[string]*MCPConfig)
 		}
-		agent.MCPProvider[v.Name] = v
+		agMcp := *v
+		if ap := agent.MCPProvider[agMcp.Name]; ap != nil {
+			agMcp.merger(ap)
+		}
+		agent.MCPProvider[v.Name] = &agMcp
 	}
 	dockerImage := agent.DockerImage
 	if dockerImage == "" {

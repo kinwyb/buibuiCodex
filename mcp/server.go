@@ -27,7 +27,6 @@ type Config struct {
 	Version   string            `description:"mcp服务版本"`
 	BaseURL   string            `description:"基础信息"`
 	UserMap   map[string]string `description:"用户映射"`
-	TokenMap  map[string]string `description:"授权映射"`
 	Host      string            `description:"公开地址"`
 	Issuer    string            `description:"授权服务器issuer"`
 	Audience  string            `description:"资源标识(本服务对外地址)"`
@@ -80,7 +79,7 @@ func NewMcp(cfg *Config, sess db.ISession) *Mcp {
 		cfg:  cfg,
 		sess: sess,
 		// 使用授权服务器公布的 JWKS 公钥验签（RS256），不再使用对称密钥。
-		oauthMid: NewAuthMiddleware(cfg.Issuer, cfg.Audience, cfg.JWKSURL, cfg.resourceMetadataURL(), cfg.TokenMap),
+		oauthMid: NewAuthMiddleware(cfg.Issuer, cfg.Audience, cfg.JWKSURL, cfg.resourceMetadataURL()),
 	}
 }
 
