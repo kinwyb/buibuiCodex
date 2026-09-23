@@ -128,7 +128,9 @@ func (m *authMiddleware) validateAuthenticate(auth string) (*Claims, error) {
 // Claims 是令牌中本服务关心的字段。
 // jwt.RegisteredClaims 已包含 iss / sub / aud / exp / iat 等标准声明。
 type Claims struct {
-	UserID string `json:"user_id"`
-	Role   string `json:"role"`
+	UserID     string `json:"user_id"`
+	EmployeeNo string `json:"employee_no"`
+	Role       string `json:"role"`
+	Name       string `json:"name"`
 	jwt.RegisteredClaims
 }

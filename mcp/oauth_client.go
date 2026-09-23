@@ -50,10 +50,10 @@ func NewOAuth2Client(cfg *OAuth2Config) *OAuth2Client {
 	}
 	issuer := strings.TrimSuffix(cfg.Issuer, "/")
 	if cfg.TokenEndpoint == "" {
-		cfg.TokenEndpoint = issuer + "/oauth/token"
+		cfg.TokenEndpoint = issuer + "/oauth2/token"
 	}
 	if cfg.AuthEndpoint == "" {
-		cfg.AuthEndpoint = issuer + "/oauth/authorize"
+		cfg.AuthEndpoint = issuer + "/oauth2/authorize"
 	}
 	if len(cfg.Scopes) == 0 {
 		cfg.Scopes = []string{"openid", "profile", "email"}
@@ -218,9 +218,11 @@ func (c *OAuth2Client) HandleCallback(w http.ResponseWriter, r *http.Request) {
 <h1>授权成功</h1>
 <p><strong>Access Token (JWT):</strong></p>
 <pre style="word-break:break-all;white-space:pre-wrap;max-width:800px;">%s</pre>
+<strong>ID Token (JWT):</strong></p>
+<pre style="word-break:break-all;white-space:pre-wrap;max-width:800px;">%s</pre>
 %s
 <p>Expires in: %d seconds</p>
-</body></html>`, tok.AccessToken, refreshNote, tok.ExpiresIn)
+</body></html>`, tok.AccessToken, tok.IDToken, refreshNote, tok.ExpiresIn)
 }
 
 // ServeHTTP 使 OAuth2Client 可直接作为 http.Handler 注册到路由。
