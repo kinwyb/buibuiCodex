@@ -3,16 +3,18 @@ package config
 import "strings"
 
 type MCPServerConfig struct {
-	Name      string            `description:"mcp名称" json:"name"`
-	WorkSpace string            `description:"工作区" json:"-"`
-	Port      int               `description:"监听地址" json:"port"`
-	Version   string            `description:"mcp服务版本" json:"version"`
-	BaseURL   string            `description:"基础信息" json:"baseURL"`
-	UserMap   map[string]string `description:"用户映射" json:"userMap"`
-	Host      string            `description:"公共路径" json:"host"`
-	Issuer    string            `description:"授权服务器issuer" json:"issuer"`
-	Audience  string            `description:"资源标识(令牌audience)" json:"audience"`
-	JWKSURL   string            `description:"授权服务器JWKS地址" json:"jwksURL"`
+	Name         string            `description:"mcp名称" json:"name"`
+	WorkSpace    string            `description:"工作区" json:"-"`
+	Port         int               `description:"监听地址" json:"port"`
+	Version      string            `description:"mcp服务版本" json:"version"`
+	BaseURL      string            `description:"基础信息" json:"baseURL"`
+	UserMap      map[string]string `description:"用户映射" json:"userMap"`
+	Host         string            `description:"公共路径" json:"host"`
+	Issuer       string            `description:"授权服务器issuer" json:"issuer"`
+	Audience     string            `description:"资源标识(令牌audience)" json:"audience"`
+	JWKSURL      string            `description:"授权服务器JWKS地址" json:"jwksURL"`
+	ClientID     string            `description:"客户的ID" json:"clientID"`
+	ClientSecret string            `description:"客户的密钥" json:"clientSecret"`
 }
 
 func (m *MCPServerConfig) SetDefaults() {

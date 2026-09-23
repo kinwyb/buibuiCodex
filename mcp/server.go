@@ -31,6 +31,7 @@ type Config struct {
 	Issuer    string            `description:"授权服务器issuer"`
 	Audience  string            `description:"资源标识(本服务对外地址)"`
 	JWKSURL   string            `description:"授权服务器JWKS地址"`
+	OAuth2    *OAuth2Config     `description:"OAuth2客户端配置(可选)"`
 }
 
 // applyOAuthDefaults 为 OAuth 相关字段补默认值。
@@ -129,6 +130,11 @@ func (m *Mcp) Start(ctx context.Context) error {
 	mux.Handle("/tmp_file", m)
 	mux.Handle("/mcp", m.oauthMid.Middleware(m.httpServer))
 	mux.Handle("/", m.httpServer)
+	// 注册 OAuth2 回调路由（仅在配置了 OAuth2 客户端时生效）
+	if oauthClient := NewOAuth2Client(m.oauth2Cfg()); oauthClient != nil {
+		mux.Handle("/oauth/callback", oauthClient)
+		slog.Info("OAuth2 回调路由已注册", "redirect_uri", m.oauth2Cfg().RedirectURL)
+	}
 	go func() {
 		slog.Info("MCP server started")
 		if err := m.httpServer.Start(m.cfg.Address); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -146,6 +152,24 @@ func (m *Mcp) oauth() *server.ProtectedResourceMetadataConfig {
 		BearerMethodsSupported: []string{"header"},
 		ResourceName:           "Boda MCP Server",
 	}
+}
+
+// oauth2Cfg 合并主配置与 OAuth2 子配置，确保 Issuer 等字段不缺失。
+func (m *Mcp) oauth2Cfg() *OAuth2Config {
+	if m.cfg.OAuth2 == nil {
+		return &OAuth2Config{
+			Issuer:      m.cfg.Issuer,
+			RedirectURL: strings.TrimSuffix(m.cfg.Host, "/") + "/oauth/callback",
+		}
+	}
+	cfg := *m.cfg.OAuth2
+	if cfg.Issuer == "" {
+		cfg.Issuer = m.cfg.Issuer
+	}
+	if cfg.RedirectURL == "" {
+		cfg.RedirectURL = strings.TrimSuffix(m.cfg.Host, "/") + "/oauth/callback"
+	}
+	return &cfg
 }
 
 func (m *Mcp) Stop(ctx context.Context) error {

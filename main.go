@@ -84,6 +84,10 @@ func main() {
 		Issuer:    mcpConfig.Issuer,
 		Audience:  mcpConfig.Audience,
 		JWKSURL:   mcpConfig.JWKSURL,
+		OAuth2: &mcp.OAuth2Config{
+			ClientID:     mcpConfig.ClientID,
+			ClientSecret: mcpConfig.ClientSecret,
+		},
 	}, dataStorage.Session())
 	go ms.Start(ctx)
 	defer ms.Stop(ctx)
