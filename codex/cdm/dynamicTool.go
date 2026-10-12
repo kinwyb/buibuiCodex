@@ -54,7 +54,7 @@ func (a *Agent) dynamicToolDo(state *types.State, call *jsonRpc.ToolCall) (*json
 	slog.Info("dynamic tool do :" + call.Tool + " => " + call.CallId)
 	var tGroup *toolGroup
 	for _, toolNs := range a.tools {
-		if toolNs.nameSpace == call.Namespace {
+		if toolNs.nameSpace == strings.TrimPrefix(call.Namespace, "heldiam") {
 			tGroup = toolNs
 			break
 		}
