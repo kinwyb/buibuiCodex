@@ -68,8 +68,8 @@ defer wsServer.Stop(shutdownCtx) // 建议带 5s 超时的 context
 ```bash
 wscat -c "ws://127.0.0.1:8765/ws?token=alice"
 # token 即当前连接的身份（默认实现），会话键会是 ws_alice_<chatID>
-# 连上后先收到 hello，然后可直接发：
-{"v":1,"id":"c1","kind":"client","type":"chat.send","data":{"chatID":"demo","content":"你好"}}
+# 连上后先收到 hello，里面带 userID 与 chatID，之后发消息不必再传对话信息
+{"v":1,"id":"c1","kind":"client","type":"chat.send","data":{"content":"你好"}}
 ```
 
 浏览器端最小示例：
@@ -153,7 +153,7 @@ server ──> command ──> conn ──> protocol
 
 | type | 时机 | data |
 | --- | --- | --- |
-| `hello` | 连接建立后第一帧 | `clientID`、`userID`、`protocol`、`agents`、`defaultAgent`、`heartbeat` |
+| `hello` | 连接建立后第一帧 | `clientID`、`userID`、`chatID`、`protocol`、`agents`、`defaultAgent`、`heartbeat` |
 | `ack` | 上行请求受理 | `ok`、`sessionID`、`chatID`、`reqID` |
 | `pong` | 收到 `ping` | `clientTS`、`serverTS` |
 | `error` | 任何失败 | `code`、`message`、`detail` |
@@ -209,7 +209,7 @@ delta == false   全量快照，整体覆盖当前消息
 | `agent.list` | — | 拉取可用 agent |
 | `session.history` | `sessionID?`、`chatID?`、`threadID?`、`beforeSeq?`、`since?`、`limit?` | 拉取历史消息，见 5.1 |
 
-`chat.send` 的 `chatID` 为空时由服务端生成，`ack` 会同时返回 `chatID` 与 `sessionID`（`ws_<userID>_<chatID>`）。前端应保存 `chatID`，后续续聊与历史查询都用它。
+`chat.send` 可以不传 `chatID` 与 `sessionID`：服务端会沿用连接当前的对话（即 `hello` 下发的 `chatID`），前端只需持有登录 token。传 `chatID` 表示切换到该对话，连接上下文随之更新；`ack` 会返回本次使用的 `chatID` 与 `sessionID`（`ws_<userID>_<chatID>`）。
 
 ### 3.5 错误码
 
@@ -309,25 +309,33 @@ delta == false   全量快照，整体覆盖当前消息
 
 ```go
 // core/ws/server/server.go
-type Authenticator func(token string) (userID string, ok bool)
+type Authenticator func(token string) (userID string, chatID string, ok bool)
 ```
 
-默认实现 `DefaultAuthenticator`：**token 即 userID**，只校验格式（字母、数字、短横线，长度 ≤ 64），不校验有效性。
+返回值语义：
 
-需要真实鉴权时通过 `Options.Authenticator` 注入，返回 `ok=false` 则握手返回 401：
+- `ok=false` → 握手返回 401
+- `chatID` 为空 → 服务端生成 uuid，通过 `hello` 下发
+- `chatID` 非空 → 直接作为当前对话，适合「一个 token 固定一个对话」或从库里恢复最近会话
+
+默认实现 `DefaultAuthenticator`：token 即 userID，`chatID` 留空，只校验 token 格式（字母、数字、短横线，长度 ≤ 64）。
+
+接入真实鉴权时通过 `Options.Authenticator` 注入：
 
 ```go
 wsServer := ws.New(ws.Options{
     // ...
-    Authenticator: func(token string) (string, bool) {
-        userID, err := auth.Verify(token) // 查库 / 校验 JWT
+    Authenticator: func(token string) (string, string, bool) {
+        user, err := auth.Verify(token) // 查库 / 校验 JWT
         if err != nil {
-            return "", false
+            return "", "", false
         }
-        return userID, true
+        return user.ID, user.CurrentChatID, true
     },
 })
 ```
+
+前端最简用法：只带 token，`hello` 里拿到 `chatID` 后直接 `chat.send`，不需要自己生成或保存任何对话标识；要切换对话时再显式传 `chatID`。
 
 token 传递：`?token=xxx` 或 `Authorization: Bearer xxx`，Header 优先。
 

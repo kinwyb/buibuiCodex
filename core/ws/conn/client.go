@@ -24,6 +24,14 @@ type Handler interface {
 	DispatchCommand(c *Client, env *protocol.Envelope)
 }
 
+// Identity 连接身份：由握手阶段解析，决定会话归属
+type Identity struct {
+	// UserID 用户标识，参与会话键构造 ws_<userID>_<chatID>
+	UserID string
+	// ChatID 当前对话标识，前端不传时后续消息都落在这个对话里
+	ChatID string
+}
+
 // Client 单条 WebSocket 连接。
 // 读与写分别由独立的 goroutine 负责：gorilla/websocket 不允许并发写。
 type Client struct {
@@ -34,20 +42,24 @@ type Client struct {
 	handler Handler
 	cfg     Config
 
+	chatMu sync.RWMutex
+	chatID string
+
 	send      chan []byte
 	done      chan struct{}
 	closed    atomic.Bool
 	closeOnce sync.Once
 }
 
-// NewClient 创建连接。userID 由握手阶段解析，用于会话归属隔离与审计。
-func NewClient(cfg Config, ws *websocket.Conn, hub *Hub, handler Handler, userID string) *Client {
+// NewClient 创建连接。identity 由握手阶段解析，用于会话归属隔离与审计。
+func NewClient(cfg Config, ws *websocket.Conn, hub *Hub, handler Handler, identity Identity) *Client {
 	if cfg.SendBuffer <= 0 {
 		cfg.SendBuffer = 256
 	}
 	return &Client{
 		id:      uuid.NewString(),
-		userID:  userID,
+		userID:  identity.UserID,
+		chatID:  identity.ChatID,
 		conn:    ws,
 		hub:     hub,
 		handler: handler,
@@ -65,6 +77,23 @@ func (c *Client) ID() string {
 // UserID 返回连接所属用户，会话键为 ws_<userID>_<chatID>
 func (c *Client) UserID() string {
 	return c.userID
+}
+
+// ChatID 返回当前对话标识
+func (c *Client) ChatID() string {
+	c.chatMu.RLock()
+	defer c.chatMu.RUnlock()
+	return c.chatID
+}
+
+// SetChatID 切换当前对话，后续未显式指定时沿用该值
+func (c *Client) SetChatID(chatID string) {
+	if chatID == "" {
+		return
+	}
+	c.chatMu.Lock()
+	c.chatID = chatID
+	c.chatMu.Unlock()
 }
 
 // Outbound 返回出站消息队列，仅用于测试与调试观察，业务代码不应消费

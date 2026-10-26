@@ -86,8 +86,11 @@ type ErrorBody struct {
 
 // HelloData 连接建立后下发的握手信息
 type HelloData struct {
-	ClientID     string      `json:"clientID"`
-	UserID       string      `json:"userID"` // 当前连接的用户身份，会话键前缀为 ws_<userID>_
+	ClientID string `json:"clientID"`
+	UserID   string `json:"userID"` // 当前连接的用户身份，会话键前缀为 ws_<userID>_
+	// ChatID 当前对话标识。由身份解析函数返回或服务端生成，
+	// 客户端后续不传 chatID 时消息都会落在这个对话里。
+	ChatID       string      `json:"chatID"`
 	Protocol     int         `json:"protocol"`
 	Agents       []AgentInfo `json:"agents,omitempty"`
 	DefaultAgent string      `json:"defaultAgent,omitempty"`

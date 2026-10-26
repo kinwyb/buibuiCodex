@@ -9,8 +9,8 @@ import (
 
 func TestHubDispatchBySession(t *testing.T) {
 	h := NewHub()
-	a := NewClient(Config{SendBuffer: 8}, nil, h, nil, "web")
-	b := NewClient(Config{SendBuffer: 8}, nil, h, nil, "web")
+	a := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{UserID: "web"})
+	b := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{UserID: "web"})
 	h.Add(a)
 	h.Add(b)
 	h.Subscribe(a, "s1")
@@ -43,7 +43,7 @@ func TestHubDispatchBySession(t *testing.T) {
 
 func TestHubRemoveCleansSubscriptions(t *testing.T) {
 	h := NewHub()
-	c := NewClient(Config{SendBuffer: 8}, nil, h, nil, "web")
+	c := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{UserID: "web"})
 	h.Add(c)
 	h.Subscribe(c, "s1")
 	if h.SessionCount() != 1 {
@@ -58,8 +58,8 @@ func TestHubRemoveCleansSubscriptions(t *testing.T) {
 
 func TestHubBroadcast(t *testing.T) {
 	h := NewHub()
-	a := NewClient(Config{SendBuffer: 8}, nil, h, nil, "web")
-	b := NewClient(Config{SendBuffer: 8}, nil, h, nil, "web")
+	a := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{UserID: "web"})
+	b := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{UserID: "web"})
 	h.Add(a)
 	h.Add(b)
 
@@ -77,7 +77,7 @@ func TestHubBroadcast(t *testing.T) {
 
 func TestHubBackpressureDropsDelta(t *testing.T) {
 	h := NewHub()
-	c := NewClient(Config{SendBuffer: 1}, nil, h, nil, "web")
+	c := NewClient(Config{SendBuffer: 1}, nil, h, nil, Identity{UserID: "web"})
 	h.Add(c)
 	h.Subscribe(c, "s1")
 

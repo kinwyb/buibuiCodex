@@ -72,6 +72,9 @@ func TestHandshakeAndPing(t *testing.T) {
 	if hd.UserID != "tk" {
 		t.Fatalf("token 应直接作为 userID，实际 %s", hd.UserID)
 	}
+	if hd.ChatID == "" {
+		t.Fatal("hello 应下发当前对话标识")
+	}
 	if len(hd.Agents) != 1 || hd.Agents[0].Name != "codex" {
 		t.Fatalf("hello 应携带 agent 列表: %+v", hd.Agents)
 	}
@@ -188,12 +191,12 @@ func TestCustomAuthenticator(t *testing.T) {
 	s := New(Options{
 		Config: &config.WebSocketConfig{Enabled: true, SendBuffer: 8},
 		Bus:    msgBus,
-		// 模拟接入真实鉴权：token 校验后映射为业务用户 ID
-		Authenticator: func(token string) (string, bool) {
+		// 模拟接入真实鉴权：token 校验后映射为业务用户 ID，并绑定固定对话
+		Authenticator: func(token string) (string, string, bool) {
 			if token == "jwt-alice" {
-				return "u1001", true
+				return "u1001", "chat-01", true
 			}
-			return "", false
+			return "", "", false
 		},
 	})
 	conn := dial(t, s, "?token=jwt-alice")
@@ -204,6 +207,9 @@ func TestCustomAuthenticator(t *testing.T) {
 	}
 	if hd.UserID != "u1001" {
 		t.Fatalf("应使用自定义身份解析结果，实际 %s", hd.UserID)
+	}
+	if hd.ChatID != "chat-01" {
+		t.Fatalf("应使用自定义对话标识，实际 %s", hd.ChatID)
 	}
 
 	// 未通过自定义校验的 token 必须被拒绝

@@ -37,7 +37,7 @@ func newTestClient(hub *conn.Hub) *conn.Client {
 }
 
 func newTestClientAs(hub *conn.Hub, userID string) *conn.Client {
-	c := conn.NewClient(conn.Config{SendBuffer: 8}, nil, hub, nil, userID)
+	c := conn.NewClient(conn.Config{SendBuffer: 8}, nil, hub, nil, conn.Identity{UserID: userID})
 	hub.Add(c)
 	return c
 }
@@ -263,6 +263,91 @@ func TestSessionHistoryRejectsForeignSession(t *testing.T) {
 	}
 	if hub.SessionCount() != 0 {
 		t.Fatalf("拒绝后不应订阅该会话，实际 %d", hub.SessionCount())
+	}
+}
+
+func TestChatSendUsesClientChatID(t *testing.T) {
+	msgBus := bus.NewMessageBus(10)
+	defer msgBus.Close()
+
+	sub, err := msgBus.SubscribeInput()
+	if err != nil {
+		t.Fatalf("订阅入站消息失败: %v", err)
+	}
+	defer sub.Close()
+
+	reg, hub := newTestRegistry(msgBus, nil)
+	c := newTestClientAs(hub, "alice")
+	// 模拟 hello 阶段服务端确定的当前对话
+	c.SetChatID("chat-from-hello")
+
+	// 前端只带 token，不传 chatID / sessionID
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{Content: "继续"})
+	reg.Dispatch(context.Background(), c, env)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	in, ok := sub.Consume(ctx)
+	if !ok || in == nil {
+		t.Fatal("未收到入站消息")
+	}
+	if in.ChatID != "chat-from-hello" {
+		t.Fatalf("应沿用连接上的对话标识，实际 %s", in.ChatID)
+	}
+	if in.Session != "ws_alice_chat-from-hello" {
+		t.Fatalf("会话键不符合预期: %s", in.Session)
+	}
+}
+
+func TestChatSendSwitchesChatID(t *testing.T) {
+	msgBus := bus.NewMessageBus(10)
+	defer msgBus.Close()
+
+	sub, err := msgBus.SubscribeInput()
+	if err != nil {
+		t.Fatalf("订阅入站消息失败: %v", err)
+	}
+	defer sub.Close()
+
+	reg, hub := newTestRegistry(msgBus, nil)
+	c := newTestClientAs(hub, "alice")
+	c.SetChatID("chat-a")
+
+	// 显式传 chatID 时应切换到新对话，并更新连接上下文
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{ChatID: "chat-b", Content: "新对话"})
+	reg.Dispatch(context.Background(), c, env)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	in, ok := sub.Consume(ctx)
+	if !ok || in == nil {
+		t.Fatal("未收到入站消息")
+	}
+	if in.ChatID != "chat-b" || in.Session != "ws_alice_chat-b" {
+		t.Fatalf("应切换到指定对话: chatID=%s session=%s", in.ChatID, in.Session)
+	}
+	if c.ChatID() != "chat-b" {
+		t.Fatalf("连接上下文应更新为新对话，实际 %s", c.ChatID())
+	}
+}
+
+func TestChatCancelUsesClientChatID(t *testing.T) {
+	reg, hub := newTestRegistry(nil, nil)
+	c := newTestClientAs(hub, "alice")
+	c.SetChatID("chat-a")
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatCancel)
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	// 未提供取消器时应走到 internal，说明 session 已从连接上下文推导出来
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeInternal {
+		t.Fatalf("应从连接上下文推导会话，错误码 %s", body.Code)
 	}
 }
 

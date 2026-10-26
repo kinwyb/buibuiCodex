@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
@@ -21,18 +22,23 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
 )
 
-// Authenticator 由 token 解析用户身份。
-// 返回空 userID 或 ok=false 表示拒绝连接（HTTP 401）。
-// 返回值会拼进会话键 ws_<userID>_<chatID>，因此必须是合法标识（见 validUserID）。
-type Authenticator func(token string) (userID string, ok bool)
+// Authenticator 由 token 解析连接身份。
+//
+// 返回 (userID, chatID, ok)：
+//   - ok=false 表示拒绝连接（HTTP 401）
+//   - chatID 为空时由服务端生成，客户端可通过 hello 拿到
+//   - 需要「一个 token 固定对应一个对话」时，直接在这里返回 chatID
+//
+// userID 会拼进会话键 ws_<userID>_<chatID>，必须是合法标识（见 validUserID）。
+type Authenticator func(token string) (userID string, chatID string, ok bool)
 
-// DefaultAuthenticator 默认实现：token 即用户标识，只校验格式，不校验有效性。
-// TODO 接入真实鉴权（查库/缓存/JWT）时替换本函数，返回业务侧用户 ID。
-func DefaultAuthenticator(token string) (string, bool) {
+// DefaultAuthenticator 默认实现：token 即用户标识，对话由服务端生成。
+// TODO 接入真实鉴权（查库/缓存/JWT）时替换本函数，可同时返回该用户当前的对话 ID。
+func DefaultAuthenticator(token string) (string, string, bool) {
 	if !validUserID(token) {
-		return "", false
+		return "", "", false
 	}
-	return token, true
+	return token, "", true
 }
 
 // Options 服务启动参数
@@ -237,8 +243,17 @@ func (s *Server) SessionCount() int {
 
 // handleWebSocket 处理连接升级
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	userID, ok := s.authenticate(r)
+	userID, chatID, ok := s.authenticate(r)
 	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		// 前端只带 token 时，由服务端确定当前对话
+		chatID = uuid.NewString()
+	} else if len(chatID) > maxChatIDLength {
+		s.log.Warn("websocket chatID too long", "user", userID, "length", len(chatID))
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -252,11 +267,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := conn.NewClient(s.clientCfg, rawConn, s.hub, s, userID)
+	c := conn.NewClient(s.clientCfg, rawConn, s.hub, s, conn.Identity{UserID: userID, ChatID: chatID})
 	s.hub.Add(c)
 	c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypeHello).WithData(&protocol.HelloData{
 		ClientID:     c.ID(),
 		UserID:       userID,
+		ChatID:       chatID,
 		Protocol:     protocol.ProtocolVersion,
 		Agents:       command.AgentInfos(s.opts.Agents),
 		DefaultAgent: s.cfg.DefaultAgent,
@@ -266,8 +282,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	c.Run()
 }
 
+// maxChatIDLength 对话标识最大长度，防止异常值进入会话键
+const maxChatIDLength = 128
+
 // authenticate 解析连接身份，失败时返回 401
-func (s *Server) authenticate(r *http.Request) (string, bool) {
+func (s *Server) authenticate(r *http.Request) (userID string, chatID string, ok bool) {
 	return s.auth(s.requestToken(r))
 }
 

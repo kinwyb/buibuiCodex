@@ -165,12 +165,21 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 	}
 
 	chatID := strings.TrimSpace(data.ChatID)
+	if chatID == "" && sessionID != "" {
+		// 从会话键反推 chatID，保证连接上下文与本次会话一致
+		chatID = strings.TrimPrefix(sessionID, r.deps.Channel+"_"+userID+"_")
+	}
+	if chatID == "" {
+		// 前端只带 token 时，沿用握手阶段确定的当前对话
+		chatID = c.ChatID()
+	}
 	if chatID == "" {
 		chatID = uuid.NewString()
 	}
 	if sessionID == "" {
 		sessionID = r.SessionKey(userID, chatID)
 	}
+	c.SetChatID(chatID)
 
 	msg := &types.InputMessage{
 		ID:        uuid.NewString(),
@@ -207,8 +216,12 @@ func (r *Registry) chatCancel(_ context.Context, c *conn.Client, env *protocol.E
 	}
 	userID := c.UserID()
 	sessionID := strings.TrimSpace(data.SessionID)
-	if sessionID == "" && strings.TrimSpace(data.ChatID) != "" {
-		sessionID = r.SessionKey(userID, data.ChatID)
+	chatID := strings.TrimSpace(data.ChatID)
+	if chatID == "" {
+		chatID = c.ChatID()
+	}
+	if sessionID == "" && chatID != "" {
+		sessionID = r.SessionKey(userID, chatID)
 	}
 	if sessionID == "" {
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 sessionID 或 chatID"})
@@ -250,8 +263,12 @@ func (r *Registry) sessionHistory(ctx context.Context, c *conn.Client, env *prot
 
 	userID := c.UserID()
 	sessionID := strings.TrimSpace(data.SessionID)
-	if sessionID == "" && strings.TrimSpace(data.ChatID) != "" {
-		sessionID = r.SessionKey(userID, data.ChatID)
+	chatID := strings.TrimSpace(data.ChatID)
+	if chatID == "" {
+		chatID = c.ChatID()
+	}
+	if sessionID == "" && chatID != "" {
+		sessionID = r.SessionKey(userID, chatID)
 	}
 	if sessionID == "" {
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 sessionID 或 chatID"})
