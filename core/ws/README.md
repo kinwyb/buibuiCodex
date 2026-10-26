@@ -23,8 +23,6 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
   "host": "0.0.0.0",
   "port": 8765,
   "path": "/ws",
-  "auth_token": "",
-  "users": { "tok-alice": "alice", "tok-bob": "bob" },
   "allow_origins": ["*"],
   "max_clients": 100,
   "send_buffer": 256,
@@ -41,8 +39,6 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
 | `enabled` | false | 是否启用 |
 | `host` / `port` | 0.0.0.0 / 8765 | 监听地址 |
 | `path` | `/ws` | 升级路径 |
-| `auth_token` | 空 | 单用户模式：校验通过后身份固定为 `web`；为空则不校验 |
-| `users` | 空 | 多用户模式：`token → userID`，配置后优先于 `auth_token`。userID 只允许字母、数字、短横线 |
 | `allow_origins` | 空 | 为空不限制；支持 `*`、完整 Origin、主机名 |
 | `max_clients` | 100 | 超过返回 503 |
 | `send_buffer` | 256 | 单连接发送队列长度，满时的策略见第 6 节 |
@@ -70,7 +66,8 @@ defer wsServer.Stop(shutdownCtx) // 建议带 5s 超时的 context
 ### 1.3 联调
 
 ```bash
-wscat -c "ws://127.0.0.1:8765/ws?token=xxx"
+wscat -c "ws://127.0.0.1:8765/ws?token=alice"
+# token 即当前连接的身份（默认实现），会话键会是 ws_alice_<chatID>
 # 连上后先收到 hello，然后可直接发：
 {"v":1,"id":"c1","kind":"client","type":"chat.send","data":{"chatID":"demo","content":"你好"}}
 ```
@@ -157,7 +154,7 @@ server ──> command ──> conn ──> protocol
 | type | 时机 | data |
 | --- | --- | --- |
 | `hello` | 连接建立后第一帧 | `clientID`、`userID`、`protocol`、`agents`、`defaultAgent`、`heartbeat` |
-| `ack` | 上行请求受理 | `ok`、`sessionID`、`reqID` |
+| `ack` | 上行请求受理 | `ok`、`sessionID`、`chatID`、`reqID` |
 | `pong` | 收到 `ping` | `clientTS`、`serverTS` |
 | `error` | 任何失败 | `code`、`message`、`detail` |
 | `agent.list` | 收到同名上行命令 | `agents`、`defaultAgent` |
@@ -212,7 +209,7 @@ delta == false   全量快照，整体覆盖当前消息
 | `agent.list` | — | 拉取可用 agent |
 | `session.history` | `sessionID?`、`chatID?`、`threadID?`、`beforeSeq?`、`since?`、`limit?` | 拉取历史消息，见 5.1 |
 
-`chat.send` 的 `chatID` 为空时由服务端生成，并在 `ack.sessionID` 中返回完整会话键；后续请求建议同时带上 `sessionID`。
+`chat.send` 的 `chatID` 为空时由服务端生成，`ack` 会同时返回 `chatID` 与 `sessionID`（`ws_<userID>_<chatID>`）。前端应保存 `chatID`，后续续聊与历史查询都用它。
 
 ### 3.5 错误码
 
@@ -306,25 +303,43 @@ delta == false   全量快照，整体覆盖当前消息
 - `completed=false` 的轮次表示请求已落库但未完成（例如进程重启导致中断），可展示为「已中断」。
 - 补发基于**数据库轮次**而非事件缓冲：断线期间正在生成的那一轮不补逐帧内容，重连后由后续事件或 `message_completed` 覆盖收敛。
 
-### 5.2 多用户与鉴权
+### 5.2 身份与鉴权
 
-身份在握手阶段确定，整个连接生命周期内不变。
+身份在握手阶段确定，整个连接生命周期内不变。解析逻辑是一个可替换的函数：
 
-| 配置 | 身份 | 说明 |
-| --- | --- | --- |
-| `users` 非空 | 查表得到的 userID | token 未登记或 userID 非法 → HTTP 401 |
-| 只配 `auth_token` | 固定 `web` | 共享口令，本质仍是单用户 |
-| 都不配 | 固定 `web` | 仅适合内网/本机 |
+```go
+// core/ws/server/server.go
+type Authenticator func(token string) (userID string, ok bool)
+```
+
+默认实现 `DefaultAuthenticator`：**token 即 userID**，只校验格式（字母、数字、短横线，长度 ≤ 64），不校验有效性。
+
+需要真实鉴权时通过 `Options.Authenticator` 注入，返回 `ok=false` 则握手返回 401：
+
+```go
+wsServer := ws.New(ws.Options{
+    // ...
+    Authenticator: func(token string) (string, bool) {
+        userID, err := auth.Verify(token) // 查库 / 校验 JWT
+        if err != nil {
+            return "", false
+        }
+        return userID, true
+    },
+})
+```
+
+token 传递：`?token=xxx` 或 `Authorization: Bearer xxx`，Header 优先。
 
 三层隔离：
 
 1. **会话键**：`ws_<userID>_<chatID>`，同名对话天然不冲突。
 2. **订阅**：Hub 按 sessionID 分发，连接只收到自己订阅的会话。
-3. **命令校验**：`chat.send` / `chat.cancel` / `session.history` 都检查 `sessionID` 是否为 `ws_<当前 userID>_` 前缀，否则返回 `forbidden`。
+3. **命令校验**：`chat.send` / `chat.cancel` / `session.history` 检查 `sessionID` 是否为 `ws_<当前 userID>_` 前缀，否则返回 `forbidden`。
 
-userID 限制：只允许字母、数字、短横线，**不能含下划线**。归属判断是前缀匹配，`alice` 与 `alice_2` 会让 `ws_alice_` 产生歧义。`validateUsers` 在启动时校验，非法配置直接启动失败。
+userID 限制：只允许字母、数字、短横线，**不能含下划线**。归属判断是前缀匹配，`alice` 与 `alice_2` 会让 `ws_alice_` 产生歧义。自定义 Authenticator 也必须返回合法值，否则该连接的会话命令都会因归属校验失败而被拒绝。
 
-迁移：改造前的会话键是 `ws_web_*`，给对应 token 映射 `web` 即可继续访问旧会话；否则旧历史在新身份下不可见。`hello` 会返回当前 `userID`，前端可用于展示或排查。
+`hello` 会返回当前 `userID`，前端可用于展示或排查。
 
 ---
 
@@ -395,7 +410,7 @@ wsServer.HandleCommand("session.history", func(ctx context.Context, c *conn.Clie
 5. **`conn` 不要 import `server`**，用 `conn.Handler` 接口；`bridge` 不要依赖 `Hub` 具体类型，用 `Dispatcher` 接口。破坏这两条会形成循环依赖。
 6. **`Client.Outbound()` 仅用于测试**，生产代码不要消费，否则消息会被偷走。
 7. **`session_turns` 的关联字段靠 UPDATE 写入，且不会被覆盖**。正常轮次由 `cdm` 建 turn 时写入 `SessionID/ThreadID`；`manager` 完成时只补 `Answer`，因为 gorm 的 `Updates(struct)` 跳过零值字段。真正需要额外带 `SessionID` 的是**不走 cdm 建 turn 的路径**（`BeforeAgent` 拦截、`Steer`、`turn.Start` 失败），所以 `RequestSave` 改为在插入时就带上。新增写路径同样要带，否则该轮次在历史接口里查不到；也不要把 `TurnSave` 改成 `Save`，那会整行覆盖已有字段。
-8. **userID 不能含下划线**。会话键与归属判断都依赖 `ws_<userID>_` 前缀，`alice_2` 会与 `alice` 混淆。`validateUsers` 已在启动时拦截，将来新增身份来源（如 JWT）时同样要校验。
+8. **userID 不能含下划线**。会话键与归属判断依赖 `ws_<userID>_` 前缀，`alice_2` 会与 `alice` 混淆。默认 Authenticator 会直接拒绝这类 token；自定义 Authenticator 也必须保证返回值合法。
 
 ---
 
@@ -412,7 +427,7 @@ go test -race ./core/db/ ./core/ws/...
 | `conn` | 按会话分发、注销清理、广播、背压（delta 丢弃 / 关键帧断开） |
 | `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、历史分组/翻页/补发/订阅、跨用户越权拒绝 |
 | `bridge` | 渠道过滤、完成/错误/审批/增量转换、completed 的 delta=false 断言 |
-| `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、多用户 token 映射、非法 userID 启动失败 |
+| `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、token 即身份、自定义 Authenticator、非法 userID 拒绝 |
 
 ---
 
@@ -422,6 +437,7 @@ go test -race ./core/db/ ./core/ws/...
 - **暂无会话列表接口**：前端需自行保存 chatID / sessionID；如需「历史会话列表」，可按 `Session` 表新增 `session.list`。
 - **不支持审批回传**：`approval` 事件能下发，但客户端无法回应，审批闭环待 P2。
 - **媒体原样透传**：`types.Media` 直接下发，若上游填了 `base64` 会原样传输；P2 计划改为只传 URL，避免大帧拖慢 bridge。
-- **无用户管理**：身份来自静态 token 映射，没有增删改接口与轮换机制，也没有 per-user 连接数/速率限制（`max_clients` 是全局的）。
+- **默认不做真实鉴权**：`DefaultAuthenticator` 只把 token 当 userID，不校验有效性（TODO）。上线前务必替换成查库或 JWT 校验。
+- **无用户管理**：没有用户增删改、token 轮换，也没有 per-user 连接数/速率限制（`max_clients` 是全局的）。
 - **无定向推送**：`Broadcast` 面向所有连接。
 - **未做 delta 合并**：弱网下会出现文字跳跃，如确有必要，在 `conn.writePump` 侧做 per-connection coalescing（16~33ms 窗口），不要动 bridge。

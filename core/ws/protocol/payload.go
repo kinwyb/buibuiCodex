@@ -104,8 +104,10 @@ type AgentInfo struct {
 type AckData struct {
 	OK        bool   `json:"ok"`
 	SessionID string `json:"sessionID,omitempty"`
-	ReqID     string `json:"reqID,omitempty"`
-	Message   string `json:"message,omitempty"`
+	// ChatID 服务端实际使用的对话标识：请求未携带时由服务端生成，前端应保存以便续聊
+	ChatID  string `json:"chatID,omitempty"`
+	ReqID   string `json:"reqID,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // PongData 应用层心跳应答

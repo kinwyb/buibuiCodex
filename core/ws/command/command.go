@@ -195,7 +195,7 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "消息投递失败", Detail: err.Error()})
 		return
 	}
-	c.ReplyAck(env, &protocol.AckData{OK: true, SessionID: sessionID, ReqID: msg.ID})
+	c.ReplyAck(env, &protocol.AckData{OK: true, SessionID: sessionID, ChatID: chatID, ReqID: msg.ID})
 }
 
 // chatCancel 中断指定会话当前运行中的 agent

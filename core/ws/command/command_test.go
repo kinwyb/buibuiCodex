@@ -91,7 +91,7 @@ func TestChatSendPublishesInput(t *testing.T) {
 		if err := ack.DecodeData(&data); err != nil {
 			t.Fatalf("解析 ack 载荷失败: %v", err)
 		}
-		if !data.OK || data.SessionID != "ws_web_c1" || data.ReqID != in.ID {
+		if !data.OK || data.SessionID != "ws_web_c1" || data.ChatID != "c1" || data.ReqID != in.ID {
 			t.Fatalf("ack 载荷不符合预期: %+v", data)
 		}
 	case <-time.After(time.Second):

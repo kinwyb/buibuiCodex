@@ -52,7 +52,7 @@ func TestHandshakeAndPing(t *testing.T) {
 	defer msgBus.Close()
 
 	s := New(Options{
-		Config: &config.WebSocketConfig{Enabled: true, AuthToken: "tk", SendBuffer: 8},
+		Config: &config.WebSocketConfig{Enabled: true, SendBuffer: 8},
 		Bus:    msgBus,
 		Agents: fakeAgents{"codex"},
 	})
@@ -69,8 +69,8 @@ func TestHandshakeAndPing(t *testing.T) {
 	if hd.ClientID == "" || hd.Protocol != protocol.ProtocolVersion {
 		t.Fatalf("hello 载荷不符合预期: %+v", hd)
 	}
-	if hd.UserID != DefaultUser {
-		t.Fatalf("单用户模式下身份应为 %s，实际 %s", DefaultUser, hd.UserID)
+	if hd.UserID != "tk" {
+		t.Fatalf("token 应直接作为 userID，实际 %s", hd.UserID)
 	}
 	if len(hd.Agents) != 1 || hd.Agents[0].Name != "codex" {
 		t.Fatalf("hello 应携带 agent 列表: %+v", hd.Agents)
@@ -103,7 +103,7 @@ func TestAgentList(t *testing.T) {
 		Bus:    msgBus,
 		Agents: fakeAgents{"codex", "coder"},
 	})
-	conn := dial(t, s, "")
+	conn := dial(t, s, "?token=tester")
 	_ = readEnvelope(t, conn) // hello
 
 	req := protocol.NewEnvelope(protocol.KindClient, protocol.TypeAgentList)
@@ -124,7 +124,7 @@ func TestAgentList(t *testing.T) {
 }
 
 func TestRejectsUnauthorized(t *testing.T) {
-	s := New(Options{Config: &config.WebSocketConfig{Enabled: true, AuthToken: "tk"}})
+	s := New(Options{Config: &config.WebSocketConfig{Enabled: true}})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	ts := httptest.NewServer(mux)
@@ -140,17 +140,13 @@ func TestRejectsUnauthorized(t *testing.T) {
 	}
 }
 
-func TestMultiUserToken(t *testing.T) {
+func TestTokenAsUserID(t *testing.T) {
 	msgBus := bus.NewMessageBus(4)
 	defer msgBus.Close()
 
 	s := New(Options{
-		Config: &config.WebSocketConfig{
-			Enabled:    true,
-			SendBuffer: 8,
-			Users:      map[string]string{"tok-a": "alice", "tok-b": "bob"},
-		},
-		Bus: msgBus,
+		Config: &config.WebSocketConfig{Enabled: true, SendBuffer: 8},
+		Bus:    msgBus,
 	})
 
 	helloOf := func(token string) protocol.HelloData {
@@ -163,41 +159,65 @@ func TestMultiUserToken(t *testing.T) {
 		return hd
 	}
 
-	if got := helloOf("tok-a").UserID; got != "alice" {
-		t.Fatalf("tok-a 应识别为 alice，实际 %s", got)
+	if got := helloOf("alice").UserID; got != "alice" {
+		t.Fatalf("token 应直接作为 userID，实际 %s", got)
 	}
-	if got := helloOf("tok-b").UserID; got != "bob" {
-		t.Fatalf("tok-b 应识别为 bob，实际 %s", got)
+	if got := helloOf("bob-2").UserID; got != "bob-2" {
+		t.Fatalf("含短横线的 token 应可用，实际 %s", got)
 	}
 
-	// 未登记的 token 必须被拒绝
+	// userID 会拼进会话键，含下划线等字符的 token 直接拒绝
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?token=unknown"
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?token=bad_user"
 	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err == nil {
-		t.Fatal("未知 token 应握手失败")
+		t.Fatal("非法 userID 应握手失败")
 	}
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("期望 401，实际 %+v", resp)
 	}
 }
 
-func TestStartRejectsInvalidUserID(t *testing.T) {
-	msgBus := bus.NewMessageBus(1)
+func TestCustomAuthenticator(t *testing.T) {
+	msgBus := bus.NewMessageBus(4)
 	defer msgBus.Close()
 
 	s := New(Options{
-		Config: &config.WebSocketConfig{
-			Enabled: true,
-			Users:   map[string]string{"tok": "bad_user"}, // 含下划线会破坏会话键前缀判断
+		Config: &config.WebSocketConfig{Enabled: true, SendBuffer: 8},
+		Bus:    msgBus,
+		// 模拟接入真实鉴权：token 校验后映射为业务用户 ID
+		Authenticator: func(token string) (string, bool) {
+			if token == "jwt-alice" {
+				return "u1001", true
+			}
+			return "", false
 		},
-		Bus: msgBus,
 	})
-	if err := s.Start(t.Context()); err == nil {
-		t.Fatal("非法 userID 应导致启动失败")
+	conn := dial(t, s, "?token=jwt-alice")
+	env := readEnvelope(t, conn)
+	var hd protocol.HelloData
+	if err := env.DecodeData(&hd); err != nil {
+		t.Fatalf("解析 hello 失败: %v", err)
+	}
+	if hd.UserID != "u1001" {
+		t.Fatalf("应使用自定义身份解析结果，实际 %s", hd.UserID)
+	}
+
+	// 未通过自定义校验的 token 必须被拒绝
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", s.handleWebSocket)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?token=other"
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("自定义校验失败时应握手失败")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("期望 401，实际 %+v", resp)
 	}
 }
 
@@ -209,7 +229,7 @@ func TestRejectsTooManyClients(t *testing.T) {
 		Config: &config.WebSocketConfig{Enabled: true, SendBuffer: 8, MaxClients: 1},
 		Bus:    msgBus,
 	})
-	_ = dial(t, s, "")
+	_ = dial(t, s, "?token=tester")
 	time.Sleep(50 * time.Millisecond)
 
 	mux := http.NewServeMux()
@@ -217,7 +237,7 @@ func TestRejectsTooManyClients(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?token=tester"
 	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err == nil {
 		t.Fatal("超过连接上限应握手失败")

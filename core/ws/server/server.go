@@ -3,9 +3,7 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -23,15 +21,30 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
 )
 
+// Authenticator 由 token 解析用户身份。
+// 返回空 userID 或 ok=false 表示拒绝连接（HTTP 401）。
+// 返回值会拼进会话键 ws_<userID>_<chatID>，因此必须是合法标识（见 validUserID）。
+type Authenticator func(token string) (userID string, ok bool)
+
+// DefaultAuthenticator 默认实现：token 即用户标识，只校验格式，不校验有效性。
+// TODO 接入真实鉴权（查库/缓存/JWT）时替换本函数，返回业务侧用户 ID。
+func DefaultAuthenticator(token string) (string, bool) {
+	if !validUserID(token) {
+		return "", false
+	}
+	return token, true
+}
+
 // Options 服务启动参数
 type Options struct {
-	Config    *config.WebSocketConfig // 服务配置
-	Bus       *bus.MessageBus         // 消息总线
-	Canceller command.Canceller       // 会话取消能力，可为空
-	Agents    command.AgentSource     // agent 列表来源，可为空
-	Turns     command.TurnReader      // 历史轮次读取能力，为空时 session.history 不可用
-	Channel   string                  // 入站消息的渠道标识，默认 ws
-	Logger    *slog.Logger            // 日志
+	Config        *config.WebSocketConfig // 服务配置
+	Bus           *bus.MessageBus         // 消息总线
+	Canceller     command.Canceller       // 会话取消能力，可为空
+	Agents        command.AgentSource     // agent 列表来源，可为空
+	Turns         command.TurnReader      // 历史轮次读取能力，为空时 session.history 不可用
+	Authenticator Authenticator           // 身份解析函数，为空时使用 DefaultAuthenticator
+	Channel       string                  // 入站消息的渠道标识，默认 ws
+	Logger        *slog.Logger            // 日志
 }
 
 // Server WebSocket 服务
@@ -43,6 +56,7 @@ type Server struct {
 	hub      *conn.Hub
 	bridge   *bridge.Bridge
 	commands *command.Registry
+	auth     Authenticator
 
 	upgrader  websocket.Upgrader
 	clientCfg conn.Config
@@ -67,6 +81,9 @@ func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	if opts.Authenticator == nil {
+		opts.Authenticator = DefaultAuthenticator
+	}
 
 	pingPeriod := time.Duration(opts.Config.HeartbeatInterval) * time.Second
 	if pingPeriod <= 0 {
@@ -87,6 +104,7 @@ func New(opts Options) *Server {
 		cfg:  opts.Config,
 		log:  opts.Logger,
 		hub:  conn.NewHub(),
+		auth: opts.Authenticator,
 		clientCfg: conn.Config{
 			PongWait:   pongWait,
 			PingPeriod: pingPeriod,
@@ -119,9 +137,6 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	if s.opts.Bus == nil {
 		return errors.New("websocket: message bus is required")
-	}
-	if err := s.validateUsers(); err != nil {
-		return err
 	}
 
 	addr := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
@@ -251,30 +266,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	c.Run()
 }
 
-// DefaultUser 未配置多用户时使用的账号标识。
-// 沿用 "web" 可让改造前的 ws_web_* 会话历史继续可访问。
-const DefaultUser = "web"
-
-// authenticate 解析连接身份，失败时返回 401。
-//   - 配置了 users：按 token 查表确定 userID
-//   - 只配置 auth_token：校验通过后使用 DefaultUser
-//   - 都未配置：放行，使用 DefaultUser
+// authenticate 解析连接身份，失败时返回 401
 func (s *Server) authenticate(r *http.Request) (string, bool) {
-	got := s.requestToken(r)
-	if len(s.cfg.Users) > 0 {
-		userID, ok := s.cfg.Users[got]
-		if !ok || !validUserID(userID) {
-			return "", false
-		}
-		return userID, true
-	}
-	if s.cfg.AuthToken == "" {
-		return DefaultUser, true
-	}
-	if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AuthToken)) == 1 {
-		return DefaultUser, true
-	}
-	return "", false
+	return s.auth(s.requestToken(r))
 }
 
 // requestToken 从 Header 或 query 中提取 token，Header 优先
@@ -299,19 +293,6 @@ func validUserID(id string) bool {
 		}
 	}
 	return true
-}
-
-// validateUsers 启动前校验多用户配置，避免非法 userID 进入会话键
-func (s *Server) validateUsers() error {
-	for token, userID := range s.cfg.Users {
-		if strings.TrimSpace(token) == "" {
-			return errors.New("websocket: users 中存在空 token")
-		}
-		if !validUserID(userID) {
-			return fmt.Errorf("websocket: token %q 对应的 userID %q 非法，只允许字母、数字和短横线", token, userID)
-		}
-	}
-	return nil
 }
 
 // checkOrigin 校验来源，未配置白名单时放行（便于本地联调）
