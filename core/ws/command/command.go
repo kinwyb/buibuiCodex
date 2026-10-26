@@ -42,7 +42,6 @@ type Deps struct {
 	Agents       AgentSource
 	Turns        TurnReader // 历史消息数据源，为空时 session.history 返回未启用
 	Channel      string     // 入站消息的渠道标识
-	AccountID    string     // 入站消息的账号标识
 	DefaultAgent string     // 前端未指定时使用的 agent
 }
 
@@ -115,10 +114,20 @@ func AgentInfos(src AgentSource) []protocol.AgentInfo {
 	return infos
 }
 
-// SessionKey 与 types.InputMessage.SessionID 保持一致的会话键
-func (r *Registry) SessionKey(chatID string) string {
-	key := fmt.Sprintf("%s_%s_%s", r.deps.Channel, r.deps.AccountID, chatID)
+// SessionKey 构造会话键：Channel_UserID_ChatID。
+// AccountID 承载用户身份，因此不同用户的同名 chatID 落在不同会话。
+func (r *Registry) SessionKey(userID, chatID string) string {
+	key := fmt.Sprintf("%s_%s_%s", r.deps.Channel, userID, chatID)
 	return strings.Trim(strings.TrimSpace(key), "_")
+}
+
+// ownsSession 判断会话是否属于该用户。
+// userID 不允许包含下划线（配置层已校验），因此前缀匹配没有歧义。
+func (r *Registry) ownsSession(userID, sessionID string) bool {
+	if userID == "" || sessionID == "" {
+		return false
+	}
+	return strings.HasPrefix(sessionID, r.deps.Channel+"_"+userID+"_")
 }
 
 // ping 应用层心跳，前端可借此测量往返延迟
@@ -148,16 +157,27 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		}
 	}
 
+	userID := c.UserID()
+	sessionID := strings.TrimSpace(data.SessionID)
+	if sessionID != "" && !r.ownsSession(userID, sessionID) {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
+		return
+	}
+
 	chatID := strings.TrimSpace(data.ChatID)
 	if chatID == "" {
 		chatID = uuid.NewString()
 	}
+	if sessionID == "" {
+		sessionID = r.SessionKey(userID, chatID)
+	}
+
 	msg := &types.InputMessage{
 		ID:        uuid.NewString(),
-		Session:   data.SessionID,
+		Session:   sessionID,
 		Channel:   r.deps.Channel,
-		AccountID: r.deps.AccountID,
-		SenderID:  c.ID(),
+		AccountID: userID,
+		SenderID:  userID,
 		ChatID:    chatID,
 		Content:   data.Content,
 		Media:     data.Media,
@@ -165,7 +185,6 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		AgentName: data.Agent,
 		Timestamp: time.Now(),
 	}
-	sessionID := msg.SessionID()
 
 	// 先订阅再发送，避免 agent 首帧早于订阅导致丢失
 	if r.deps.Hub != nil {
@@ -186,12 +205,17 @@ func (r *Registry) chatCancel(_ context.Context, c *conn.Client, env *protocol.E
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "参数解析失败", Detail: err.Error()})
 		return
 	}
+	userID := c.UserID()
 	sessionID := strings.TrimSpace(data.SessionID)
 	if sessionID == "" && strings.TrimSpace(data.ChatID) != "" {
-		sessionID = r.SessionKey(data.ChatID)
+		sessionID = r.SessionKey(userID, data.ChatID)
 	}
 	if sessionID == "" {
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 sessionID 或 chatID"})
+		return
+	}
+	if !r.ownsSession(userID, sessionID) {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
 		return
 	}
 	if r.deps.Canceller == nil {
@@ -224,12 +248,17 @@ func (r *Registry) sessionHistory(ctx context.Context, c *conn.Client, env *prot
 		return
 	}
 
+	userID := c.UserID()
 	sessionID := strings.TrimSpace(data.SessionID)
 	if sessionID == "" && strings.TrimSpace(data.ChatID) != "" {
-		sessionID = r.SessionKey(data.ChatID)
+		sessionID = r.SessionKey(userID, data.ChatID)
 	}
 	if sessionID == "" {
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 sessionID 或 chatID"})
+		return
+	}
+	if !r.ownsSession(userID, sessionID) {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
 		return
 	}
 	if r.deps.Turns == nil {

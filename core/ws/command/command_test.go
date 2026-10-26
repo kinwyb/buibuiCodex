@@ -28,13 +28,16 @@ func newTestRegistryWithTurns(msgBus *bus.MessageBus, agents AgentSource, turns 
 		Agents:       agents,
 		Turns:        turns,
 		Channel:      "ws",
-		AccountID:    "web",
 		DefaultAgent: "codex",
 	}), hub
 }
 
 func newTestClient(hub *conn.Hub) *conn.Client {
-	c := conn.NewClient(conn.Config{SendBuffer: 8}, nil, hub, nil)
+	return newTestClientAs(hub, "web")
+}
+
+func newTestClientAs(hub *conn.Hub, userID string) *conn.Client {
+	c := conn.NewClient(conn.Config{SendBuffer: 8}, nil, hub, nil, userID)
 	hub.Add(c)
 	return c
 }
@@ -178,8 +181,110 @@ func TestDispatchRejectsUnknownType(t *testing.T) {
 func TestSessionKeyMatchesInputMessage(t *testing.T) {
 	reg, _ := newTestRegistry(nil, nil)
 	in := &types.InputMessage{Channel: "ws", AccountID: "web", ChatID: "c1"}
-	if got := reg.SessionKey("c1"); got != in.SessionID() {
+	if got := reg.SessionKey("web", "c1"); got != in.SessionID() {
 		t.Fatalf("会话键不一致: %s != %s", got, in.SessionID())
+	}
+}
+
+func TestChatSendIsolatesUsers(t *testing.T) {
+	msgBus := bus.NewMessageBus(10)
+	defer msgBus.Close()
+
+	sub, err := msgBus.SubscribeInput()
+	if err != nil {
+		t.Fatalf("订阅入站消息失败: %v", err)
+	}
+	defer sub.Close()
+
+	reg, hub := newTestRegistry(msgBus, nil)
+	c := newTestClientAs(hub, "alice")
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{ChatID: "c1", Content: "你好"})
+	reg.Dispatch(context.Background(), c, env)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	in, ok := sub.Consume(ctx)
+	if !ok || in == nil {
+		t.Fatal("未收到入站消息")
+	}
+	if in.Session != "ws_alice_c1" {
+		t.Fatalf("会话键应包含用户维度，实际 %s", in.Session)
+	}
+	if in.AccountID != "alice" || in.SenderID != "alice" {
+		t.Fatalf("账号与发送者应为用户身份，实际 account=%s sender=%s", in.AccountID, in.SenderID)
+	}
+}
+
+func TestChatSendRejectsForeignSession(t *testing.T) {
+	reg, hub := newTestRegistry(nil, nil)
+	c := newTestClientAs(hub, "alice")
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{SessionID: "ws_bob_c1", Content: "hi"})
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeForbidden {
+		t.Fatalf("跨用户发送应被拒绝，错误码 %s", body.Code)
+	}
+}
+
+func TestChatCancelRejectsForeignSession(t *testing.T) {
+	reg, hub := newTestRegistry(nil, nil)
+	c := newTestClientAs(hub, "alice")
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatCancel).
+		WithData(&protocol.ChatCancelData{SessionID: "ws_bob_c1"})
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeForbidden {
+		t.Fatalf("跨用户取消应被拒绝，错误码 %s", body.Code)
+	}
+}
+
+func TestSessionHistoryRejectsForeignSession(t *testing.T) {
+	reg, hub := newTestRegistryWithTurns(nil, nil, &fakeTurnReader{})
+	c := newTestClientAs(hub, "alice")
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "ws_bob_c1"})
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeForbidden {
+		t.Fatalf("跨用户读历史应被拒绝，错误码 %s", body.Code)
+	}
+	if hub.SessionCount() != 0 {
+		t.Fatalf("拒绝后不应订阅该会话，实际 %d", hub.SessionCount())
+	}
+}
+
+func TestOwnsSessionPrefix(t *testing.T) {
+	reg, _ := newTestRegistry(nil, nil)
+	cases := []struct {
+		userID    string
+		sessionID string
+		want      bool
+	}{
+		{"alice", "ws_alice_c1", true},
+		{"alice", "ws_alice_", true},
+		{"alice", "ws_bob_c1", false},
+		// 关键：alice 不能匹配到 alice2 的会话
+		{"alice", "ws_alice2_c1", false},
+		{"alice", "alice_c1", false},
+		{"", "ws_alice_c1", false},
+	}
+	for _, c := range cases {
+		if got := reg.ownsSession(c.userID, c.sessionID); got != c.want {
+			t.Fatalf("ownsSession(%q, %q) = %v，期望 %v", c.userID, c.sessionID, got, c.want)
+		}
 	}
 }
 
@@ -241,7 +346,7 @@ func TestSessionHistoryGroupsByThread(t *testing.T) {
 	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
 	c := newTestClient(hub)
 
-	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "s1"})
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "ws_web_s1"})
 	if resp.Kind != protocol.KindSystem || resp.Type != protocol.TypeSessionHistory {
 		t.Fatalf("响应类型不符合预期: %s/%s", resp.Kind, resp.Type)
 	}
@@ -249,7 +354,7 @@ func TestSessionHistoryGroupsByThread(t *testing.T) {
 	if err := resp.DecodeData(&result); err != nil {
 		t.Fatalf("解析载荷失败: %v", err)
 	}
-	if result.SessionID != "s1" || len(result.Threads) != 1 {
+	if result.SessionID != "ws_web_s1" || len(result.Threads) != 1 {
 		t.Fatalf("应按线程分组并跳过空线程: %+v", result)
 	}
 	th := result.Threads[0]
@@ -274,7 +379,7 @@ func TestSessionHistoryWithThreadAndCursor(t *testing.T) {
 	c := newTestClient(hub)
 
 	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{
-		SessionID: "s1",
+		SessionID: "ws_web_s1",
 		ThreadID:  "t2",
 		BeforeSeq: 30,
 		Limit:     -1,
@@ -288,7 +393,7 @@ func TestSessionHistoryWithThreadAndCursor(t *testing.T) {
 		t.Fatalf("指定线程时只应查询一次，实际 %d", len(reader.queries))
 	}
 	q := reader.queries[0]
-	if q.ThreadID != "t2" || q.BeforeSeq != 30 || q.SessionID != "s1" {
+	if q.ThreadID != "t2" || q.BeforeSeq != 30 || q.SessionID != "ws_web_s1" {
 		t.Fatalf("查询条件未透传: %+v", q)
 	}
 }
@@ -321,7 +426,7 @@ func TestSessionHistoryFallbackWithoutThreads(t *testing.T) {
 	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
 	c := newTestClient(hub)
 
-	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "s1"})
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "ws_web_s1"})
 	var result protocol.SessionHistoryResult
 	_ = resp.DecodeData(&result)
 	if len(result.Threads) != 1 || len(result.Threads[0].Turns) != 1 {
@@ -343,7 +448,7 @@ func TestSessionHistoryWithoutReader(t *testing.T) {
 	reg, hub := newTestRegistryWithTurns(nil, nil, nil)
 	c := newTestClient(hub)
 
-	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "s1"})
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "ws_web_s1"})
 	var body protocol.ErrorBody
 	_ = resp.DecodeData(&body)
 	if body.Code != protocol.CodeInternal {

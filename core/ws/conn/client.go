@@ -28,6 +28,7 @@ type Handler interface {
 // 读与写分别由独立的 goroutine 负责：gorilla/websocket 不允许并发写。
 type Client struct {
 	id      string
+	userID  string
 	conn    *websocket.Conn
 	hub     *Hub
 	handler Handler
@@ -39,13 +40,14 @@ type Client struct {
 	closeOnce sync.Once
 }
 
-// NewClient 创建连接
-func NewClient(cfg Config, ws *websocket.Conn, hub *Hub, handler Handler) *Client {
+// NewClient 创建连接。userID 由握手阶段解析，用于会话归属隔离与审计。
+func NewClient(cfg Config, ws *websocket.Conn, hub *Hub, handler Handler, userID string) *Client {
 	if cfg.SendBuffer <= 0 {
 		cfg.SendBuffer = 256
 	}
 	return &Client{
 		id:      uuid.NewString(),
+		userID:  userID,
 		conn:    ws,
 		hub:     hub,
 		handler: handler,
@@ -55,9 +57,14 @@ func NewClient(cfg Config, ws *websocket.Conn, hub *Hub, handler Handler) *Clien
 	}
 }
 
-// ID 返回连接标识
+// ID 返回连接标识，用于日志与诊断，不代表用户身份
 func (c *Client) ID() string {
 	return c.id
+}
+
+// UserID 返回连接所属用户，会话键为 ws_<userID>_<chatID>
+func (c *Client) UserID() string {
+	return c.userID
 }
 
 // Outbound 返回出站消息队列，仅用于测试与调试观察，业务代码不应消费

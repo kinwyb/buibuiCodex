@@ -24,6 +24,7 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
   "port": 8765,
   "path": "/ws",
   "auth_token": "",
+  "users": { "tok-alice": "alice", "tok-bob": "bob" },
   "allow_origins": ["*"],
   "max_clients": 100,
   "send_buffer": 256,
@@ -40,7 +41,8 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
 | `enabled` | false | 是否启用 |
 | `host` / `port` | 0.0.0.0 / 8765 | 监听地址 |
 | `path` | `/ws` | 升级路径 |
-| `auth_token` | 空 | 为空不校验；非空时支持 `?token=` 或 `Authorization: Bearer` |
+| `auth_token` | 空 | 单用户模式：校验通过后身份固定为 `web`；为空则不校验 |
+| `users` | 空 | 多用户模式：`token → userID`，配置后优先于 `auth_token`。userID 只允许字母、数字、短横线 |
 | `allow_origins` | 空 | 为空不限制；支持 `*`、完整 Origin、主机名 |
 | `max_clients` | 100 | 超过返回 503 |
 | `send_buffer` | 256 | 单连接发送队列长度，满时的策略见第 6 节 |
@@ -154,7 +156,7 @@ server ──> command ──> conn ──> protocol
 
 | type | 时机 | data |
 | --- | --- | --- |
-| `hello` | 连接建立后第一帧 | `clientID`、`protocol`、`agents`、`defaultAgent`、`heartbeat` |
+| `hello` | 连接建立后第一帧 | `clientID`、`userID`、`protocol`、`agents`、`defaultAgent`、`heartbeat` |
 | `ack` | 上行请求受理 | `ok`、`sessionID`、`reqID` |
 | `pong` | 收到 `ping` | `clientTS`、`serverTS` |
 | `error` | 任何失败 | `code`、`message`、`detail` |
@@ -218,6 +220,7 @@ delta == false   全量快照，整体覆盖当前消息
 | --- | --- |
 | `bad_request` | JSON 非法、缺字段、content 与 media 同时为空 |
 | `unauthorized` | 实际以 HTTP 401 返回，不进协议层 |
+| `forbidden` | 访问不属于当前用户 `sessionID` 的会话 |
 | `unsupported` | 未知 `kind` 或 `type` |
 | `agent_not_found` | 指定的 agent 不存在 |
 | `too_many_clients` | 以 HTTP 503 返回 |
@@ -252,7 +255,7 @@ delta == false   全量快照，整体覆盖当前消息
 
 ## 5. 会话与路由
 
-- 会话键规则与 `InputMessage.SessionID()` 完全一致：`Channel_AccountID_ChatID`，默认即 `ws_web_<chatID>`，有单测锁定（`command.TestSessionKeyMatchesInputMessage`）。
+- 会话键为 `Channel_UserID_ChatID`，即 `ws_<userID>_<chatID>`。`AccountID` 承载用户身份，不同用户的同名 chatID 落在不同会话；单用户模式下 userID 固定为 `web`，键仍是 `ws_web_<chatID>`，与改造前兼容。
 - `chat.send` 与 `session.history` 都会让连接**自动订阅**该 sessionID；`Hub` 按订阅关系分发，多标签、多用户之间不会串消息。
 - 事件只转发给订阅了对应 `sessionID` 的连接，未订阅则不投递（返回 0）。
 - 默认只转发 `event.Channel == "ws"` 的事件，微信等渠道的回复不会串到 Web。`forward_all_channels=true` 可放开，但仍需客户端订阅对应会话才会收到。
@@ -261,7 +264,7 @@ delta == false   全量快照，整体覆盖当前消息
 
 数据层级是 `session → thread → turn`：
 
-- `session`：一个会话（`ws_web_<chatID>`）
+- `session`：一个会话（`ws_<userID>_<chatID>`）
 - `thread`：会话下某个 agent 的线程，换过 agent 就会新建，所以一个会话可能有多个 thread
 - `turn`：一次问答，`Question` / `Answer` 落库，`Answer` 是完成时的全量文本
 
@@ -302,6 +305,26 @@ delta == false   全量快照，整体覆盖当前消息
 - `question` 只有媒体时是媒体 JSON，前端需要兜底展示。
 - `completed=false` 的轮次表示请求已落库但未完成（例如进程重启导致中断），可展示为「已中断」。
 - 补发基于**数据库轮次**而非事件缓冲：断线期间正在生成的那一轮不补逐帧内容，重连后由后续事件或 `message_completed` 覆盖收敛。
+
+### 5.2 多用户与鉴权
+
+身份在握手阶段确定，整个连接生命周期内不变。
+
+| 配置 | 身份 | 说明 |
+| --- | --- | --- |
+| `users` 非空 | 查表得到的 userID | token 未登记或 userID 非法 → HTTP 401 |
+| 只配 `auth_token` | 固定 `web` | 共享口令，本质仍是单用户 |
+| 都不配 | 固定 `web` | 仅适合内网/本机 |
+
+三层隔离：
+
+1. **会话键**：`ws_<userID>_<chatID>`，同名对话天然不冲突。
+2. **订阅**：Hub 按 sessionID 分发，连接只收到自己订阅的会话。
+3. **命令校验**：`chat.send` / `chat.cancel` / `session.history` 都检查 `sessionID` 是否为 `ws_<当前 userID>_` 前缀，否则返回 `forbidden`。
+
+userID 限制：只允许字母、数字、短横线，**不能含下划线**。归属判断是前缀匹配，`alice` 与 `alice_2` 会让 `ws_alice_` 产生歧义。`validateUsers` 在启动时校验，非法配置直接启动失败。
+
+迁移：改造前的会话键是 `ws_web_*`，给对应 token 映射 `web` 即可继续访问旧会话；否则旧历史在新身份下不可见。`hello` 会返回当前 `userID`，前端可用于展示或排查。
 
 ---
 
@@ -371,7 +394,8 @@ wsServer.HandleCommand("session.history", func(ctx context.Context, c *conn.Clie
 4. **不要复用 `channel.StreamBuffer`**。那是给"覆盖式更新同一条消息 + 有 RTT/限流"的企业微信接口用的（accumulate + 合并）。ws 走增量 + 前端追加，带宽是 O(n)，套过来会变成 O(n²) 且增加延迟。
 5. **`conn` 不要 import `server`**，用 `conn.Handler` 接口；`bridge` 不要依赖 `Hub` 具体类型，用 `Dispatcher` 接口。破坏这两条会形成循环依赖。
 6. **`Client.Outbound()` 仅用于测试**，生产代码不要消费，否则消息会被偷走。
-7. **历史查询依赖 `session_turns.session_id`**。`manager.RequestSave` 与三处 `TurnSave` 都必须带 `SessionID`；gorm 的 `Updates(struct)` 会跳过零值字段，漏写不会报错，只会让历史查不到。新增写路径时要一并带上 `SessionID` 和 `ThreadID`。
+7. **`session_turns` 的关联字段靠 UPDATE 写入，且不会被覆盖**。正常轮次由 `cdm` 建 turn 时写入 `SessionID/ThreadID`；`manager` 完成时只补 `Answer`，因为 gorm 的 `Updates(struct)` 跳过零值字段。真正需要额外带 `SessionID` 的是**不走 cdm 建 turn 的路径**（`BeforeAgent` 拦截、`Steer`、`turn.Start` 失败），所以 `RequestSave` 改为在插入时就带上。新增写路径同样要带，否则该轮次在历史接口里查不到；也不要把 `TurnSave` 改成 `Save`，那会整行覆盖已有字段。
+8. **userID 不能含下划线**。会话键与归属判断都依赖 `ws_<userID>_` 前缀，`alice_2` 会与 `alice` 混淆。`validateUsers` 已在启动时拦截，将来新增身份来源（如 JWT）时同样要校验。
 
 ---
 
@@ -386,9 +410,9 @@ go test -race ./core/db/ ./core/ws/...
 | `db` | 按会话/线程查询、limit 与 beforeSeq 翻页、since 增量、线程列表、RequestSave 写入 sessionID |
 | `protocol` | 信封往返、6 类非法输入、Kind 校验、IsDelta |
 | `conn` | 按会话分发、注销清理、广播、背压（delta 丢弃 / 关键帧断开） |
-| `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、历史分组/翻页/补发/订阅 |
+| `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、历史分组/翻页/补发/订阅、跨用户越权拒绝 |
 | `bridge` | 渠道过滤、完成/错误/审批/增量转换、completed 的 delta=false 断言 |
-| `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限 |
+| `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、多用户 token 映射、非法 userID 启动失败 |
 
 ---
 
@@ -398,5 +422,6 @@ go test -race ./core/db/ ./core/ws/...
 - **暂无会话列表接口**：前端需自行保存 chatID / sessionID；如需「历史会话列表」，可按 `Session` 表新增 `session.list`。
 - **不支持审批回传**：`approval` 事件能下发，但客户端无法回应，审批闭环待 P2。
 - **媒体原样透传**：`types.Media` 直接下发，若上游填了 `base64` 会原样传输；P2 计划改为只传 URL，避免大帧拖慢 bridge。
+- **无用户管理**：身份来自静态 token 映射，没有增删改接口与轮换机制，也没有 per-user 连接数/速率限制（`max_clients` 是全局的）。
 - **无定向推送**：`Broadcast` 面向所有连接。
 - **未做 delta 合并**：弱网下会出现文字跳跃，如确有必要，在 `conn.writePump` 侧做 per-connection coalescing（16~33ms 窗口），不要动 bridge。

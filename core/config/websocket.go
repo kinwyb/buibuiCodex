@@ -8,9 +8,14 @@ type WebSocketConfig struct {
 	Port         int    `json:"port"`          // 监听端口，默认 8765
 	Host         string `json:"host"`          // 监听地址，默认 0.0.0.0
 	Path         string `json:"path"`          // 升级路径，默认 /ws
-	AuthToken    string `json:"auth_token"`    // 认证 token（可选，为空不校验）
+	AuthToken    string `json:"auth_token"`    // 单用户认证 token（可选，为空不校验）
 	ReadTimeout  int    `json:"read_timeout"`  // 读超时（秒），默认 60
 	WriteTimeout int    `json:"write_timeout"` // 写超时（秒），默认 10
+
+	// Users 多用户鉴权：token -> userID。
+	// 配置后优先于 AuthToken，握手时按 token 查表确定用户身份；
+	// userID 会参与会话键构造（ws_<userID>_<chatID>），因此只允许字母、数字和短横线。
+	Users map[string]string `json:"users"`
 
 	AllowOrigins       []string `json:"allow_origins"`        // 允许的 Origin 白名单，为空表示不限制
 	MaxClients         int      `json:"max_clients"`          // 最大连接数，默认 100

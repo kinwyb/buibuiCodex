@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -30,7 +31,6 @@ type Options struct {
 	Agents    command.AgentSource     // agent 列表来源，可为空
 	Turns     command.TurnReader      // 历史轮次读取能力，为空时 session.history 不可用
 	Channel   string                  // 入站消息的渠道标识，默认 ws
-	AccountID string                  // 入站消息的账号标识，默认 web
 	Logger    *slog.Logger            // 日志
 }
 
@@ -63,9 +63,6 @@ func New(opts Options) *Server {
 	opts.Config.SetDefaults()
 	if opts.Channel == "" {
 		opts.Channel = "ws"
-	}
-	if opts.AccountID == "" {
-		opts.AccountID = "web"
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
@@ -104,7 +101,6 @@ func New(opts Options) *Server {
 		Agents:       opts.Agents,
 		Turns:        opts.Turns,
 		Channel:      opts.Channel,
-		AccountID:    opts.AccountID,
 		DefaultAgent: opts.Config.DefaultAgent,
 	})
 	s.upgrader = websocket.Upgrader{
@@ -123,6 +119,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	if s.opts.Bus == nil {
 		return errors.New("websocket: message bus is required")
+	}
+	if err := s.validateUsers(); err != nil {
+		return err
 	}
 
 	addr := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
@@ -223,7 +222,8 @@ func (s *Server) SessionCount() int {
 
 // handleWebSocket 处理连接升级
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(r) {
+	userID, ok := s.authenticate(r)
+	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -237,10 +237,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := conn.NewClient(s.clientCfg, rawConn, s.hub, s)
+	c := conn.NewClient(s.clientCfg, rawConn, s.hub, s, userID)
 	s.hub.Add(c)
 	c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypeHello).WithData(&protocol.HelloData{
 		ClientID:     c.ID(),
+		UserID:       userID,
 		Protocol:     protocol.ProtocolVersion,
 		Agents:       command.AgentInfos(s.opts.Agents),
 		DefaultAgent: s.cfg.DefaultAgent,
@@ -250,17 +251,67 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	c.Run()
 }
 
-// authorize 校验访问令牌，未配置令牌时放行
-func (s *Server) authorize(r *http.Request) bool {
-	token := s.cfg.AuthToken
-	if token == "" {
-		return true
+// DefaultUser 未配置多用户时使用的账号标识。
+// 沿用 "web" 可让改造前的 ws_web_* 会话历史继续可访问。
+const DefaultUser = "web"
+
+// authenticate 解析连接身份，失败时返回 401。
+//   - 配置了 users：按 token 查表确定 userID
+//   - 只配置 auth_token：校验通过后使用 DefaultUser
+//   - 都未配置：放行，使用 DefaultUser
+func (s *Server) authenticate(r *http.Request) (string, bool) {
+	got := s.requestToken(r)
+	if len(s.cfg.Users) > 0 {
+		userID, ok := s.cfg.Users[got]
+		if !ok || !validUserID(userID) {
+			return "", false
+		}
+		return userID, true
 	}
-	got := r.URL.Query().Get("token")
+	if s.cfg.AuthToken == "" {
+		return DefaultUser, true
+	}
+	if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AuthToken)) == 1 {
+		return DefaultUser, true
+	}
+	return "", false
+}
+
+// requestToken 从 Header 或 query 中提取 token，Header 优先
+func (s *Server) requestToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		got = strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+	return r.URL.Query().Get("token")
+}
+
+// validUserID userID 会拼进会话键 ws_<userID>_<chatID>，
+// 只允许字母、数字和短横线：禁止下划线是为了让归属前缀判断没有歧义。
+func validUserID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, ch := range id {
+		switch {
+		case ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z', ch >= '0' && ch <= '9', ch == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validateUsers 启动前校验多用户配置，避免非法 userID 进入会话键
+func (s *Server) validateUsers() error {
+	for token, userID := range s.cfg.Users {
+		if strings.TrimSpace(token) == "" {
+			return errors.New("websocket: users 中存在空 token")
+		}
+		if !validUserID(userID) {
+			return fmt.Errorf("websocket: token %q 对应的 userID %q 非法，只允许字母、数字和短横线", token, userID)
+		}
+	}
+	return nil
 }
 
 // checkOrigin 校验来源，未配置白名单时放行（便于本地联调）

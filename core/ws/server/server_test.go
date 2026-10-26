@@ -69,6 +69,9 @@ func TestHandshakeAndPing(t *testing.T) {
 	if hd.ClientID == "" || hd.Protocol != protocol.ProtocolVersion {
 		t.Fatalf("hello 载荷不符合预期: %+v", hd)
 	}
+	if hd.UserID != DefaultUser {
+		t.Fatalf("单用户模式下身份应为 %s，实际 %s", DefaultUser, hd.UserID)
+	}
 	if len(hd.Agents) != 1 || hd.Agents[0].Name != "codex" {
 		t.Fatalf("hello 应携带 agent 列表: %+v", hd.Agents)
 	}
@@ -134,6 +137,67 @@ func TestRejectsUnauthorized(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("期望 401，实际 %+v", resp)
+	}
+}
+
+func TestMultiUserToken(t *testing.T) {
+	msgBus := bus.NewMessageBus(4)
+	defer msgBus.Close()
+
+	s := New(Options{
+		Config: &config.WebSocketConfig{
+			Enabled:    true,
+			SendBuffer: 8,
+			Users:      map[string]string{"tok-a": "alice", "tok-b": "bob"},
+		},
+		Bus: msgBus,
+	})
+
+	helloOf := func(token string) protocol.HelloData {
+		conn := dial(t, s, "?token="+token)
+		env := readEnvelope(t, conn)
+		var hd protocol.HelloData
+		if err := env.DecodeData(&hd); err != nil {
+			t.Fatalf("解析 hello 失败: %v", err)
+		}
+		return hd
+	}
+
+	if got := helloOf("tok-a").UserID; got != "alice" {
+		t.Fatalf("tok-a 应识别为 alice，实际 %s", got)
+	}
+	if got := helloOf("tok-b").UserID; got != "bob" {
+		t.Fatalf("tok-b 应识别为 bob，实际 %s", got)
+	}
+
+	// 未登记的 token 必须被拒绝
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", s.handleWebSocket)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?token=unknown"
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("未知 token 应握手失败")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("期望 401，实际 %+v", resp)
+	}
+}
+
+func TestStartRejectsInvalidUserID(t *testing.T) {
+	msgBus := bus.NewMessageBus(1)
+	defer msgBus.Close()
+
+	s := New(Options{
+		Config: &config.WebSocketConfig{
+			Enabled: true,
+			Users:   map[string]string{"tok": "bad_user"}, // 含下划线会破坏会话键前缀判断
+		},
+		Bus: msgBus,
+	})
+	if err := s.Start(t.Context()); err == nil {
+		t.Fatal("非法 userID 应导致启动失败")
 	}
 }
 

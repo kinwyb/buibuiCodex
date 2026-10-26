@@ -166,6 +166,41 @@ func TestRequestSaveKeepsSessionID(t *testing.T) {
 	}
 }
 
+// TestTurnSaveKeepsExistingSessionID 锁定语义：
+// manager 完成时只补 Answer，不应把 cdm 建 turn 时写入的 SessionID/ThreadID 清空。
+// 实现依赖 gorm 的 Updates(struct) 跳过零值字段；若改成 Save 会整行覆盖，此用例会失败。
+func TestTurnSaveKeepsExistingSessionID(t *testing.T) {
+	s := newTestSessionStorage(t)
+	ctx := context.Background()
+
+	if err := s.RequestSave(ctx, "s1", "r1", "问题", "codex"); err != nil {
+		t.Fatalf("保存请求失败: %v", err)
+	}
+	// 模拟 cdm 建 turn：写入 thread/session 关联
+	if err := s.TurnSave(ctx, &SessionTurn{ReqID: "r1", TurnID: "u1", ThreadID: "t1", SessionID: "s1"}); err != nil {
+		t.Fatalf("写入 turn 关联失败: %v", err)
+	}
+	// 模拟 manager 完成：不带 SessionID/ThreadID
+	if err := s.TurnSave(ctx, &SessionTurn{ReqID: "r1", Answer: "回答", IsCompleted: true}); err != nil {
+		t.Fatalf("补写回答失败: %v", err)
+	}
+
+	list, err := s.TurnList(ctx, TurnQuery{SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("应查到 1 条轮次，实际 %d", len(list))
+	}
+	got := list[0]
+	if got.SessionID != "s1" || got.ThreadID != "t1" || got.TurnID != "u1" {
+		t.Fatalf("补写回答不应清空关联字段: %+v", got)
+	}
+	if got.Answer != "回答" || !got.IsCompleted {
+		t.Fatalf("回答未正确补写: %+v", got)
+	}
+}
+
 func TestNormalizeLimit(t *testing.T) {
 	cases := []struct {
 		limit int

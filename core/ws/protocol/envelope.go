@@ -64,6 +64,7 @@ const (
 const (
 	CodeBadRequest     = "bad_request"      // 请求结构或参数不合法
 	CodeUnauthorized   = "unauthorized"     // 鉴权失败
+	CodeForbidden      = "forbidden"        // 越权访问其他用户的会话
 	CodeUnsupported    = "unsupported"      // 未支持的消息类型
 	CodeAgentNotFound  = "agent_not_found"  // 指定的 agent 不存在
 	CodeBusy           = "busy"             // 服务繁忙
