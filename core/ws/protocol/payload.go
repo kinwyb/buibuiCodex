@@ -62,6 +62,10 @@ type AgentData struct {
 	Error *ErrorBody `json:"error,omitempty"`
 	// Meta 透传元数据
 	Meta map[string]any `json:"meta,omitempty"`
+	// Truncated 内容是否被截断，仅历史回放可能出现：
+	// 回放为避免一次拉爆载荷，会对超长文本（思考、命令输出、工具结果）做截断。
+	// 实时事件不会置位。
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // ApprovalData 审批请求
@@ -174,9 +178,15 @@ type SessionHistoryData struct {
 	Since int64 `json:"since,omitempty"`
 	// Limit 每线程返回条数：0 使用默认值 200，负数表示取全量（上限 1000）
 	Limit int `json:"limit,omitempty"`
+	// IncludeFrames 是否附带逐帧执行过程（思考、工具调用、审批、错误）。
+	// 附带时结果里的 frames 就是实时流的同构复刻，前端可直接复用同一套渲染管线。
+	IncludeFrames bool `json:"includeFrames,omitempty"`
 }
 
-// HistoryTurn 历史轮次，Seq 可直接作为下一次翻页的 beforeSeq
+// HistoryTurn 历史轮次，Seq 可直接作为下一次翻页的 beforeSeq。
+//
+// Question / Answer 是轮次摘要，便于列表页直接渲染；
+// 需要中间过程时看 SessionHistoryResult.Frames，两处内容会有重叠，按需取其一。
 type HistoryTurn struct {
 	Seq         uint   `json:"seq"`
 	ReqID       string `json:"reqID"`
@@ -200,8 +210,45 @@ type HistoryThread struct {
 	HasMore    bool          `json:"hasMore,omitempty"`
 }
 
-// SessionHistoryResult 历史消息响应，threads 按创建时间升序，turns 按 seq 升序
+// SessionHistoryResult 历史消息响应，threads 按创建时间升序，turns 按 seq 升序。
+//
+// Frames 是按时间升序铺平的 agent 信封，与实时推送结构完全一致：
+// 前端可以直接把它们逐条喂给同一个消息处理器，不需要为历史单独写分支。
+// 每条帧的 seq 即事件序号，可作为增量拉取的游标。
 type SessionHistoryResult struct {
 	SessionID string          `json:"sessionID"`
 	Threads   []HistoryThread `json:"threads"`
+	// Frames 仅在 includeFrames=true 时返回
+	Frames []*Envelope `json:"frames,omitempty"`
+	// FramesTruncated 是否有轮次的过程因条数或体积上限被截断
+	FramesTruncated bool `json:"framesTruncated,omitempty"`
+}
+
+// TurnReplayData 上行：回放单轮完整执行过程。
+// 用于历史列表先渲染摘要、用户点开某一轮时再拉完整过程（含未截断的工具输出）。
+type TurnReplayData struct {
+	// SessionID 会话标识，与 ChatID 二选一
+	SessionID string `json:"sessionID,omitempty"`
+	// ChatID 对话标识，用于推导出 sessionID
+	ChatID string `json:"chatID,omitempty"`
+	// TurnID 轮次标识，必填
+	TurnID string `json:"turnID"`
+	// AfterSeq 翻页游标：只取 seq 大于该值的事件
+	AfterSeq uint `json:"afterSeq,omitempty"`
+	// Limit 返回帧数：0 使用默认值 500，负数表示取全量（上限 20000）
+	Limit int `json:"limit,omitempty"`
+}
+
+// TurnReplayResult 单轮回放响应
+type TurnReplayResult struct {
+	SessionID string `json:"sessionID"`
+	TurnID    string `json:"turnID"`
+	// Frames 按时间升序的 agent 信封，与实时流同构
+	Frames []*Envelope `json:"frames"`
+	// HasMore 是否还有更晚的帧，续拉时把 nextAfterSeq 作为 afterSeq
+	HasMore bool `json:"hasMore,omitempty"`
+	// NextAfterSeq 下一次翻页的游标，等于最后一帧的 seq
+	NextAfterSeq uint `json:"nextAfterSeq,omitempty"`
+	// Truncated 是否有内容因体积上限被截断
+	Truncated bool `json:"truncated,omitempty"`
 }

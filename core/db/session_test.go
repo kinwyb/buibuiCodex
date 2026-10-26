@@ -217,3 +217,101 @@ func TestNormalizeLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestTurnEventListFiltersAndOrders(t *testing.T) {
+	s := newTestSessionStorage(t)
+	ctx := context.Background()
+	base := time.Now().Add(-time.Hour)
+
+	// 同一轮里既有逐 token 的 delta，也有关键帧；回放只应拿到关键帧
+	events := []TurnEvent{
+		{ID: "e1", ThreadID: "t1", TurnID: "u1", Type: "notification", Method: "item/started", RawData: `{"item":{"id":"i1"}}`, CreateTime: base},
+		{ID: "e2", ThreadID: "t1", TurnID: "u1", Type: "notification", Method: "item/reasoning/textDelta", RawData: `{"delta":"a"}`, CreateTime: base},
+		{ID: "e3", ThreadID: "t1", TurnID: "u1", Type: "notification", Method: "item/completed", RawData: `{"item":{"id":"i1"}}`, CreateTime: base},
+		{ID: "e4", ThreadID: "t1", TurnID: "u2", Type: "notification", Method: "item/completed", RawData: `{"item":{"id":"i2"}}`, CreateTime: base},
+		{ID: "e5", ThreadID: "t2", TurnID: "u3", Type: "notification", Method: "item/completed", RawData: `{"item":{"id":"i3"}}`, CreateTime: base},
+	}
+	for i := range events {
+		if err := s.TurnEventSave(ctx, &events[i]); err != nil {
+			t.Fatalf("写入事件失败: %v", err)
+		}
+	}
+
+	list, err := s.TurnEventList(ctx, TurnEventQuery{
+		TurnIDs: []string{"u1", "u2"},
+		Methods: []string{"item/started", "item/completed"},
+	})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("应只拿到 2 轮的关键帧共 3 条，实际 %d", len(list))
+	}
+	for i := 1; i < len(list); i++ {
+		if list[i-1].Seq >= list[i].Seq {
+			t.Fatalf("事件未按 seq 升序返回: %d >= %d", list[i-1].Seq, list[i].Seq)
+		}
+	}
+
+	// 只取指定轮次，且不越界到其他线程
+	for _, ev := range list {
+		if ev.TurnID != "u1" && ev.TurnID != "u2" {
+			t.Fatalf("查出了其他轮次的事件: %+v", ev)
+		}
+		if ev.Method == "item/reasoning/textDelta" {
+			t.Fatalf("delta 应被 method 白名单过滤掉: %+v", ev)
+		}
+	}
+}
+
+func TestTurnEventListAfterSeq(t *testing.T) {
+	s := newTestSessionStorage(t)
+	ctx := context.Background()
+	base := time.Now()
+	for i := 0; i < 3; i++ {
+		ev := &TurnEvent{ID: "e" + string(rune('a'+i)), ThreadID: "t1", TurnID: "u1", Method: "item/completed", CreateTime: base}
+		if err := s.TurnEventSave(ctx, ev); err != nil {
+			t.Fatalf("写入事件失败: %v", err)
+		}
+	}
+
+	all, err := s.TurnEventList(ctx, TurnEventQuery{TurnIDs: []string{"u1"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("应查到 3 条事件，实际 %d", len(all))
+	}
+
+	rest, err := s.TurnEventList(ctx, TurnEventQuery{TurnIDs: []string{"u1"}, AfterSeq: all[0].Seq})
+	if err != nil {
+		t.Fatalf("按游标查询失败: %v", err)
+	}
+	if len(rest) != 2 || rest[0].Seq <= all[0].Seq {
+		t.Fatalf("afterSeq 应跳过已读事件: %+v", rest)
+	}
+}
+
+func TestTurnEventListRequiresScope(t *testing.T) {
+	s := newTestSessionStorage(t)
+	if _, err := s.TurnEventList(context.Background(), TurnEventQuery{}); err == nil {
+		t.Fatal("缺少 turnID / threadID 时应报错，避免全表扫描")
+	}
+}
+
+func TestTurnEventLimitNormalize(t *testing.T) {
+	cases := []struct {
+		limit int
+		want  int
+	}{
+		{0, DefaultTurnEventLimit},
+		{-1, MaxTurnEventLimit},
+		{10, 10},
+		{MaxTurnEventLimit + 1, MaxTurnEventLimit},
+	}
+	for _, c := range cases {
+		if got := (TurnEventQuery{Limit: c.limit}).NormalizeLimit(); got != c.want {
+			t.Fatalf("limit=%d 应归一化为 %d，实际 %d", c.limit, c.want, got)
+		}
+	}
+}

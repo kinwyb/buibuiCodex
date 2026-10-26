@@ -386,9 +386,11 @@ func TestAgentInfos(t *testing.T) {
 // ---- 历史消息 ----
 
 type fakeTurnReader struct {
-	threads []db.SessionThread
-	turns   map[string][]db.SessionTurn
-	queries []db.TurnQuery
+	threads      []db.SessionThread
+	turns        map[string][]db.SessionTurn
+	queries      []db.TurnQuery
+	turnEvents   map[string][]db.TurnEvent
+	eventQueries []db.TurnEventQuery
 }
 
 func (f *fakeTurnReader) ThreadList(_ context.Context, _ string) ([]db.SessionThread, error) {
@@ -398,6 +400,26 @@ func (f *fakeTurnReader) ThreadList(_ context.Context, _ string) ([]db.SessionTh
 func (f *fakeTurnReader) TurnList(_ context.Context, q db.TurnQuery) ([]db.SessionTurn, error) {
 	f.queries = append(f.queries, q)
 	return f.turns[q.ThreadID], nil
+}
+
+func (f *fakeTurnReader) TurnQueryByID(_ context.Context, turnID string) *db.SessionTurn {
+	for _, list := range f.turns {
+		for i := range list {
+			if list[i].TurnID == turnID {
+				return &list[i]
+			}
+		}
+	}
+	return nil
+}
+
+func (f *fakeTurnReader) TurnEventList(_ context.Context, q db.TurnEventQuery) ([]db.TurnEvent, error) {
+	f.eventQueries = append(f.eventQueries, q)
+	var out []db.TurnEvent
+	for _, id := range q.TurnIDs {
+		out = append(out, f.turnEvents[id]...)
+	}
+	return out, nil
 }
 
 func historyRequest(t *testing.T, reg *Registry, c *conn.Client, data protocol.SessionHistoryData) *protocol.Envelope {
@@ -538,5 +560,161 @@ func TestSessionHistoryWithoutReader(t *testing.T) {
 	_ = resp.DecodeData(&body)
 	if body.Code != protocol.CodeInternal {
 		t.Fatalf("未启用历史时错误码应为 internal，实际 %s", body.Code)
+	}
+}
+
+// ---- 执行过程回放 ----
+
+// replayReader 造一个带一轮对话及其事件的读取器
+func replayReader() *fakeTurnReader {
+	return &fakeTurnReader{
+		threads: []db.SessionThread{{ThreadID: "t1", SessionID: "ws_web_s1", Agent: "codex"}},
+		turns: map[string][]db.SessionTurn{
+			"t1": {{
+				Seq: 7, ReqID: "r1", ThreadID: "t1", TurnID: "u1", SessionID: "ws_web_s1",
+				Agent: "codex", Question: "看下目录", Answer: "看完了", IsCompleted: true,
+			}},
+		},
+		turnEvents: map[string][]db.TurnEvent{
+			"u1": {
+				{Seq: 11, TurnID: "u1", Method: "item/completed", RawData: `{"item":{"id":"i1","type":"reasoning","summary":["先看目录"]}}`},
+				{Seq: 12, TurnID: "u1", Method: "item/completed", RawData: `{"item":{"id":"i2","type":"commandExecution","command":"ls","aggregatedOutput":"a.go","status":"completed"}}`},
+				{Seq: 13, TurnID: "u1", Method: "item/completed", RawData: `{"item":{"id":"i3","type":"agentMessage","text":"看完了"}}`},
+			},
+		},
+	}
+}
+
+// 历史里的中间过程必须是与实时同构的 agent 帧，前端才能共用一条渲染管线
+func TestSessionHistoryIncludesAgentFrames(t *testing.T) {
+	reader := replayReader()
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{
+		SessionID:     "ws_web_s1",
+		IncludeFrames: true,
+	})
+	var result protocol.SessionHistoryResult
+	if err := resp.DecodeData(&result); err != nil {
+		t.Fatalf("解析载荷失败: %v", err)
+	}
+	if len(result.Frames) != 3 {
+		t.Fatalf("应还原 3 帧，实际 %d", len(result.Frames))
+	}
+
+	wantTypes := []string{"reasoning_completed", "tool_completed", "message_completed"}
+	for i, frame := range result.Frames {
+		if frame.Kind != protocol.KindAgent {
+			t.Fatalf("第 %d 帧应为 agent 域，实际 %s", i, frame.Kind)
+		}
+		if frame.Type != wantTypes[i] {
+			t.Fatalf("第 %d 帧类型应为 %s，实际 %s", i, wantTypes[i], frame.Type)
+		}
+		// 帧要能和所属轮次对上，前端据此把过程挂到正确的问答下面
+		if frame.ReqID != "r1" || frame.SessionID != "ws_web_s1" {
+			t.Fatalf("第 %d 帧缺少会话/请求标识: %+v", i, frame)
+		}
+	}
+
+	var reasoning protocol.AgentData
+	if err := result.Frames[0].DecodeData(&reasoning); err != nil {
+		t.Fatalf("解析思考帧失败: %v", err)
+	}
+	if reasoning.Reasoning != "先看目录" {
+		t.Fatalf("思考内容不符合预期: %q", reasoning.Reasoning)
+	}
+
+	// 只查关键帧，不能把逐 token 的 delta 一起搬出来
+	if len(reader.eventQueries) != 1 {
+		t.Fatalf("应只查一次事件，实际 %d", len(reader.eventQueries))
+	}
+	for _, method := range reader.eventQueries[0].Methods {
+		if method == "item/agentMessage/delta" {
+			t.Fatalf("事件查询不应包含 delta: %v", reader.eventQueries[0].Methods)
+		}
+	}
+}
+
+// 不带 includeFrames 时不查事件，省掉无谓的 IO 与载荷
+func TestSessionHistorySkipsFramesByDefault(t *testing.T) {
+	reader := replayReader()
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "ws_web_s1"})
+	var result protocol.SessionHistoryResult
+	_ = resp.DecodeData(&result)
+	if len(result.Frames) != 0 {
+		t.Fatalf("默认不应返回帧，实际 %d", len(result.Frames))
+	}
+	if len(reader.eventQueries) != 0 {
+		t.Fatalf("默认不应查事件表，实际查询 %d 次", len(reader.eventQueries))
+	}
+}
+
+func TestTurnReplayReturnsFullFrames(t *testing.T) {
+	reader := replayReader()
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeTurnReplay).
+		WithData(protocol.TurnReplayData{SessionID: "ws_web_s1", TurnID: "u1"})
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	if resp.Type != protocol.TypeTurnReplay || resp.ReplyTo != env.ID {
+		t.Fatalf("响应类型不符合预期: %s/%s", resp.Type, resp.ReplyTo)
+	}
+	var result protocol.TurnReplayResult
+	if err := resp.DecodeData(&result); err != nil {
+		t.Fatalf("解析载荷失败: %v", err)
+	}
+	if result.TurnID != "u1" || len(result.Frames) != 3 {
+		t.Fatalf("单轮回放结果不符合预期: %+v", result)
+	}
+	if result.Frames[0].Seq != 11 {
+		t.Fatalf("帧应回填事件 seq，实际 %d", result.Frames[0].Seq)
+	}
+	if result.Frames[2].Kind != protocol.KindAgent {
+		t.Fatalf("回放帧应与实时同域: %s", result.Frames[2].Kind)
+	}
+}
+
+func TestTurnReplayRejectsForeignTurn(t *testing.T) {
+	reader := replayReader()
+	// 轮次属于别人的会话
+	reader.turns["t1"][0].SessionID = "ws_bob_s1"
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClientAs(hub, "alice")
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeTurnReplay).
+		WithData(protocol.TurnReplayData{SessionID: "ws_alice_s1", TurnID: "u1"})
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeForbidden {
+		t.Fatalf("跨会话读过程应被拒绝，错误码 %s", body.Code)
+	}
+}
+
+func TestTurnReplayRejectsMissingTurnID(t *testing.T) {
+	reg, hub := newTestRegistryWithTurns(nil, nil, replayReader())
+	c := newTestClient(hub)
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeTurnReplay).
+		WithData(protocol.TurnReplayData{SessionID: "ws_web_s1"})
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeBadRequest {
+		t.Fatalf("缺少 turnID 应返回 bad_request，实际 %s", body.Code)
 	}
 }

@@ -74,6 +74,16 @@ const (
 	MaxTurnLimit = 1000
 )
 
+// 事件查询的分页参数
+const (
+	// DefaultTurnEventLimit 未指定 limit 时返回的事件条数
+	DefaultTurnEventLimit = 500
+	// MaxTurnEventLimit 单次查询的最大事件条数。
+	// turn_events 里逐 token 的 delta 也只是一行，一次拉全量容易把响应撑爆，
+	// 因此上限比轮次查询高但仍有硬顶，超出后由调用方用 AfterSeq 续拉。
+	MaxTurnEventLimit = 20000
+)
+
 // TurnQuery 轮次查询条件
 type TurnQuery struct {
 	// SessionID 会话标识，必填
@@ -97,6 +107,36 @@ func (q TurnQuery) NormalizeLimit() int {
 		return DefaultTurnLimit
 	case q.Limit > MaxTurnLimit:
 		return MaxTurnLimit
+	default:
+		return q.Limit
+	}
+}
+
+// TurnEventQuery 会话事件查询条件。
+// 事件表只按 thread/turn 归属，没有 session 维度，因此调用方需先拿到轮次再反查事件。
+type TurnEventQuery struct {
+	// TurnIDs 轮次标识列表，按 turn_id 批量取事件（一次 IN 查询，避免逐轮 N+1）
+	TurnIDs []string
+	// ThreadID 线程标识，与 TurnIDs 二选一
+	ThreadID string
+	// Methods 只取这些 method 的事件。
+	// 逐 token 的 delta 也在表里，回放时传关键帧白名单可把行数压到千分之一。
+	Methods []string
+	// AfterSeq 只取 seq 大于该值的事件，用于向后翻页
+	AfterSeq uint
+	// Limit 返回条数：0 使用默认值，负数表示取全量（受 MaxTurnEventLimit 限制）
+	Limit int
+}
+
+// NormalizeLimit 归一化 limit，返回实际生效的条数
+func (q TurnEventQuery) NormalizeLimit() int {
+	switch {
+	case q.Limit < 0:
+		return MaxTurnEventLimit
+	case q.Limit == 0:
+		return DefaultTurnEventLimit
+	case q.Limit > MaxTurnEventLimit:
+		return MaxTurnEventLimit
 	default:
 		return q.Limit
 	}
@@ -126,6 +166,8 @@ type ISession interface {
 	TurnList(ctx context.Context, query TurnQuery) ([]SessionTurn, error)
 	// TurnEventSave 会话事件保存
 	TurnEventSave(ctx context.Context, turn *TurnEvent) error
+	// TurnEventList 按轮次/线程查询会话事件，结果按 seq 升序返回
+	TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error)
 	// TurnTokenUsage 根据turnID更新token用量
 	TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage) error
 	// ThreadTokenUsage 根据ThreadID更新token用量
@@ -179,6 +221,10 @@ func (s *sessionDefautStorage) ThreadList(ctx context.Context, sessionID string)
 
 func (s *sessionDefautStorage) TurnEventSave(ctx context.Context, turn *TurnEvent) error {
 	return nil
+}
+
+func (s *sessionDefautStorage) TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error) {
+	return nil, nil
 }
 
 func (s *sessionDefautStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage) error {
@@ -325,6 +371,34 @@ func (s *sessionStorage) TurnEventSave(ctx context.Context, turn *TurnEvent) err
 		turn.CreateTime = time.Now()
 	}
 	return s.db.WithContext(ctx).Save(turn).Error
+}
+
+// TurnEventList 按轮次/线程查询会话事件，按 seq 升序返回。
+// 升序是回放的硬要求：seq 是自增主键，同一轮内严格等于事件发生顺序。
+func (s *sessionStorage) TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error) {
+	if len(query.TurnIDs) == 0 && query.ThreadID == "" {
+		return nil, errors.New("turn_ids or thread_id is required")
+	}
+
+	tx := s.db.WithContext(ctx).Model(&TurnEvent{})
+	if len(query.TurnIDs) > 0 {
+		tx = tx.Where("turn_id IN ?", query.TurnIDs)
+	}
+	if query.ThreadID != "" {
+		tx = tx.Where("thread_id = ?", query.ThreadID)
+	}
+	if len(query.Methods) > 0 {
+		tx = tx.Where("method IN ?", query.Methods)
+	}
+	if query.AfterSeq > 0 {
+		tx = tx.Where("seq > ?", query.AfterSeq)
+	}
+
+	var list []TurnEvent
+	if err := tx.Order("seq asc").Limit(query.NormalizeLimit()).Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
 }
 
 func (s *sessionStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage) error {

@@ -105,15 +105,17 @@ core/ws/
 │   ├── client.go    单连接：读写泵、心跳、背压、ack/error 回复
 │   └── hub.go       连接注册表、按会话订阅、广播、全局序号
 ├── bridge/          总线桥接：types.Event → protocol.Envelope
-├── command/         上行命令：注册表 + 内置 4 个命令
+├── replay/          历史回放：turn_events → protocol.Envelope（与 bridge 产出同构）
+├── command/         上行命令：注册表 + 内置命令
 └── server/          HTTP 升级、鉴权、Origin、生命周期、组装
 ```
 
 依赖方向（单向，无环）：
 
 ```
-server ──> command ──> conn ──> protocol
-   │         │
+server ──> command ──> replay ──> protocol
+   │         │           │
+   │         └──> conn ──┘
    ├──> bridge ──> protocol
    └──> config / bus
 ```
@@ -158,7 +160,8 @@ server ──> command ──> conn ──> protocol
 | `pong` | 收到 `ping` | `clientTS`、`serverTS` |
 | `error` | 任何失败 | `code`、`message`、`detail` |
 | `agent.list` | 收到同名上行命令 | `agents`、`defaultAgent` |
-| `session.history` | 收到同名上行命令 | `sessionID`、`threads[]`（见 5.1） |
+| `session.history` | 收到同名上行命令 | `sessionID`、`threads[]`、（可选）`frames[]`（见 5.1） |
+| `session.turn.replay` | 收到同名上行命令 | `sessionID`、`turnID`、`frames[]`（见 5.1） |
 | `shutdown` | 服务停止前 | `reason` |
 
 ### 3.3 下行 · agent
@@ -175,7 +178,9 @@ server ──> command ──> conn ──> protocol
 | `error` | agent 执行失败 |
 | `finished` | 本轮结束 |
 
-data 结构见 `protocol.AgentData`：`event`、`agent`、`role`、`delta`、`content`、`reasoning`、`toolCalls`、`media`、`approval`、`error`、`meta`。
+data 结构见 `protocol.AgentData`：`event`、`agent`、`role`、`delta`、`content`、`reasoning`、`toolCalls`、`media`、`approval`、`error`、`meta`、`truncated`。
+
+`truncated` 只在历史回放里可能出现，标记该条内容因为体积上限被截断；实时事件不会置位。
 
 #### 流式渲染语义（重要）
 
@@ -207,7 +212,8 @@ delta == false   全量快照，整体覆盖当前消息
 | `chat.cancel` | `sessionID?`、`chatID?` | 中断当前会话 |
 | `ping` | `ts` | 应用层心跳，测 RTT |
 | `agent.list` | — | 拉取可用 agent |
-| `session.history` | `sessionID?`、`chatID?`、`threadID?`、`beforeSeq?`、`since?`、`limit?` | 拉取历史消息，见 5.1 |
+| `session.history` | `sessionID?`、`chatID?`、`threadID?`、`beforeSeq?`、`since?`、`limit?`、`includeFrames?` | 拉取历史消息，见 5.1 |
+| `session.turn.replay` | `sessionID?`、`chatID?`、`turnID`、`afterSeq?`、`limit?` | 回放单轮完整过程，见 5.1 |
 
 `chat.send` 可以不传 `chatID` 与 `sessionID`：服务端会沿用连接当前的对话（即 `hello` 下发的 `chatID`），前端只需持有登录 token。传 `chatID` 表示切换到该对话，连接上下文随之更新；`ack` 会返回本次使用的 `chatID` 与 `sessionID`（`ws_<userID>_<chatID>`）。
 
@@ -265,11 +271,12 @@ delta == false   全量快照，整体覆盖当前消息
 - `thread`：会话下某个 agent 的线程，换过 agent 就会新建，所以一个会话可能有多个 thread
 - `turn`：一次问答，`Question` / `Answer` 落库，`Answer` 是完成时的全量文本
 
-上行 `session.history` 的三种用法：
+上行 `session.history` 的用法：
 
 | 场景 | 参数 | 说明 |
 | --- | --- | --- |
 | 打开历史对话 | `{sessionID}` | 返回该会话下所有线程与轮次 |
+| 带执行过程 | `{sessionID, includeFrames: true}` | 额外返回 `frames[]`，即思考与工具调用的完整流程 |
 | 向上翻页 | `{sessionID, threadID, beforeSeq}` | 传上一页第一条的 `seq` |
 | 断线补发 | `{sessionID, since}` | 传本地最后一条轮次的 `createdAt`（毫秒），只取之后的 |
 
@@ -302,6 +309,58 @@ delta == false   全量快照，整体覆盖当前消息
 - `question` 只有媒体时是媒体 JSON，前端需要兜底展示。
 - `completed=false` 的轮次表示请求已落库但未完成（例如进程重启导致中断），可展示为「已中断」。
 - 补发基于**数据库轮次**而非事件缓冲：断线期间正在生成的那一轮不补逐帧内容，重连后由后续事件或 `message_completed` 覆盖收敛。
+
+#### 执行过程（frames）
+
+`question` / `answer` 只有问答本身，看不出中间发生了什么。带上 `includeFrames: true` 后，响应多出一个 `frames` 数组：
+
+```json
+{
+  "sessionID": "ws_web_c1",
+  "threads": [ ... ],
+  "frames": [
+    {"v":1,"kind":"agent","type":"reasoning_completed","sessionID":"ws_web_c1","reqID":"r1","seq":31,"ts":1761432001200,
+     "data":{"event":"reasoning_completed","agent":"codex","role":"assistant","reasoning":"先确认表结构，再算良率"}},
+    {"v":1,"kind":"agent","type":"tool_completed","sessionID":"ws_web_c1","reqID":"r1","seq":34,"ts":1761432004400,
+     "data":{"event":"tool_completed","agent":"codex","role":"tool","delta":false,
+             "toolCalls":[{"id":"i2","type":"command","name":"command","params":"duckdb -c 'select ...'",
+                           "result":"98.2|1200","extra":{"cwd":"/work","status":"completed"}}]}},
+    {"v":1,"kind":"agent","type":"message_completed","sessionID":"ws_web_c1","reqID":"r1","seq":41,"ts":1761432012000,
+     "data":{"event":"message_completed","agent":"codex","role":"assistant","content":"生产良率为 98.2%"}}
+  ],
+  "framesTruncated": false
+}
+```
+
+关键点：**`frames` 里每一项就是完整的信封，和实时推送长得一模一样**。前端可以直接把它们按 `seq` 顺序喂给同一个消息处理器，不需要为历史单独写一套渲染逻辑——`kind`、`type`、`delta`、`data` 的语义全部通用。
+
+约定：
+
+- `frames` 按时间升序，与实时流的时序一致；每帧的 `reqID` 指向所属轮次，前端据此把过程挂到对应问答下方。
+- 帧一律 `delta=false`，是**全量快照**。开始帧（`tool_start`）与完成帧（`tool_completed`）共享同一个工具 ID，按 ID 覆盖即可得到最终状态；只有开始帧没有完成帧，说明该步被打断。
+- 只回放关键帧（`item` 生命周期、审批、错误），**不重放逐 token 的 delta**。delta 在 `turn_events` 里仍然完整保留，需要时按 `method` 单独取。
+- 出于体积考虑，历史里的 `frames` 是**有上限的**：每轮最多 200 帧，单个文本（思考、命令输出、工具结果）截断到 4KB，被截断的帧带 `truncated: true`，整体被截时 `framesTruncated: true`。想要完整内容用下面单轮接口。
+- `framesTruncated` 为 true 只代表「不是 100% 完整」，不影响已返回帧的正确性。
+
+#### 单轮完整回放
+
+`includeFrames` 适合列表页一次性铺开。用户点开某一轮细看时，用 `session.turn.replay` 拉这一轮的完整过程（不限帧数、不截断内容）：
+
+```json
+{"kind":"client","type":"session.turn.replay","data":{"sessionID":"ws_web_c1","turnID":"tu-1"}}
+```
+
+响应 `data`：
+
+| 字段 | 说明 |
+| --- | --- |
+| `sessionID` / `turnID` | 回显，便于并发请求时对号 |
+| `frames` | 与上面同构的 agent 信封，按 `seq` 升序，完整不截断 |
+| `hasMore` | 还有更晚的帧 |
+| `nextAfterSeq` | 下一页游标，直接作为下次的 `afterSeq` |
+| `truncated` | 是否有内容被截断（详情接口正常为 false） |
+
+服务端会校验 `turnID` 是否属于该会话，跨会话访问返回 `forbidden`。
 
 ### 5.2 身份与鉴权
 
@@ -419,6 +478,8 @@ wsServer.HandleCommand("session.history", func(ctx context.Context, c *conn.Clie
 6. **`Client.Outbound()` 仅用于测试**，生产代码不要消费，否则消息会被偷走。
 7. **`session_turns` 的关联字段靠 UPDATE 写入，且不会被覆盖**。正常轮次由 `cdm` 建 turn 时写入 `SessionID/ThreadID`；`manager` 完成时只补 `Answer`，因为 gorm 的 `Updates(struct)` 跳过零值字段。真正需要额外带 `SessionID` 的是**不走 cdm 建 turn 的路径**（`BeforeAgent` 拦截、`Steer`、`turn.Start` 失败），所以 `RequestSave` 改为在插入时就带上。新增写路径同样要带，否则该轮次在历史接口里查不到；也不要把 `TurnSave` 改成 `Save`，那会整行覆盖已有字段。
 8. **userID 不能含下划线**。会话键与归属判断依赖 `ws_<userID>_` 前缀，`alice_2` 会与 `alice` 混淆。默认 Authenticator 会直接拒绝这类 token；自定义 Authenticator 也必须保证返回值合法。
+9. **回放产物必须是 agent 信封，不能另起结构**。`replay.Build` 输出的是 `kind=agent` 的 `protocol.Envelope`，和 `bridge.convert` 逐字段对齐，前端才能共用一条渲染管线。新增事件映射时不要自定义新 type，优先复用 `types.EventType`；上游新增 item 类型时，在 `replay.itemStep` 的 switch 里补分支，否则会走 `default` 降级成原始 JSON（信息不丢但可读性差）。
+10. **`replay` 与 `bridge` 的字段口径要一致**。两边都在填 `AgentData`，任何一边改了 `role` / `delta` / `toolCalls` 的语义，另一边都得同步，否则历史与实时渲染出来会长得不一样。这也是 `replay` 单独成包而不是塞进 `command` 的原因：它和 `bridge` 是一对镜像实现。
 
 ---
 
@@ -430,11 +491,12 @@ go test -race ./core/db/ ./core/ws/...
 
 | 包 | 覆盖 |
 | --- | --- |
-| `db` | 按会话/线程查询、limit 与 beforeSeq 翻页、since 增量、线程列表、RequestSave 写入 sessionID |
+| `db` | 按会话/线程查询、limit 与 beforeSeq 翻页、since 增量、线程列表、RequestSave 写入 sessionID、事件按轮次/白名单/游标查询 |
 | `protocol` | 信封往返、6 类非法输入、Kind 校验、IsDelta |
 | `conn` | 按会话分发、注销清理、广播、背压（delta 丢弃 / 关键帧断开） |
-| `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、历史分组/翻页/补发/订阅、跨用户越权拒绝 |
+| `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、历史分组/翻页/补发/订阅、历史帧还原、单轮回放、跨用户越权拒绝 |
 | `bridge` | 渠道过滤、完成/错误/审批/增量转换、completed 的 delta=false 断言 |
+| `replay` | 事件→agent 帧的完整映射、delta 与用量事件被跳过、思考拼接、命令/搜索/工具解析、未知类型降级、截断与 UTF-8 边界、审批与失败帧、帧数与 seq 回填 |
 | `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、token 即身份、自定义 Authenticator、非法 userID 拒绝 |
 
 ---
@@ -442,6 +504,8 @@ go test -race ./core/db/ ./core/ws/...
 ## 10. 已知限制与后续
 
 - **补发基于数据库轮次**：`session.history(since)` 只能补已落库的轮次；断线期间正在生成的那一轮不补逐帧内容，重连后由后续事件或 `message_completed` 覆盖收敛。
+- **历史帧不是逐帧录像**：`frames` 只还原关键帧（每轮上限 200 帧、单条文本 4KB），而且只覆盖 `turn_events` 里已有的记录。若某轮在落库前就崩溃，过程会有缺口；`turn_events` 也没有 `session_id`，只能靠 `turn_id` 反查。
+- **回放不支持审批回传**：审批帧能展示，但历史里点「同意/拒绝」没有意义（那一轮已经结束），闭环仍待 P2。
 - **暂无会话列表接口**：前端需自行保存 chatID / sessionID；如需「历史会话列表」，可按 `Session` 表新增 `session.list`。
 - **不支持审批回传**：`approval` 事件能下发，但客户端无法回应，审批闭环待 P2。
 - **媒体原样透传**：`types.Media` 直接下发，若上游填了 `base64` 会原样传输；P2 计划改为只传 URL，避免大帧拖慢 bridge。

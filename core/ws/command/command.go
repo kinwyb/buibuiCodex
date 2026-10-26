@@ -15,6 +15,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
+	"github.com/kinwyb/buibuiCodex/core/ws/replay"
 )
 
 // Canceller 会话取消能力，由 core.Manager 实现
@@ -32,7 +33,14 @@ type AgentSource interface {
 type TurnReader interface {
 	ThreadList(ctx context.Context, sessionID string) ([]db.SessionThread, error)
 	TurnList(ctx context.Context, query db.TurnQuery) ([]db.SessionTurn, error)
+	TurnQueryByID(ctx context.Context, turnID string) *db.SessionTurn
+	TurnEventList(ctx context.Context, query db.TurnEventQuery) ([]db.TurnEvent, error)
 }
+
+// eventsBatchSize 拉取执行过程时单次查询覆盖的轮次数量。
+// 分批的目的是让单次查询的 limit 只约束一小批轮次，
+// 否则几百轮的会话会被一条查询的条数上限截断，靠后的轮次拿不到帧。
+const eventsBatchSize = 50
 
 // Deps 命令执行依赖
 type Deps struct {
@@ -63,6 +71,7 @@ func NewRegistry(deps Deps) *Registry {
 	r.Register(protocol.TypeChatCancel, r.chatCancel)
 	r.Register(protocol.TypeAgentList, r.agentList)
 	r.Register(protocol.TypeSessionHistory, r.sessionHistory)
+	r.Register(protocol.TypeTurnReplay, r.turnReplay)
 	return r
 }
 
@@ -314,8 +323,9 @@ func (r *Registry) loadHistory(ctx context.Context, sessionID string, data proto
 	limit := query.NormalizeLimit()
 	result := &protocol.SessionHistoryResult{SessionID: sessionID}
 
-	// 指定线程：只返回该线程
-	if query.ThreadID != "" {
+	switch {
+	case query.ThreadID != "":
+		// 指定线程：只返回该线程
 		turns, err := r.deps.Turns.TurnList(ctx, query)
 		if err != nil {
 			return nil, err
@@ -325,51 +335,200 @@ func (r *Registry) loadHistory(ctx context.Context, sessionID string, data proto
 			Turns:    toHistoryTurns(turns),
 			HasMore:  len(turns) >= limit,
 		})
-		return result, nil
-	}
-
-	// 未指定线程：session -> thread -> turn
-	threads, err := r.deps.Turns.ThreadList(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	for _, thread := range threads {
-		q := query
-		q.ThreadID = thread.ThreadID
-		turns, err := r.deps.Turns.TurnList(ctx, q)
+	default:
+		// 未指定线程：session -> thread -> turn
+		threads, err := r.deps.Turns.ThreadList(ctx, sessionID)
 		if err != nil {
 			return nil, err
 		}
-		if len(turns) == 0 {
-			continue
-		}
-		result.Threads = append(result.Threads, protocol.HistoryThread{
-			ThreadID:   thread.ThreadID,
-			Agent:      thread.Agent,
-			CreatedAt:  millis(thread.CreateTime),
-			LastUpdate: millis(thread.LastUpdate),
-			Turns:      toHistoryTurns(turns),
-			HasMore:    len(turns) >= limit,
-		})
-	}
-
-	// 兼容没有 thread 记录的历史数据
-	if len(result.Threads) == 0 {
-		q := query
-		q.ThreadID = ""
-		turns, err := r.deps.Turns.TurnList(ctx, q)
-		if err != nil {
-			return nil, err
-		}
-		if len(turns) > 0 {
+		for _, thread := range threads {
+			q := query
+			q.ThreadID = thread.ThreadID
+			turns, err := r.deps.Turns.TurnList(ctx, q)
+			if err != nil {
+				return nil, err
+			}
+			if len(turns) == 0 {
+				continue
+			}
 			result.Threads = append(result.Threads, protocol.HistoryThread{
-				Turns:   toHistoryTurns(turns),
-				HasMore: len(turns) >= limit,
+				ThreadID:   thread.ThreadID,
+				Agent:      thread.Agent,
+				CreatedAt:  millis(thread.CreateTime),
+				LastUpdate: millis(thread.LastUpdate),
+				Turns:      toHistoryTurns(turns),
+				HasMore:    len(turns) >= limit,
 			})
+		}
+
+		// 兼容没有 thread 记录的历史数据
+		if len(result.Threads) == 0 {
+			q := query
+			q.ThreadID = ""
+			turns, err := r.deps.Turns.TurnList(ctx, q)
+			if err != nil {
+				return nil, err
+			}
+			if len(turns) > 0 {
+				result.Threads = append(result.Threads, protocol.HistoryThread{
+					Turns:   toHistoryTurns(turns),
+					HasMore: len(turns) >= limit,
+				})
+			}
+		}
+	}
+
+	if data.IncludeFrames {
+		if err := r.attachFrames(ctx, result); err != nil {
+			return nil, err
 		}
 	}
 
 	return result, nil
+}
+
+// attachFrames 为历史结果补上逐帧执行过程。
+//
+// 帧按「线程顺序 + 轮次顺序」铺平，与实时流的时序一致；
+// 每轮的帧都复用同一个 ReqID，前端可以直接把它们与实时帧混在一条流水里处理。
+func (r *Registry) attachFrames(ctx context.Context, result *protocol.SessionHistoryResult) error {
+	var turns []protocol.HistoryTurn
+	for _, thread := range result.Threads {
+		turns = append(turns, thread.Turns...)
+	}
+	if len(turns) == 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		if turn.TurnID != "" {
+			ids = append(ids, turn.TurnID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	grouped := make(map[string][]db.TurnEvent, len(ids))
+	// 分批查，避免一次 IN 太多轮次时被单条查询的 limit 截到后面的轮次没有帧
+	for start := 0; start < len(ids); start += eventsBatchSize {
+		end := min(start+eventsBatchSize, len(ids))
+		batch := ids[start:end]
+		events, err := r.deps.Turns.TurnEventList(ctx, db.TurnEventQuery{
+			TurnIDs: batch,
+			Methods: replay.KeyMethods(),
+			Limit:   len(batch) * replay.DefaultMaxFrames,
+		})
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			grouped[event.TurnID] = append(grouped[event.TurnID], event)
+		}
+	}
+
+	frames := make([]*protocol.Envelope, 0, len(ids))
+	truncated := false
+	for _, turn := range turns {
+		built, cut := replay.Build(grouped[turn.TurnID], replay.Options{
+			SessionID: result.SessionID,
+			ReqID:     turn.ReqID,
+			Agent:     turn.Agent,
+			MaxFrames: replay.DefaultMaxFrames,
+			BodyLimit: replay.DefaultBodyLimit,
+		})
+		truncated = truncated || cut
+		frames = append(frames, built...)
+	}
+	result.Frames = frames
+	result.FramesTruncated = truncated
+	return nil
+}
+
+// turnReplay 回放单轮的完整执行过程。
+// 与 session.history 的区别：不限帧数、不截断内容，供用户点开某一轮后细看。
+func (r *Registry) turnReplay(ctx context.Context, c *conn.Client, env *protocol.Envelope) {
+	var data protocol.TurnReplayData
+	if err := env.DecodeData(&data); err != nil {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "参数解析失败", Detail: err.Error()})
+		return
+	}
+
+	userID := c.UserID()
+	sessionID := strings.TrimSpace(data.SessionID)
+	chatID := strings.TrimSpace(data.ChatID)
+	if chatID == "" {
+		chatID = c.ChatID()
+	}
+	if sessionID == "" && chatID != "" {
+		sessionID = r.SessionKey(userID, chatID)
+	}
+	if sessionID == "" {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 sessionID 或 chatID"})
+		return
+	}
+	if !r.ownsSession(userID, sessionID) {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
+		return
+	}
+	if r.deps.Turns == nil {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "服务未启用历史消息"})
+		return
+	}
+
+	turnID := strings.TrimSpace(data.TurnID)
+	if turnID == "" {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 turnID"})
+		return
+	}
+	turn := r.deps.Turns.TurnQueryByID(ctx, turnID)
+	if turn == nil {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "轮次不存在", Detail: turnID})
+		return
+	}
+	// 老数据可能没有回填 sessionID，此时只能依赖会话键已通过归属校验
+	if turn.SessionID != "" && turn.SessionID != sessionID {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "该轮次不属于此会话"})
+		return
+	}
+
+	query := db.TurnEventQuery{
+		TurnIDs:  []string{turnID},
+		Methods:  replay.KeyMethods(),
+		AfterSeq: data.AfterSeq,
+		Limit:    data.Limit,
+	}
+	events, err := r.deps.Turns.TurnEventList(ctx, query)
+	if err != nil {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "查询执行过程失败", Detail: err.Error()})
+		return
+	}
+
+	// 详情接口不设帧数上限、不截断内容，完整还原这一轮
+	frames, lossy := replay.Build(events, replay.Options{
+		SessionID: sessionID,
+		ReqID:     turn.ReqID,
+		Agent:     turn.Agent,
+		MaxFrames: -1,
+		BodyLimit: -1,
+	})
+
+	result := &protocol.TurnReplayResult{
+		SessionID: sessionID,
+		TurnID:    turnID,
+		Frames:    frames,
+		HasMore:   len(events) >= query.NormalizeLimit(),
+		Truncated: lossy,
+	}
+	if result.HasMore && len(events) > 0 {
+		result.NextAfterSeq = events[len(events)-1].Seq
+	}
+
+	c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypeTurnReplay).
+		WithReplyTo(env.ID).
+		WithSession(sessionID, "").
+		WithData(result))
 }
 
 // toHistoryTurns 转换数据库轮次为协议结构
