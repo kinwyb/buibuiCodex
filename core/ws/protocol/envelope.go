@@ -87,6 +87,11 @@ type Envelope struct {
 	SessionID string `json:"sessionID,omitempty"`
 	// ReqID 一次提问的唯一标识，对齐 types.Event.ReqID
 	ReqID string `json:"reqID,omitempty"`
+	// EventID 产生本帧的上游实体标识，对齐 types.Event.EventID。
+	// 对消息、思考、工具类帧是 codex 的 item ID：这类帧的 start / delta / completed
+	// 共享同一个值，前端据此把同一实体的多次更新归并到一份，不必依赖到达顺序。
+	// 审批帧不填（用 data.approval.id），系统类帧可能为空。
+	EventID string `json:"eventID,omitempty"`
 	// ReplyTo 请求响应关联，回填上行消息的 ID
 	ReplyTo string `json:"replyTo,omitempty"`
 	// Seq 服务端全局单调序号，用于排序与问题排查
@@ -154,6 +159,12 @@ func (e *Envelope) WithReplyTo(id string) *Envelope {
 // WithChunk 设置流内序号
 func (e *Envelope) WithChunk(chunk int) *Envelope {
 	e.Chunk = chunk
+	return e
+}
+
+// WithEventID 设置上游实体标识
+func (e *Envelope) WithEventID(eventID string) *Envelope {
+	e.EventID = eventID
 	return e
 }
 

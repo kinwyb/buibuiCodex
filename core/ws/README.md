@@ -141,11 +141,16 @@ server ──> command ──> replay ──> protocol
 | `type` | string | 具体类型，含义由 `kind` 决定 |
 | `sessionID` | string | 会话标识，下行事件必带 |
 | `reqID` | string | 一次提问的 ID，同一轮事件共享 |
+| `eventID` | string | 上游实体 ID（见下），同一实体的多次更新共享 |
 | `replyTo` | string | 响应关联的上行 `id` |
 | `seq` | int64 | 服务端全局单调序号，用于排序与排查 |
 | `chunk` | int | 流内序号，对齐 `Event.ChunkIndex` |
 | `ts` | int64 | 毫秒时间戳 |
 | `data` | object | 载荷，按 `kind + type` 解释 |
+
+`eventID` 是给前端做**归并**用的：同一条消息的 `message_start` / `message_delta` / `message_completed`，或者一个工具的 `tool_start` / `tool_completed`，共享同一个 `eventID`（即 codex 的 item ID）。前端按它挂载、覆盖同一条记录，就不必依赖「必须先收到 start」这种顺序假设——重连补发、乱序、历史回放都能落在正确的位置上。
+
+例外：审批帧不填 `eventID`，标识在 `data.approval.id`（那是回传审批时要用的请求 ID）；`finished` 等轮次级事件也没有实体，保持为空。
 
 `kind` 是扩展位：前端遇到未知 `kind` 应**忽略而不是报错**，这样服务端新增消息域不会打断老页面。
 
@@ -319,13 +324,13 @@ delta == false   全量快照，整体覆盖当前消息
   "sessionID": "ws_web_c1",
   "threads": [ ... ],
   "frames": [
-    {"v":1,"kind":"agent","type":"reasoning_completed","sessionID":"ws_web_c1","reqID":"r1","seq":31,"ts":1761432001200,
+    {"v":1,"kind":"agent","type":"reasoning_completed","sessionID":"ws_web_c1","reqID":"r1","eventID":"i1","seq":31,"ts":1761432001200,
      "data":{"event":"reasoning_completed","agent":"codex","role":"assistant","reasoning":"先确认表结构，再算良率"}},
-    {"v":1,"kind":"agent","type":"tool_completed","sessionID":"ws_web_c1","reqID":"r1","seq":34,"ts":1761432004400,
+    {"v":1,"kind":"agent","type":"tool_completed","sessionID":"ws_web_c1","reqID":"r1","eventID":"i2","seq":34,"ts":1761432004400,
      "data":{"event":"tool_completed","agent":"codex","role":"tool","delta":false,
              "toolCalls":[{"id":"i2","type":"command","name":"command","params":"duckdb -c 'select ...'",
                            "result":"98.2|1200","extra":{"cwd":"/work","status":"completed"}}]}},
-    {"v":1,"kind":"agent","type":"message_completed","sessionID":"ws_web_c1","reqID":"r1","seq":41,"ts":1761432012000,
+    {"v":1,"kind":"agent","type":"message_completed","sessionID":"ws_web_c1","reqID":"r1","eventID":"i3","seq":41,"ts":1761432012000,
      "data":{"event":"message_completed","agent":"codex","role":"assistant","content":"生产良率为 98.2%"}}
   ],
   "framesTruncated": false
@@ -337,6 +342,7 @@ delta == false   全量快照，整体覆盖当前消息
 约定：
 
 - `frames` 按时间升序，与实时流的时序一致；每帧的 `reqID` 指向所属轮次，前端据此把过程挂到对应问答下方。
+- 每帧的 `eventID` 与实时流用的是同一套 ID（同一条消息、同一个工具，历史与实时取值相同）。所以先拉历史、再接实时，同一个实体不会重复建气泡；这也是"历史与实时共用一条渲染管线"能成立的前提。
 - 帧一律 `delta=false`，是**全量快照**。开始帧（`tool_start`）与完成帧（`tool_completed`）共享同一个工具 ID，按 ID 覆盖即可得到最终状态；只有开始帧没有完成帧，说明该步被打断。
 - 只回放关键帧（`item` 生命周期、审批、错误），**不重放逐 token 的 delta**。delta 在 `turn_events` 里仍然完整保留，需要时按 `method` 单独取。
 - 出于体积考虑，历史里的 `frames` 是**有上限的**：每轮最多 200 帧，单个文本（思考、命令输出、工具结果）截断到 4KB，被截断的帧带 `truncated: true`，整体被截时 `framesTruncated: true`。想要完整内容用下面单轮接口。

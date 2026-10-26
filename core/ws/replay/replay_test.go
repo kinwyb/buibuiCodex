@@ -296,3 +296,26 @@ func TestBuildCarriesEventSeq(t *testing.T) {
 		t.Fatalf("帧应回填事件 seq，实际 %d", frames[0].Seq)
 	}
 }
+
+// 回放帧也要带实体标识，且与实时流口径一致（item ID）
+func TestBuildCarriesEventID(t *testing.T) {
+	frames, _ := build(t, []db.TurnEvent{
+		ev(1, "item/started", `{"item":{"id":"i7","type":"commandExecution","command":"ls"}}`),
+		ev(2, "item/completed", `{"item":{"id":"i7","type":"commandExecution","command":"ls","aggregatedOutput":"a.go"}}`),
+		ev(3, "item/commandExecution/requestApproval", `{"itemId":"i7","reason":"需要确认"}`),
+	}, Options{})
+	if len(frames) != 3 {
+		t.Fatalf("应还原 3 帧，实际 %d", len(frames))
+	}
+	if frames[0].EventID != "i7" || frames[1].EventID != "i7" {
+		t.Fatalf("同一 item 的开始/完成帧应共享 eventID: %q / %q", frames[0].EventID, frames[1].EventID)
+	}
+	// 审批帧的标识在 data.approval.id，不重复占用 eventID
+	if frames[2].EventID != "" {
+		t.Fatalf("审批帧不应带 eventID，实际 %q", frames[2].EventID)
+	}
+	approval := decodeFrame(t, frames[2])
+	if approval.Approval == nil || approval.Approval.ID != "i7" {
+		t.Fatalf("审批标识应放在 data.approval.id: %+v", approval.Approval)
+	}
+}

@@ -43,6 +43,9 @@ func TestConvertMessageCompleted(t *testing.T) {
 	if env.SessionID != "s1" || env.ReqID != "r1" || env.Chunk != 5 {
 		t.Fatalf("信封会话字段不符合预期: %+v", env)
 	}
+	if env.EventID != "e1" {
+		t.Fatalf("信封应透传事件实体标识，实际 %q", env.EventID)
+	}
 	var data protocol.AgentData
 	if err := env.DecodeData(&data); err != nil {
 		t.Fatalf("解析载荷失败: %v", err)
@@ -107,5 +110,33 @@ func TestConvertDeltaFlag(t *testing.T) {
 	}
 	if !data.Delta {
 		t.Fatal("增量事件应标记 Delta")
+	}
+}
+
+// 同一 item 的多次更新必须共享 eventID：
+// 前端按它归并，就不必依赖「先 start 后 completed」的到达顺序。
+func TestConvertKeepsEventIDAcrossLifecycle(t *testing.T) {
+	b := New(Options{Channel: "ws"})
+	for _, typ := range []types.EventType{
+		types.EventMessageStart,
+		types.EventMessageDelta,
+		types.EventMessageCompleted,
+	} {
+		env := b.convert(&types.Event{
+			EventID:   "item-1",
+			SessionID: "s1",
+			ReqID:     "r1",
+			Type:      typ,
+			Channel:   "ws",
+		})
+		if env.EventID != "item-1" {
+			t.Fatalf("%s 帧的 eventID 丢失: %q", typ, env.EventID)
+		}
+	}
+
+	// 系统类事件没有实体标识时应留空，而不是填个假值
+	env := b.convert(&types.Event{SessionID: "s1", ReqID: "r1", Type: types.EventFinished, Channel: "ws"})
+	if env.EventID != "" {
+		t.Fatalf("无实体的事件不应带 eventID，实际 %q", env.EventID)
 	}
 }

@@ -140,6 +140,7 @@ func (b *Bridge) accept(channel string) bool {
 func (b *Bridge) convert(event *types.Event) *protocol.Envelope {
 	env := protocol.NewEnvelope(protocol.KindAgent, string(event.Type)).
 		WithSession(event.SessionID, event.ReqID).
+		WithEventID(event.EventID).
 		WithChunk(event.ChunkIndex)
 
 	data := &protocol.AgentData{

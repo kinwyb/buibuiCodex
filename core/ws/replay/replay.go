@@ -93,7 +93,7 @@ func Build(events []db.TurnEvent, opts Options) ([]*protocol.Envelope, bool) {
 		if len(frames) >= maxFrames {
 			return frames, true
 		}
-		data := stepOf(ev, bodyLimit)
+		data, eventID := stepOf(ev, bodyLimit)
 		if data == nil {
 			continue
 		}
@@ -101,15 +101,16 @@ func Build(events []db.TurnEvent, opts Options) ([]*protocol.Envelope, bool) {
 		if opts.Agent != "" {
 			data.Agent = opts.Agent
 		}
-		frames = append(frames, envelopeOf(ev, data, opts))
+		frames = append(frames, envelopeOf(ev, data, eventID, opts))
 	}
 	return frames, lossy
 }
 
 // envelopeOf 把载荷包装成与实时流一致的信封
-func envelopeOf(ev db.TurnEvent, data *protocol.AgentData, opts Options) *protocol.Envelope {
+func envelopeOf(ev db.TurnEvent, data *protocol.AgentData, eventID string, opts Options) *protocol.Envelope {
 	env := protocol.NewEnvelope(protocol.KindAgent, data.Event).
 		WithSession(opts.SessionID, opts.ReqID).
+		WithEventID(eventID).
 		WithData(data)
 	// 用事件表的自增 seq 回填，前端可直接当作翻页游标
 	env.Seq = int64(ev.Seq)
@@ -119,8 +120,10 @@ func envelopeOf(ev db.TurnEvent, data *protocol.AgentData, opts Options) *protoc
 	return env
 }
 
-// stepOf 单条事件 → 回放步骤，nil 表示该事件不参与回放
-func stepOf(ev db.TurnEvent, bodyLimit int) *protocol.AgentData {
+// stepOf 单条事件 → 回放步骤。
+// 第二个返回值是上游实体标识（item ID / callId），供前端按实体归并多次更新；
+// data 为 nil 表示该事件不参与回放。
+func stepOf(ev db.TurnEvent, bodyLimit int) (*protocol.AgentData, string) {
 	switch ev.Method {
 	case string(codex.ItemStarted), string(codex.ItemCompleted):
 		return itemStep(ev, bodyLimit)
@@ -129,28 +132,29 @@ func stepOf(ev db.TurnEvent, bodyLimit int) *protocol.AgentData {
 		string(codex.ItemFileChangeRequestApproval),
 		string(codex.ItemPermissionsRequestApproval),
 		string(codex.ApplyPatchApproval):
-		return approvalStep(ev, bodyLimit)
+		// 审批帧的标识在 data.approval.id 里，不再占用 eventID
+		return approvalStep(ev, bodyLimit), ""
 	case string(codex.ItemToolCall):
 		return toolCallStep(ev, bodyLimit)
 	case string(codex.TurnCompleted):
-		return turnCompletedStep(ev, bodyLimit)
+		return turnCompletedStep(ev, bodyLimit), ""
 	case string(codex.NotificationMethodError):
-		return errorStep(ev, bodyLimit)
+		return errorStep(ev, bodyLimit), ""
 	default:
-		return nil
+		return nil, ""
 	}
 }
 
 // itemStep 还原 item 生命周期事件（思考 / 消息 / 命令 / 搜索 / 工具）
-func itemStep(ev db.TurnEvent, bodyLimit int) *protocol.AgentData {
+func itemStep(ev db.TurnEvent, bodyLimit int) (*protocol.AgentData, string) {
 	var lifecycle jsonRpc.ItemLifecycleEvent
 	if err := json.Unmarshal([]byte(ev.RawData), &lifecycle); err != nil {
-		return nil
+		return nil, ""
 	}
 	item := lifecycle.Item
 	done := ev.Method == string(codex.ItemCompleted)
 	if item.Type == "" {
-		return nil
+		return nil, ""
 	}
 
 	data := &protocol.AgentData{
@@ -262,7 +266,9 @@ func itemStep(ev db.TurnEvent, bodyLimit int) *protocol.AgentData {
 		call.Result, data.Truncated = clip(rawItem(ev.RawData), bodyLimit)
 		data.ToolCalls = []types.ToolCall{call}
 	}
-	return data
+	// 同一个 item 的 started / completed 共享 item.ID，
+	// 前端靠它把两次更新收敛成一条，不必依赖到达顺序。
+	return data, item.ID
 }
 
 // approvalStep 还原审批请求，让用户能看到「哪一步停下来等确认、被允许还是被拒」
@@ -297,10 +303,10 @@ func approvalStep(ev db.TurnEvent, bodyLimit int) *protocol.AgentData {
 
 // toolCallStep 还原本地工具调用请求。
 // 正常流程后面还会跟上同 ID 的 item/completed（带结果），前端按工具 ID 覆盖即可。
-func toolCallStep(ev db.TurnEvent, bodyLimit int) *protocol.AgentData {
+func toolCallStep(ev db.TurnEvent, bodyLimit int) (*protocol.AgentData, string) {
 	var call jsonRpc.ToolCall
 	if err := json.Unmarshal([]byte(ev.RawData), &call); err != nil {
-		return nil
+		return nil, ""
 	}
 	name := call.Tool
 	if name == "" {
@@ -326,7 +332,7 @@ func toolCallStep(ev db.TurnEvent, bodyLimit int) *protocol.AgentData {
 	}
 	tool.Params, _ = clip(string(params), bodyLimit)
 	data.ToolCalls = []types.ToolCall{tool}
-	return data
+	return data, call.CallId
 }
 
 // turnCompletedStep 只在轮次以错误收尾时产出帧。
