@@ -1,0 +1,152 @@
+// Package protocol 的载荷定义：按 Kind + Type 组织各类消息的 Data 结构。
+//
+// 流式文本的渲染约定见 AgentData 的文档。
+package protocol
+
+import "github.com/kinwyb/buibuiCodex/core/types"
+
+// AgentData KindAgent 的载荷。
+// 只暴露前端需要的字段，避免 channel / accountID 等内部概念外泄。
+//
+// # 流式渲染语义
+//
+// 前端渲染只需要看 Delta 一个字段，不要按事件类型自行推断：
+//
+//	Delta == true   增量片段，把 Content / Reasoning 「追加」到当前消息
+//	Delta == false  全量快照，用 Content / Reasoning 「整体覆盖」当前消息
+//
+// 各事件的取值：
+//
+//	message_start        Delta=false，Content 通常为空，用于重置当前气泡
+//	message_delta        Delta=true，Content 为增量文本，追加
+//	message_completed    Delta=false，Content 为完整文本，覆盖即收敛
+//	reasoning_delta      Delta=true，Reasoning 为增量思考，追加
+//	reasoning_completed  Delta=false，Reasoning 为完整思考，覆盖
+//	tool_start / tool_completed / approval / error / finished
+//	                     Delta=false，属于状态或事件，不参与文本追加
+//
+// 该约定保证：中间 delta 即使因背压被丢弃，前端在 message_completed 时
+// 用全量内容覆盖，界面仍能收敛到正确结果。
+//
+// 示例：
+//
+//	// 增量：追加「生产」
+//	{"v":1,"kind":"agent","type":"message_delta","sessionID":"ws_web_c1","seq":18,"chunk":7,
+//	 "data":{"event":"message_delta","delta":true,"content":"生产"}}
+//
+//	// 完成：用全量覆盖整条消息
+//	{"v":1,"kind":"agent","type":"message_completed","sessionID":"ws_web_c1","seq":42,"chunk":31,
+//	 "data":{"event":"message_completed","delta":false,"content":"生产良率为 98.2%"}}
+type AgentData struct {
+	// Event 事件类型，与 types.EventType 取值一致
+	Event string `json:"event"`
+	// Agent 产生该事件的 agent 名称
+	Agent string `json:"agent,omitempty"`
+	// Role 消息角色（assistant / user / system / tool）
+	Role string `json:"role,omitempty"`
+	// Delta 是否为增量片段。
+	// true：Content / Reasoning 为增量，前端追加；
+	// false：Content / Reasoning 为全量快照，前端整体覆盖。
+	Delta bool `json:"delta,omitempty"`
+	// Content 文本内容，含义由 Delta 决定：true 为增量片段，false 为全量快照
+	Content string `json:"content,omitempty"`
+	// Reasoning 思考内容，含义由 Delta 决定：true 为增量片段，false 为全量快照
+	Reasoning string `json:"reasoning,omitempty"`
+	// ToolCalls 工具调用（含结果）
+	ToolCalls []types.ToolCall `json:"toolCalls,omitempty"`
+	// Media 媒体文件
+	Media []types.Media `json:"media,omitempty"`
+	// Approval 审批信息，仅 approval 事件携带
+	Approval *ApprovalData `json:"approval,omitempty"`
+	// Error 错误信息，仅 error 事件携带
+	Error *ErrorBody `json:"error,omitempty"`
+	// Meta 透传元数据
+	Meta map[string]any `json:"meta,omitempty"`
+}
+
+// ApprovalData 审批请求
+type ApprovalData struct {
+	// ID 审批标识，客户端回传时使用
+	ID string `json:"id"`
+	// Content 审批内容描述
+	Content string `json:"content,omitempty"`
+	// Extra 附加信息
+	Extra map[string]any `json:"extra,omitempty"`
+}
+
+// ErrorBody 统一错误结构
+type ErrorBody struct {
+	// Code 机器可读的错误码
+	Code string `json:"code"`
+	// Message 人类可读的错误描述
+	Message string `json:"message"`
+	// Detail 补充细节
+	Detail string `json:"detail,omitempty"`
+}
+
+// HelloData 连接建立后下发的握手信息
+type HelloData struct {
+	ClientID     string      `json:"clientID"`
+	Protocol     int         `json:"protocol"`
+	Agents       []AgentInfo `json:"agents,omitempty"`
+	DefaultAgent string      `json:"defaultAgent,omitempty"`
+	Heartbeat    int         `json:"heartbeat,omitempty"` // 心跳间隔（秒）
+}
+
+// AgentInfo agent 基本信息
+type AgentInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// AckData 上行请求受理确认
+type AckData struct {
+	OK        bool   `json:"ok"`
+	SessionID string `json:"sessionID,omitempty"`
+	ReqID     string `json:"reqID,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+// PongData 应用层心跳应答
+type PongData struct {
+	ClientTS int64 `json:"clientTS,omitempty"`
+	ServerTS int64 `json:"serverTS"`
+}
+
+// AgentListData agent 列表
+type AgentListData struct {
+	Agents       []AgentInfo `json:"agents"`
+	DefaultAgent string      `json:"defaultAgent,omitempty"`
+}
+
+// ChatSendData 上行发送消息
+type ChatSendData struct {
+	// SessionID 可选，重连后继续同一会话时回传
+	SessionID string `json:"sessionID,omitempty"`
+	// ChatID 可选，对话标识，为空则服务端生成
+	ChatID string `json:"chatID,omitempty"`
+	// Agent 可选，指定处理该消息的 agent，为空使用默认
+	Agent string `json:"agent,omitempty"`
+	// Content 文本内容
+	Content string `json:"content,omitempty"`
+	// Media 媒体文件
+	Media []types.Media `json:"media,omitempty"`
+	// Metadata 元数据
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// ChatCancelData 上行中断会话
+type ChatCancelData struct {
+	SessionID string `json:"sessionID,omitempty"`
+	ChatID    string `json:"chatID,omitempty"`
+}
+
+// PingData 上行心跳
+type PingData struct {
+	TS int64 `json:"ts,omitempty"`
+}
+
+// ShutdownData 服务端关闭通知
+type ShutdownData struct {
+	Reason string `json:"reason,omitempty"`
+}

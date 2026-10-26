@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/gookit/rotatefile"
 	"github.com/kinwyb/buibuiCodex/channel"
@@ -17,6 +18,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/config"
 	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
+	"github.com/kinwyb/buibuiCodex/core/ws"
 	"github.com/kinwyb/buibuiCodex/mcp"
 )
 
@@ -71,6 +73,7 @@ func main() {
 		slog.Error("register agents failed ", "error", err)
 		return
 	}
+
 	mcpConfig := cfg.McpServer
 	mcpConfig.SetDefaults()
 	ms := mcp.NewMcp(&mcp.Config{
@@ -142,6 +145,27 @@ func main() {
 		return
 	}
 	slog.Info("manager.Start ok")
+
+	// 启动 WebSocket 服务，供 Web 前端收发消息
+	if cfg.WebSocket != nil && cfg.WebSocket.Enabled {
+		wsServer := ws.New(ws.Options{
+			Config:    cfg.WebSocket,
+			Bus:       msgBus,
+			Canceller: manager,
+			Agents:    manager,
+			Logger:    slog.Default(),
+		})
+		if err = wsServer.Start(ctx); err != nil {
+			slog.Error("start websocket server failed", "error", err)
+			return
+		}
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			_ = wsServer.Stop(shutdownCtx)
+		}()
+	}
+
 	// 5. 监听系统中断信号（Ctrl+C 或 SIGTERM），实现优雅退出
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
