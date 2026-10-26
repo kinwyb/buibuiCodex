@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kinwyb/buibuiCodex/core/bus"
+	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
@@ -16,11 +17,16 @@ type fakeAgents []string
 func (f fakeAgents) ListAgents() []string { return []string(f) }
 
 func newTestRegistry(msgBus *bus.MessageBus, agents AgentSource) (*Registry, *conn.Hub) {
+	return newTestRegistryWithTurns(msgBus, agents, nil)
+}
+
+func newTestRegistryWithTurns(msgBus *bus.MessageBus, agents AgentSource, turns TurnReader) (*Registry, *conn.Hub) {
 	hub := conn.NewHub()
 	return NewRegistry(Deps{
 		Bus:          msgBus,
 		Hub:          hub,
 		Agents:       agents,
+		Turns:        turns,
 		Channel:      "ws",
 		AccountID:    "web",
 		DefaultAgent: "codex",
@@ -184,5 +190,163 @@ func TestAgentInfos(t *testing.T) {
 	}
 	if AgentInfos(nil) != nil {
 		t.Fatal("空来源应返回 nil")
+	}
+}
+
+// ---- 历史消息 ----
+
+type fakeTurnReader struct {
+	threads []db.SessionThread
+	turns   map[string][]db.SessionTurn
+	queries []db.TurnQuery
+}
+
+func (f *fakeTurnReader) ThreadList(_ context.Context, _ string) ([]db.SessionThread, error) {
+	return f.threads, nil
+}
+
+func (f *fakeTurnReader) TurnList(_ context.Context, q db.TurnQuery) ([]db.SessionTurn, error) {
+	f.queries = append(f.queries, q)
+	return f.turns[q.ThreadID], nil
+}
+
+func historyRequest(t *testing.T, reg *Registry, c *conn.Client, data protocol.SessionHistoryData) *protocol.Envelope {
+	t.Helper()
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeSessionHistory).WithData(data)
+	reg.Dispatch(context.Background(), c, env)
+
+	select {
+	case raw := <-c.Outbound():
+		resp, body := protocol.DecodeEnvelope(raw)
+		if body != nil {
+			t.Fatalf("解析响应失败: %+v", body)
+		}
+		return resp
+	default:
+		t.Fatal("未返回响应")
+		return nil
+	}
+}
+
+func TestSessionHistoryGroupsByThread(t *testing.T) {
+	reader := &fakeTurnReader{
+		threads: []db.SessionThread{
+			{ThreadID: "t1", SessionID: "s1", Agent: "codex"},
+			{ThreadID: "t2", SessionID: "s1", Agent: "coder"}, // 无轮次，应被跳过
+		},
+		turns: map[string][]db.SessionTurn{
+			"t1": {{ReqID: "r1", ThreadID: "t1", TurnID: "u1", Agent: "codex", Question: "q1", Answer: "a1", IsCompleted: true, Seq: 7}},
+		},
+	}
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "s1"})
+	if resp.Kind != protocol.KindSystem || resp.Type != protocol.TypeSessionHistory {
+		t.Fatalf("响应类型不符合预期: %s/%s", resp.Kind, resp.Type)
+	}
+	var result protocol.SessionHistoryResult
+	if err := resp.DecodeData(&result); err != nil {
+		t.Fatalf("解析载荷失败: %v", err)
+	}
+	if result.SessionID != "s1" || len(result.Threads) != 1 {
+		t.Fatalf("应按线程分组并跳过空线程: %+v", result)
+	}
+	th := result.Threads[0]
+	if th.ThreadID != "t1" || len(th.Turns) != 1 {
+		t.Fatalf("线程内容不符合预期: %+v", th)
+	}
+	if th.Turns[0].ReqID != "r1" || th.Turns[0].Seq != 7 || !th.Turns[0].Completed {
+		t.Fatalf("轮次内容不符合预期: %+v", th.Turns[0])
+	}
+	if hub.SessionCount() != 1 {
+		t.Fatalf("拉取历史后应订阅该会话，实际订阅数 %d", hub.SessionCount())
+	}
+}
+
+func TestSessionHistoryWithThreadAndCursor(t *testing.T) {
+	reader := &fakeTurnReader{
+		turns: map[string][]db.SessionTurn{
+			"t2": {{ReqID: "r9", ThreadID: "t2"}},
+		},
+	}
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{
+		SessionID: "s1",
+		ThreadID:  "t2",
+		BeforeSeq: 30,
+		Limit:     -1,
+	})
+	var result protocol.SessionHistoryResult
+	_ = resp.DecodeData(&result)
+	if len(result.Threads) != 1 || result.Threads[0].ThreadID != "t2" {
+		t.Fatalf("指定线程应只返回该线程: %+v", result)
+	}
+	if len(reader.queries) != 1 {
+		t.Fatalf("指定线程时只应查询一次，实际 %d", len(reader.queries))
+	}
+	q := reader.queries[0]
+	if q.ThreadID != "t2" || q.BeforeSeq != 30 || q.SessionID != "s1" {
+		t.Fatalf("查询条件未透传: %+v", q)
+	}
+}
+
+func TestSessionHistorySinceAndChatID(t *testing.T) {
+	reader := &fakeTurnReader{
+		turns: map[string][]db.SessionTurn{"": {{ReqID: "r1"}}},
+	}
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{ChatID: "c9", Since: 1700000000000})
+	var result protocol.SessionHistoryResult
+	_ = resp.DecodeData(&result)
+	if result.SessionID != "ws_web_c9" {
+		t.Fatalf("应通过 chatID 推导 sessionID，实际 %s", result.SessionID)
+	}
+	if len(reader.queries) != 1 {
+		t.Fatalf("应查询一次，实际 %d", len(reader.queries))
+	}
+	if got := reader.queries[0].Since.UnixMilli(); got != 1700000000000 {
+		t.Fatalf("since 未正确转换，实际 %d", got)
+	}
+}
+
+func TestSessionHistoryFallbackWithoutThreads(t *testing.T) {
+	reader := &fakeTurnReader{
+		turns: map[string][]db.SessionTurn{"": {{ReqID: "legacy"}}},
+	}
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "s1"})
+	var result protocol.SessionHistoryResult
+	_ = resp.DecodeData(&result)
+	if len(result.Threads) != 1 || len(result.Threads[0].Turns) != 1 {
+		t.Fatalf("没有线程记录时应回退为按会话查询: %+v", result)
+	}
+}
+
+func TestSessionHistoryRejectsMissingSession(t *testing.T) {
+	reg, hub := newTestRegistryWithTurns(nil, nil, &fakeTurnReader{})
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{})
+	if resp.Type != protocol.TypeError {
+		t.Fatalf("缺少 sessionID 应返回 error，实际 %s", resp.Type)
+	}
+}
+
+func TestSessionHistoryWithoutReader(t *testing.T) {
+	reg, hub := newTestRegistryWithTurns(nil, nil, nil)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "s1"})
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeInternal {
+		t.Fatalf("未启用历史时错误码应为 internal，实际 %s", body.Code)
 	}
 }

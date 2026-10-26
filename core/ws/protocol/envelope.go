@@ -53,10 +53,11 @@ const (
 
 // client 域消息类型（上行）
 const (
-	TypeChatSend   = "chat.send"   // 发送用户消息
-	TypeChatCancel = "chat.cancel" // 中断当前会话
-	TypePing       = "ping"        // 应用层心跳
-	TypeAgentList  = "agent.list"  // 拉取可用 agent
+	TypeChatSend       = "chat.send"       // 发送用户消息
+	TypeChatCancel     = "chat.cancel"     // 中断当前会话
+	TypePing           = "ping"            // 应用层心跳
+	TypeAgentList      = "agent.list"      // 拉取可用 agent
+	TypeSessionHistory = "session.history" // 拉取历史消息（响应使用同名的 system 类型）
 )
 
 // 错误码

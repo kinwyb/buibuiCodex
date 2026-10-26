@@ -153,6 +153,7 @@ func main() {
 			Bus:       msgBus,
 			Canceller: manager,
 			Agents:    manager,
+			Turns:     dataStorage.Session(),
 			Logger:    slog.Default(),
 		})
 		if err = wsServer.Start(ctx); err != nil {

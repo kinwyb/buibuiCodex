@@ -451,7 +451,7 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 		questV, _ := json.Marshal(state.Input.Media)
 		quest = string(questV)
 	}
-	dbErr := m.dataStorage.Session().RequestSave(ctx, state.ReqID, quest, agent.AgentID())
+	dbErr := m.dataStorage.Session().RequestSave(ctx, state.SessionID, state.ReqID, quest, agent.AgentID())
 	if dbErr != nil {
 		slog.Error("failed to save request", "error", dbErr)
 	}
@@ -475,6 +475,7 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 			_ = m.bus.PublishEvent(ctx, outbound)
 			dbErr = m.dataStorage.Session().TurnSave(ctx, &db.SessionTurn{
 				ReqID:       state.ReqID,
+				SessionID:   state.SessionID,
 				Answer:      "handler拦截返回:" + reply,
 				IsCompleted: true,
 				CompletedAt: new(time.Now()),
@@ -508,6 +509,7 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 	}
 	dbErr = m.dataStorage.Session().TurnSave(ctx, &db.SessionTurn{
 		ReqID:       state.ReqID,
+		SessionID:   state.SessionID,
 		Answer:      answer,
 		IsCompleted: true,
 		CompletedAt: new(time.Now()),
@@ -573,7 +575,7 @@ func (m *Manager) agentSteer(ctx context.Context, state *types.State) {
 		questV, _ := json.Marshal(state.Input.Media)
 		quest = "附加信息：" + string(questV)
 	}
-	dbErr := m.dataStorage.Session().RequestSave(ctx, state.ReqID, quest, agent.AgentID())
+	dbErr := m.dataStorage.Session().RequestSave(ctx, state.SessionID, state.ReqID, quest, agent.AgentID())
 	if dbErr != nil {
 		slog.Error("failed to save request", "error", dbErr)
 	}
@@ -588,6 +590,7 @@ func (m *Manager) agentSteer(ctx context.Context, state *types.State) {
 		}
 		dbErr = m.dataStorage.Session().TurnSave(ctx, &db.SessionTurn{
 			ReqID:       state.ReqID,
+			SessionID:   state.SessionID,
 			Answer:      answer,
 			IsCompleted: true,
 			CompletedAt: new(time.Now()),

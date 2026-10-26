@@ -28,6 +28,7 @@ type Options struct {
 	Bus       *bus.MessageBus         // 消息总线
 	Canceller command.Canceller       // 会话取消能力，可为空
 	Agents    command.AgentSource     // agent 列表来源，可为空
+	Turns     command.TurnReader      // 历史轮次读取能力，为空时 session.history 不可用
 	Channel   string                  // 入站消息的渠道标识，默认 ws
 	AccountID string                  // 入站消息的账号标识，默认 web
 	Logger    *slog.Logger            // 日志
@@ -101,6 +102,7 @@ func New(opts Options) *Server {
 		Hub:          s.hub,
 		Canceller:    opts.Canceller,
 		Agents:       opts.Agents,
+		Turns:        opts.Turns,
 		Channel:      opts.Channel,
 		AccountID:    opts.AccountID,
 		DefaultAgent: opts.Config.DefaultAgent,

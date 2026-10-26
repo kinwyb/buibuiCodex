@@ -150,3 +150,52 @@ type PingData struct {
 type ShutdownData struct {
 	Reason string `json:"reason,omitempty"`
 }
+
+// ---- 历史消息 ----
+
+// SessionHistoryData 上行：拉取会话历史。
+// 层级为 session -> thread -> turn：不指定 threadID 时返回该会话下所有线程及其轮次。
+type SessionHistoryData struct {
+	// SessionID 会话标识，与 ChatID 二选一
+	SessionID string `json:"sessionID,omitempty"`
+	// ChatID 对话标识，用于推导出 sessionID
+	ChatID string `json:"chatID,omitempty"`
+	// ThreadID 指定线程，不传则返回该会话下所有线程
+	ThreadID string `json:"threadID,omitempty"`
+	// BeforeSeq 翻页游标：只取 seq 小于该值的轮次（加载更早的消息）
+	BeforeSeq uint `json:"beforeSeq,omitempty"`
+	// Since 增量补发：毫秒时间戳，只取创建时间不早于该时刻的轮次
+	Since int64 `json:"since,omitempty"`
+	// Limit 每线程返回条数：0 使用默认值 200，负数表示取全量（上限 1000）
+	Limit int `json:"limit,omitempty"`
+}
+
+// HistoryTurn 历史轮次，Seq 可直接作为下一次翻页的 beforeSeq
+type HistoryTurn struct {
+	Seq         uint   `json:"seq"`
+	ReqID       string `json:"reqID"`
+	ThreadID    string `json:"threadID,omitempty"`
+	TurnID      string `json:"turnID,omitempty"`
+	Agent       string `json:"agent,omitempty"`
+	Question    string `json:"question,omitempty"`
+	Answer      string `json:"answer,omitempty"`
+	Completed   bool   `json:"completed"`
+	CreatedAt   int64  `json:"createdAt"`
+	CompletedAt int64  `json:"completedAt,omitempty"`
+}
+
+// HistoryThread 一个线程及其轮次
+type HistoryThread struct {
+	ThreadID   string        `json:"threadID"`
+	Agent      string        `json:"agent,omitempty"`
+	CreatedAt  int64         `json:"createdAt,omitempty"`
+	LastUpdate int64         `json:"lastUpdate,omitempty"`
+	Turns      []HistoryTurn `json:"turns"`
+	HasMore    bool          `json:"hasMore,omitempty"`
+}
+
+// SessionHistoryResult 历史消息响应，threads 按创建时间升序，turns 按 seq 升序
+type SessionHistoryResult struct {
+	SessionID string          `json:"sessionID"`
+	Threads   []HistoryThread `json:"threads"`
+}

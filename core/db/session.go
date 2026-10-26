@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -65,6 +66,42 @@ type TurnEvent struct {
 	CreateTime time.Time `json:"create_time" gorm:"index;not null"`
 }
 
+// 轮次查询的分页参数
+const (
+	// DefaultTurnLimit 未指定 limit 时返回的轮次数量
+	DefaultTurnLimit = 200
+	// MaxTurnLimit 单次查询的最大轮次数量，limit 传负数表示尽量取全量
+	MaxTurnLimit = 1000
+)
+
+// TurnQuery 轮次查询条件
+type TurnQuery struct {
+	// SessionID 会话标识，必填
+	SessionID string
+	// ThreadID 线程标识：指定后只查该线程下的轮次
+	ThreadID string
+	// BeforeSeq 只取 seq 小于该值的记录，用于向前翻页（加载更早的轮次）
+	BeforeSeq uint
+	// Since 只取创建时间不早于该时刻的记录，用于断线后的增量补发
+	Since time.Time
+	// Limit 返回条数：0 使用默认值，负数表示取全量（受 MaxTurnLimit 限制）
+	Limit int
+}
+
+// NormalizeLimit 归一化 limit，返回实际生效的条数
+func (q TurnQuery) NormalizeLimit() int {
+	switch {
+	case q.Limit < 0:
+		return MaxTurnLimit
+	case q.Limit == 0:
+		return DefaultTurnLimit
+	case q.Limit > MaxTurnLimit:
+		return MaxTurnLimit
+	default:
+		return q.Limit
+	}
+}
+
 type ISession interface {
 	Init()
 	// SessionSave session 保存
@@ -78,11 +115,15 @@ type ISession interface {
 	// LastThread 查询session对应的最后thread
 	LastThread(ctx context.Context, sessionID string, agent string) *SessionThread
 	// RequestSave 请求保存
-	RequestSave(ctx context.Context, reqID string, quest string, agent string) error
+	RequestSave(ctx context.Context, sessionID string, reqID string, quest string, agent string) error
 	// TurnSave 会话信息保存
 	TurnSave(ctx context.Context, turn *SessionTurn) error
 	// TurnQueryByID 会话信息查询
 	TurnQueryByID(ctx context.Context, turnID string) *SessionTurn
+	// ThreadList 查询会话下的所有线程，按创建时间升序返回，用于 session -> thread -> turn 的层级遍历
+	ThreadList(ctx context.Context, sessionID string) ([]SessionThread, error)
+	// TurnList 按会话/线程分页查询轮次，结果按 seq 升序返回
+	TurnList(ctx context.Context, query TurnQuery) ([]SessionTurn, error)
 	// TurnEventSave 会话事件保存
 	TurnEventSave(ctx context.Context, turn *TurnEvent) error
 	// TurnTokenUsage 根据turnID更新token用量
@@ -116,7 +157,7 @@ func (s *sessionDefautStorage) LastThread(ctx context.Context, sessionID string,
 	return nil
 }
 
-func (s *sessionDefautStorage) RequestSave(ctx context.Context, reqID string, quest string, agent string) error {
+func (s *sessionDefautStorage) RequestSave(ctx context.Context, sessionID string, reqID string, quest string, agent string) error {
 	return nil
 }
 
@@ -126,6 +167,14 @@ func (s *sessionDefautStorage) TurnSave(ctx context.Context, turn *SessionTurn) 
 
 func (s *sessionDefautStorage) TurnQueryByID(ctx context.Context, turnID string) *SessionTurn {
 	return nil
+}
+
+func (s *sessionDefautStorage) TurnList(ctx context.Context, query TurnQuery) ([]SessionTurn, error) {
+	return nil, nil
+}
+
+func (s *sessionDefautStorage) ThreadList(ctx context.Context, sessionID string) ([]SessionThread, error) {
+	return nil, nil
 }
 
 func (s *sessionDefautStorage) TurnEventSave(ctx context.Context, turn *TurnEvent) error {
@@ -203,8 +252,9 @@ func (s *sessionStorage) LastThread(ctx context.Context, sessionID string, agent
 	return thread
 }
 
-func (s *sessionStorage) RequestSave(ctx context.Context, reqID string, quest string, agent string) error {
+func (s *sessionStorage) RequestSave(ctx context.Context, sessionID string, reqID string, quest string, agent string) error {
 	req := &SessionTurn{
+		SessionID: sessionID,
 		ReqID:     reqID,
 		Question:  quest,
 		CreatedAt: time.Now(),
@@ -224,6 +274,50 @@ func (s *sessionStorage) TurnQueryByID(ctx context.Context, turnID string) *Sess
 		return nil
 	}
 	return &ret
+}
+
+// ThreadList 查询会话下的所有线程，按创建时间升序返回
+func (s *sessionStorage) ThreadList(ctx context.Context, sessionID string) ([]SessionThread, error) {
+	var list []SessionThread
+	err := s.db.WithContext(ctx).
+		Where("session_id = ?", sessionID).
+		Order("create_time asc").
+		Find(&list).Error
+	if err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// TurnList 按会话/线程分页查询轮次。
+// 倒序取最近 N 条（便于翻页与 limit 语义），返回前反转为正序。
+func (s *sessionStorage) TurnList(ctx context.Context, query TurnQuery) ([]SessionTurn, error) {
+	if query.SessionID == "" && query.ThreadID == "" {
+		return nil, errors.New("session_id or thread_id is required")
+	}
+
+	tx := s.db.WithContext(ctx).Model(&SessionTurn{})
+	if query.SessionID != "" {
+		tx = tx.Where("session_id = ?", query.SessionID)
+	}
+	if query.ThreadID != "" {
+		tx = tx.Where("thread_id = ?", query.ThreadID)
+	}
+	if query.BeforeSeq > 0 {
+		tx = tx.Where("seq < ?", query.BeforeSeq)
+	}
+	if !query.Since.IsZero() {
+		tx = tx.Where("created_at >= ?", query.Since)
+	}
+
+	var list []SessionTurn
+	if err := tx.Order("seq desc").Limit(query.NormalizeLimit()).Find(&list).Error; err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
+		list[i], list[j] = list[j], list[i]
+	}
+	return list, nil
 }
 
 func (s *sessionStorage) TurnEventSave(ctx context.Context, turn *TurnEvent) error {

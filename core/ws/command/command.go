@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kinwyb/buibuiCodex/core/bus"
+	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
@@ -26,15 +27,23 @@ type AgentSource interface {
 	ListAgents() []string
 }
 
+// TurnReader 历史轮次读取能力，由 db.ISession 实现。
+// 层级关系为 session -> thread -> turn。
+type TurnReader interface {
+	ThreadList(ctx context.Context, sessionID string) ([]db.SessionThread, error)
+	TurnList(ctx context.Context, query db.TurnQuery) ([]db.SessionTurn, error)
+}
+
 // Deps 命令执行依赖
 type Deps struct {
 	Bus          *bus.MessageBus
 	Hub          *conn.Hub
 	Canceller    Canceller
 	Agents       AgentSource
-	Channel      string // 入站消息的渠道标识
-	AccountID    string // 入站消息的账号标识
-	DefaultAgent string // 前端未指定时使用的 agent
+	Turns        TurnReader // 历史消息数据源，为空时 session.history 返回未启用
+	Channel      string     // 入站消息的渠道标识
+	AccountID    string     // 入站消息的账号标识
+	DefaultAgent string     // 前端未指定时使用的 agent
 }
 
 // Handler 命令处理函数
@@ -54,6 +63,7 @@ func NewRegistry(deps Deps) *Registry {
 	r.Register(protocol.TypeChatSend, r.chatSend)
 	r.Register(protocol.TypeChatCancel, r.chatCancel)
 	r.Register(protocol.TypeAgentList, r.agentList)
+	r.Register(protocol.TypeSessionHistory, r.sessionHistory)
 	return r
 }
 
@@ -200,4 +210,149 @@ func (r *Registry) agentList(_ context.Context, c *conn.Client, env *protocol.En
 			Agents:       AgentInfos(r.deps.Agents),
 			DefaultAgent: r.deps.DefaultAgent,
 		}))
+}
+
+// sessionHistory 拉取会话历史，按 session -> thread -> turn 的层级返回。
+// 三种用法：
+//   - 打开会话：只传 sessionID，返回全部线程与轮次；
+//   - 向上翻页：额外传 beforeSeq（取上一页第一条的 seq）；
+//   - 断线补发：额外传 since（本地最后一条轮次的 createdAt）。
+func (r *Registry) sessionHistory(ctx context.Context, c *conn.Client, env *protocol.Envelope) {
+	var data protocol.SessionHistoryData
+	if err := env.DecodeData(&data); err != nil {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "参数解析失败", Detail: err.Error()})
+		return
+	}
+
+	sessionID := strings.TrimSpace(data.SessionID)
+	if sessionID == "" && strings.TrimSpace(data.ChatID) != "" {
+		sessionID = r.SessionKey(data.ChatID)
+	}
+	if sessionID == "" {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 sessionID 或 chatID"})
+		return
+	}
+	if r.deps.Turns == nil {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "服务未启用历史消息"})
+		return
+	}
+
+	// 打开会话即订阅，保证断线重连后能继续收到该会话的实时事件
+	if r.deps.Hub != nil {
+		r.deps.Hub.Subscribe(c, sessionID)
+	}
+
+	result, err := r.loadHistory(ctx, sessionID, data)
+	if err != nil {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "查询历史消息失败", Detail: err.Error()})
+		return
+	}
+
+	c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypeSessionHistory).
+		WithReplyTo(env.ID).
+		WithSession(sessionID, "").
+		WithData(result))
+}
+
+// loadHistory 按 thread 分组查询轮次
+func (r *Registry) loadHistory(ctx context.Context, sessionID string, data protocol.SessionHistoryData) (*protocol.SessionHistoryResult, error) {
+	query := db.TurnQuery{
+		SessionID: sessionID,
+		ThreadID:  strings.TrimSpace(data.ThreadID),
+		BeforeSeq: data.BeforeSeq,
+		Limit:     data.Limit,
+	}
+	if data.Since > 0 {
+		query.Since = time.UnixMilli(data.Since)
+	}
+	limit := query.NormalizeLimit()
+	result := &protocol.SessionHistoryResult{SessionID: sessionID}
+
+	// 指定线程：只返回该线程
+	if query.ThreadID != "" {
+		turns, err := r.deps.Turns.TurnList(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		result.Threads = append(result.Threads, protocol.HistoryThread{
+			ThreadID: query.ThreadID,
+			Turns:    toHistoryTurns(turns),
+			HasMore:  len(turns) >= limit,
+		})
+		return result, nil
+	}
+
+	// 未指定线程：session -> thread -> turn
+	threads, err := r.deps.Turns.ThreadList(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, thread := range threads {
+		q := query
+		q.ThreadID = thread.ThreadID
+		turns, err := r.deps.Turns.TurnList(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		if len(turns) == 0 {
+			continue
+		}
+		result.Threads = append(result.Threads, protocol.HistoryThread{
+			ThreadID:   thread.ThreadID,
+			Agent:      thread.Agent,
+			CreatedAt:  millis(thread.CreateTime),
+			LastUpdate: millis(thread.LastUpdate),
+			Turns:      toHistoryTurns(turns),
+			HasMore:    len(turns) >= limit,
+		})
+	}
+
+	// 兼容没有 thread 记录的历史数据
+	if len(result.Threads) == 0 {
+		q := query
+		q.ThreadID = ""
+		turns, err := r.deps.Turns.TurnList(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		if len(turns) > 0 {
+			result.Threads = append(result.Threads, protocol.HistoryThread{
+				Turns:   toHistoryTurns(turns),
+				HasMore: len(turns) >= limit,
+			})
+		}
+	}
+
+	return result, nil
+}
+
+// toHistoryTurns 转换数据库轮次为协议结构
+func toHistoryTurns(list []db.SessionTurn) []protocol.HistoryTurn {
+	out := make([]protocol.HistoryTurn, 0, len(list))
+	for _, t := range list {
+		item := protocol.HistoryTurn{
+			Seq:       t.Seq,
+			ReqID:     t.ReqID,
+			ThreadID:  t.ThreadID,
+			TurnID:    t.TurnID,
+			Agent:     t.Agent,
+			Question:  t.Question,
+			Answer:    t.Answer,
+			Completed: t.IsCompleted,
+			CreatedAt: millis(t.CreatedAt),
+		}
+		if t.CompletedAt != nil {
+			item.CompletedAt = millis(*t.CompletedAt)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// millis 转毫秒时间戳，零值返回 0 而不是负数
+func millis(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
 }
