@@ -57,6 +57,7 @@ const (
 	TypeChatCancel     = "chat.cancel"         // 中断当前会话
 	TypePing           = "ping"                // 应用层心跳
 	TypeAgentList      = "agent.list"          // 拉取可用 agent
+	TypeSessionList    = "session.list"        // 拉取对话列表（响应使用同名的 system 类型）
 	TypeSessionHistory = "session.history"     // 拉取历史消息（响应使用同名的 system 类型）
 	TypeTurnReplay     = "session.turn.replay" // 回放单轮的完整执行过程（响应使用同名的 system 类型）
 )

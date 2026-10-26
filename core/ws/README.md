@@ -106,7 +106,16 @@ core/ws/
 │   └── hub.go       连接注册表、按会话订阅、广播、全局序号
 ├── bridge/          总线桥接：types.Event → protocol.Envelope
 ├── replay/          历史回放：turn_events → protocol.Envelope（与 bridge 产出同构）
-├── command/         上行命令：注册表 + 内置命令
+├── command/         上行命令：一个命令一个文件
+│   ├── command.go        依赖、注册表、分发、会话键（只做注册与集成）
+│   ├── ping.go           ping
+│   ├── chat_send.go      chat.send
+│   ├── chat_cancel.go    chat.cancel
+│   ├── agent_list.go     agent.list
+│   ├── session_list.go   session.list
+│   ├── session_history.go session.history（含执行过程帧）
+│   ├── turn_replay.go    session.turn.replay
+│   └── helper.go         命令间共用的小工具
 └── server/          HTTP 升级、鉴权、Origin、生命周期、组装
 ```
 
@@ -165,8 +174,9 @@ server ──> command ──> replay ──> protocol
 | `pong` | 收到 `ping` | `clientTS`、`serverTS` |
 | `error` | 任何失败 | `code`、`message`、`detail` |
 | `agent.list` | 收到同名上行命令 | `agents`、`defaultAgent` |
-| `session.history` | 收到同名上行命令 | `sessionID`、`threads[]`、（可选）`frames[]`（见 5.1） |
-| `session.turn.replay` | 收到同名上行命令 | `sessionID`、`turnID`、`frames[]`（见 5.1） |
+| `session.list` | 收到同名上行命令 | `items[]`、`hasMore`、下一页游标（见 5.1） |
+| `session.history` | 收到同名上行命令 | `sessionID`、`threads[]`、（可选）`frames[]`（见 5.2） |
+| `session.turn.replay` | 收到同名上行命令 | `sessionID`、`turnID`、`frames[]`（见 5.2） |
 | `shutdown` | 服务停止前 | `reason` |
 
 ### 3.3 下行 · agent
@@ -217,8 +227,9 @@ delta == false   全量快照，整体覆盖当前消息
 | `chat.cancel` | `sessionID?`、`chatID?` | 中断当前会话 |
 | `ping` | `ts` | 应用层心跳，测 RTT |
 | `agent.list` | — | 拉取可用 agent |
-| `session.history` | `sessionID?`、`chatID?`、`threadID?`、`beforeSeq?`、`since?`、`limit?`、`includeFrames?` | 拉取历史消息，见 5.1 |
-| `session.turn.replay` | `sessionID?`、`chatID?`、`turnID`、`afterSeq?`、`limit?` | 回放单轮完整过程，见 5.1 |
+| `session.list` | `limit?`、`beforeLastUpdate?`、`beforeThreadID?` | 拉取对话列表，见 5.1 |
+| `session.history` | `sessionID?`、`chatID?`、`threadID?`、`beforeSeq?`、`since?`、`limit?`、`includeFrames?` | 拉取历史消息，见 5.2 |
+| `session.turn.replay` | `sessionID?`、`chatID?`、`turnID`、`afterSeq?`、`limit?` | 回放单轮完整过程，见 5.2 |
 
 `chat.send` 可以不传 `chatID` 与 `sessionID`：服务端会沿用连接当前的对话（即 `hello` 下发的 `chatID`），前端只需持有登录 token。传 `chatID` 表示切换到该对话，连接上下文随之更新；`ack` 会返回本次使用的 `chatID` 与 `sessionID`（`ws_<userID>_<chatID>`）。
 
@@ -268,7 +279,52 @@ delta == false   全量快照，整体覆盖当前消息
 - 事件只转发给订阅了对应 `sessionID` 的连接，未订阅则不投递（返回 0）。
 - 默认只转发 `event.Channel == "ws"` 的事件，微信等渠道的回复不会串到 Web。`forward_all_channels=true` 可放开，但仍需客户端订阅对应会话才会收到。
 
-### 5.1 历史消息
+### 5.1 对话列表
+
+打开应用时先要「我有哪些对话」。`session.list` 返回当前用户的对话，**一条对应一个 thread**：
+
+```json
+{"kind":"client","type":"session.list","data":{"limit":50}}
+```
+
+响应：
+
+```json
+{
+  "items": [
+    {
+      "threadID": "th-2", "sessionID": "ws_web_c2", "agent": "codex",
+      "title": "分析昨天良率", "preview": "生产良率为 98.2%，主要瓶颈在二号线…",
+      "turns": 6, "completed": true,
+      "createdAt": 1761432000000, "lastUpdate": 1761435600000
+    }
+  ],
+  "hasMore": true,
+  "nextBeforeLastUpdate": 1761435600000,
+  "nextBeforeThreadID": "th-2"
+}
+```
+
+为什么按 thread 而不是 session 分组：
+
+- 一个 **thread** 是一次完整对话，其下挂多轮 turn，`turns` 就是轮次数
+- 一个 **session**（`ws_<userID>_<chatID>`）下可以有多个 thread——换过 agent 就会新建
+- 所以同一会话里换过 agent，列表里会显示成两条对话，各自延续各自的上下文
+
+字段约定：
+
+- `threadID` + `sessionID` 拿去就能用：`session.history` 带 `threadID`，`chat.send` 带 `sessionID`
+- `title` 取首轮提问（按 40 字符截断）；该轮只有媒体时为空，前端用「图片消息」之类的兜底文案
+- `preview` 取末轮回答（80 字符）
+- `turns` 是轮次数量，不需要再拉详情就能显示「共 N 轮」
+- `completed=false` 表示末轮没有正常结束（被中断或仍在跑）
+- 只返回当前用户自己的对话：归属过滤在 SQL 里通过 `sessions` 表关联完成，不能靠 `session_id` 前缀匹配——会话键里的下划线在 `LIKE` 里是通配符，`ws_alice_` 会误命中 `ws-alice_`
+
+翻页：把 `nextBeforeLastUpdate` + `nextBeforeThreadID` 原样回传即可。用复合游标而非单一时间戳，是因为多个对话的 `last_update` 可能落在同一毫秒，只比时间会漏项。
+
+`limit`：0 用默认 50，负数取全量（上限 200）。`hasMore` 是保守判断（本页条数触顶即为 true），以返回空列表为准。
+
+### 5.2 历史消息
 
 数据层级是 `session → thread → turn`：
 
@@ -368,7 +424,7 @@ delta == false   全量快照，整体覆盖当前消息
 
 服务端会校验 `turnID` 是否属于该会话，跨会话访问返回 `forbidden`。
 
-### 5.2 身份与鉴权
+### 5.3 身份与鉴权
 
 身份在握手阶段确定，整个连接生命周期内不变。解析逻辑是一个可替换的函数：
 
@@ -449,24 +505,38 @@ wsServer.Broadcast(protocol.KindCron, "task_done", &CronTaskData{
 
 ### 7.2 新增上行命令
 
+**一个命令一个文件**。新建 `command/<命令>.go`，写一个 `func (r *Registry) xxx(ctx, c, env)`，再到 `command.go` 的 `NewRegistry` 里加一行注册即可——`command.go` 只放依赖、注册表与分发，不放具体命令。
+
 ```go
-wsServer.HandleCommand("session.history", func(ctx context.Context, c *conn.Client, env *protocol.Envelope) {
-    var req struct {
-        SessionID string `json:"sessionID"`
-        Limit     int    `json:"limit"`
-    }
-    if err := env.DecodeData(&req); err != nil {
+// command/session_pin.go
+// 本文件实现 session.pin 命令：置顶某个对话。
+
+package command
+
+// sessionPin 置顶/取消置顶一个对话
+func (r *Registry) sessionPin(ctx context.Context, c *conn.Client, env *protocol.Envelope) {
+    var data protocol.SessionPinData
+    if err := env.DecodeData(&data); err != nil {
         c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "参数解析失败"})
         return
     }
-    // 查询历史后回复，类型建议与上行命令同名
-    c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, "session.history").
+    if !r.ownsSession(c.UserID(), data.SessionID) {
+        c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
+        return
+    }
+    // 处理后回复，类型建议与上行命令同名
+    c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypeSessionPin).
         WithReplyTo(env.ID).
-        WithData(historyData))
-})
+        WithData(result))
+}
 ```
 
-处理器内部要自己保证：参数校验失败调 `c.ReplyError`，成功至少回一条带 `replyTo` 的响应。
+```go
+// command.go
+r.Register(protocol.TypeSessionPin, r.sessionPin)
+```
+
+处理器内部要自己保证：参数校验失败调 `c.ReplyError`，成功至少回一条带 `replyTo` 的响应。涉及会话归属的一律先过 `r.ownsSession`。
 
 ### 7.3 新增配置项
 
@@ -486,6 +556,7 @@ wsServer.HandleCommand("session.history", func(ctx context.Context, c *conn.Clie
 8. **userID 不能含下划线**。会话键与归属判断依赖 `ws_<userID>_` 前缀，`alice_2` 会与 `alice` 混淆。默认 Authenticator 会直接拒绝这类 token；自定义 Authenticator 也必须保证返回值合法。
 9. **回放产物必须是 agent 信封，不能另起结构**。`replay.Build` 输出的是 `kind=agent` 的 `protocol.Envelope`，和 `bridge.convert` 逐字段对齐，前端才能共用一条渲染管线。新增事件映射时不要自定义新 type，优先复用 `types.EventType`；上游新增 item 类型时，在 `replay.itemStep` 的 switch 里补分支，否则会走 `default` 降级成原始 JSON（信息不丢但可读性差）。
 10. **`replay` 与 `bridge` 的字段口径要一致**。两边都在填 `AgentData`，任何一边改了 `role` / `delta` / `toolCalls` 的语义，另一边都得同步，否则历史与实时渲染出来会长得不一样。这也是 `replay` 单独成包而不是塞进 `command` 的原因：它和 `bridge` 是一对镜像实现。
+11. **新命令放独立文件，别塞回 `command.go`**。那个文件只做注册集成（接口、Deps、Registry、分发、会话键）。命令一旦混进去，找某条命令的行为就得翻整份文件；现在一个命令一个文件，出问题直接打开同名文件即可。
 
 ---
 
@@ -497,10 +568,10 @@ go test -race ./core/db/ ./core/ws/...
 
 | 包 | 覆盖 |
 | --- | --- |
-| `db` | 按会话/线程查询、limit 与 beforeSeq 翻页、since 增量、线程列表、RequestSave 写入 sessionID、事件按轮次/白名单/游标查询 |
+| `db` | 按会话/线程查询、limit 与 beforeSeq 翻页、since 增量、线程列表、RequestSave 写入 sessionID、事件按轮次/白名单/游标查询、线程按账号分页（含复合游标）、首末轮摘要 |
 | `protocol` | 信封往返、6 类非法输入、Kind 校验、IsDelta |
 | `conn` | 按会话分发、注销清理、广播、背压（delta 丢弃 / 关键帧断开） |
-| `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、历史分组/翻页/补发/订阅、历史帧还原、单轮回放、跨用户越权拒绝 |
+| `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、对话列表分页与截断、历史分组/翻页/补发/订阅、历史帧还原、单轮回放、跨用户越权拒绝 |
 | `bridge` | 渠道过滤、完成/错误/审批/增量转换、completed 的 delta=false 断言 |
 | `replay` | 事件→agent 帧的完整映射、delta 与用量事件被跳过、思考拼接、命令/搜索/工具解析、未知类型降级、截断与 UTF-8 边界、审批与失败帧、帧数与 seq 回填 |
 | `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、token 即身份、自定义 Authenticator、非法 userID 拒绝 |
@@ -512,7 +583,7 @@ go test -race ./core/db/ ./core/ws/...
 - **补发基于数据库轮次**：`session.history(since)` 只能补已落库的轮次；断线期间正在生成的那一轮不补逐帧内容，重连后由后续事件或 `message_completed` 覆盖收敛。
 - **历史帧不是逐帧录像**：`frames` 只还原关键帧（每轮上限 200 帧、单条文本 4KB），而且只覆盖 `turn_events` 里已有的记录。若某轮在落库前就崩溃，过程会有缺口；`turn_events` 也没有 `session_id`，只能靠 `turn_id` 反查。
 - **回放不支持审批回传**：审批帧能展示，但历史里点「同意/拒绝」没有意义（那一轮已经结束），闭环仍待 P2。
-- **暂无会话列表接口**：前端需自行保存 chatID / sessionID；如需「历史会话列表」，可按 `Session` 表新增 `session.list`。
+- **对话列表只读 thread 表**：`session.list` 依赖 `sessions` 表关联出归属，若某会话在 `sessions` 里没有记录（历史数据缺失），对应 thread 不会出现在列表中；标题/预览取首末轮，中间轮次不参与。
 - **不支持审批回传**：`approval` 事件能下发，但客户端无法回应，审批闭环待 P2。
 - **媒体原样透传**：`types.Media` 直接下发，若上游填了 `base64` 会原样传输；P2 计划改为只传 URL，避免大帧拖慢 bridge。
 - **默认不做真实鉴权**：`DefaultAuthenticator` 只把 token 当 userID，不校验有效性（TODO）。上线前务必替换成查库或 JWT 校验。

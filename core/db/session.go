@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -142,6 +143,61 @@ func (q TurnEventQuery) NormalizeLimit() int {
 	}
 }
 
+// 对话列表（线程分页）参数
+const (
+	// DefaultThreadLimit 未指定 limit 时返回的线程数
+	DefaultThreadLimit = 50
+	// MaxThreadLimit 单次查询的最大线程数
+	MaxThreadLimit = 200
+)
+
+// ThreadQuery 对话列表查询条件。
+// 列表以 thread 为粒度：一个 thread 是一次完整对话，其下挂多轮 turn。
+type ThreadQuery struct {
+	// Channel 渠道，与 AccountID 一起定位用户，经 sessions 表关联过滤
+	Channel string
+	// AccountID 账号标识（ws 渠道下即 userID）
+	AccountID string
+	// SessionID 只查指定会话下的线程，用于单会话维度
+	SessionID string
+	// BeforeLastUpdate 复合游标之一：只取最后更新时间早于该时刻的线程
+	BeforeLastUpdate time.Time
+	// BeforeThreadID 复合游标之一：时间相同时用它续接，避免翻页漏项
+	BeforeThreadID string
+	// Limit 返回条数：0 使用默认值，负数表示取全量（受 MaxThreadLimit 限制）
+	Limit int
+}
+
+// NormalizeLimit 归一化 limit，返回实际生效的条数
+func (q ThreadQuery) NormalizeLimit() int {
+	switch {
+	case q.Limit < 0:
+		return MaxThreadLimit
+	case q.Limit == 0:
+		return DefaultThreadLimit
+	case q.Limit > MaxThreadLimit:
+		return MaxThreadLimit
+	default:
+		return q.Limit
+	}
+}
+
+// ThreadSummary 线程的轮次摘要，供对话列表直接展示。
+// 列表页不查全量轮次，只取首轮提问（标题）与末轮内容（预览）。
+type ThreadSummary struct {
+	ThreadID string
+	// Turns 该线程下的轮次数量
+	Turns int64
+	// FirstQuestion 首轮提问，用作对话标题
+	FirstQuestion string
+	// LastQuestion 末轮提问
+	LastQuestion string
+	// LastAnswer 末轮回答
+	LastAnswer string
+	// LastCompleted 末轮是否正常结束
+	LastCompleted bool
+}
+
 type ISession interface {
 	Init()
 	// SessionSave session 保存
@@ -162,6 +218,10 @@ type ISession interface {
 	TurnQueryByID(ctx context.Context, turnID string) *SessionTurn
 	// ThreadList 查询会话下的所有线程，按创建时间升序返回，用于 session -> thread -> turn 的层级遍历
 	ThreadList(ctx context.Context, sessionID string) ([]SessionThread, error)
+	// ThreadPage 按用户分页查询线程，按最后更新时间倒序返回，用于对话列表
+	ThreadPage(ctx context.Context, query ThreadQuery) ([]SessionThread, error)
+	// ThreadSummaries 批量查询线程的轮次摘要（首轮提问 / 末轮内容 / 轮次数量）
+	ThreadSummaries(ctx context.Context, threadIDs []string) (map[string]ThreadSummary, error)
 	// TurnList 按会话/线程分页查询轮次，结果按 seq 升序返回
 	TurnList(ctx context.Context, query TurnQuery) ([]SessionTurn, error)
 	// TurnEventSave 会话事件保存
@@ -216,6 +276,14 @@ func (s *sessionDefautStorage) TurnList(ctx context.Context, query TurnQuery) ([
 }
 
 func (s *sessionDefautStorage) ThreadList(ctx context.Context, sessionID string) ([]SessionThread, error) {
+	return nil, nil
+}
+
+func (s *sessionDefautStorage) ThreadPage(ctx context.Context, query ThreadQuery) ([]SessionThread, error) {
+	return nil, nil
+}
+
+func (s *sessionDefautStorage) ThreadSummaries(ctx context.Context, threadIDs []string) (map[string]ThreadSummary, error) {
 	return nil, nil
 }
 
@@ -333,6 +401,122 @@ func (s *sessionStorage) ThreadList(ctx context.Context, sessionID string) ([]Se
 		return nil, err
 	}
 	return list, nil
+}
+
+// ThreadPage 按用户分页查询线程，按最后更新时间倒序返回。
+//
+// 归属过滤走 sessions 表关联，而不是对 session_id 做 LIKE 前缀匹配：
+// 会话键形如 ws_<userID>_<chatID>，其中的下划线在 LIKE 里是单字符通配符，
+// 前缀匹配会误命中别的用户（ws_alice 与 wsXalice）。
+func (s *sessionStorage) ThreadPage(ctx context.Context, query ThreadQuery) ([]SessionThread, error) {
+	tx := s.db.WithContext(ctx).Model(&SessionThread{}).Select("session_threads.*")
+
+	if query.SessionID != "" {
+		tx = tx.Where("session_threads.session_id = ?", query.SessionID)
+	}
+	if query.Channel != "" || query.AccountID != "" {
+		sessions := s.tableName("Session")
+		tx = tx.Joins(fmt.Sprintf("JOIN %s ON %s.session_id = session_threads.session_id", sessions, sessions))
+		if query.Channel != "" {
+			tx = tx.Where(sessions+".channel = ?", query.Channel)
+		}
+		if query.AccountID != "" {
+			tx = tx.Where(sessions+".account_id = ?", query.AccountID)
+		}
+	}
+	if !query.BeforeLastUpdate.IsZero() {
+		// 复合游标：时间相同时用 thread_id 续接，避免同一时刻的线程被翻页跳过
+		tx = tx.Where(
+			"(session_threads.last_update < ? OR (session_threads.last_update = ? AND session_threads.thread_id < ?))",
+			query.BeforeLastUpdate, query.BeforeLastUpdate, query.BeforeThreadID,
+		)
+	}
+
+	var list []SessionThread
+	err := tx.Order("session_threads.last_update desc").
+		Order("session_threads.thread_id desc").
+		Limit(query.NormalizeLimit()).
+		Find(&list).Error
+	if err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// ThreadSummaries 批量查询线程的轮次摘要。
+//
+// 列表页只需要「首轮提问当标题 + 末轮内容当预览」，所以不拉全量轮次：
+// 一条聚合拿轮次数，另两条按 MIN/MAX(seq) 取首末轮，整体与线程数无关。
+func (s *sessionStorage) ThreadSummaries(ctx context.Context, threadIDs []string) (map[string]ThreadSummary, error) {
+	out := make(map[string]ThreadSummary, len(threadIDs))
+	if len(threadIDs) == 0 {
+		return out, nil
+	}
+
+	type countRow struct {
+		ThreadID string
+		Turns    int64
+	}
+	var counts []countRow
+	if err := s.db.WithContext(ctx).Model(&SessionTurn{}).
+		Select("thread_id, COUNT(*) AS turns").
+		Where("thread_id IN ?", threadIDs).
+		Group("thread_id").
+		Scan(&counts).Error; err != nil {
+		return nil, err
+	}
+	for _, c := range counts {
+		out[c.ThreadID] = ThreadSummary{ThreadID: c.ThreadID, Turns: c.Turns}
+	}
+
+	table := s.tableName("SessionTurn")
+	type edgeRow struct {
+		ThreadID    string
+		Question    string
+		Answer      string
+		IsCompleted bool
+	}
+	// 首轮：取每个线程的最小 seq
+	firstSQL := fmt.Sprintf(`SELECT t.thread_id, t.question, t.answer, t.is_completed
+FROM %s t JOIN (SELECT thread_id, MIN(seq) AS edge FROM %s WHERE thread_id IN ? GROUP BY thread_id) m
+ON t.thread_id = m.thread_id AND t.seq = m.edge`, table, table)
+	var firsts []edgeRow
+	if err := s.db.WithContext(ctx).Raw(firstSQL, threadIDs).Scan(&firsts).Error; err != nil {
+		return nil, err
+	}
+	for _, e := range firsts {
+		item := out[e.ThreadID]
+		item.ThreadID = e.ThreadID
+		item.FirstQuestion = e.Question
+		out[e.ThreadID] = item
+	}
+
+	// 末轮：取每个线程的最大 seq
+	lastSQL := fmt.Sprintf(`SELECT t.thread_id, t.question, t.answer, t.is_completed
+FROM %s t JOIN (SELECT thread_id, MAX(seq) AS edge FROM %s WHERE thread_id IN ? GROUP BY thread_id) m
+ON t.thread_id = m.thread_id AND t.seq = m.edge`, table, table)
+	var lasts []edgeRow
+	if err := s.db.WithContext(ctx).Raw(lastSQL, threadIDs).Scan(&lasts).Error; err != nil {
+		return nil, err
+	}
+	for _, e := range lasts {
+		item := out[e.ThreadID]
+		item.ThreadID = e.ThreadID
+		item.LastQuestion = e.Question
+		item.LastAnswer = e.Answer
+		item.LastCompleted = e.IsCompleted
+		out[e.ThreadID] = item
+	}
+
+	return out, nil
+}
+
+// tableName 返回模型对应的实际表名，避免在关联查询里写死
+func (s *sessionStorage) tableName(model string) string {
+	if s.db.NamingStrategy == nil {
+		return ""
+	}
+	return s.db.NamingStrategy.TableName(model)
 }
 
 // TurnList 按会话/线程分页查询轮次。

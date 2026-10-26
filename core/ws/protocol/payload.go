@@ -163,6 +163,49 @@ type ShutdownData struct {
 
 // ---- 历史消息 ----
 
+// SessionListData 上行：拉取对话列表。
+// 列表以 thread 为粒度——一个 thread 是一次完整对话，其下挂多轮 turn；
+// 同一会话换过 agent 会产生多个 thread，显示为多个对话。
+type SessionListData struct {
+	// Limit 返回条数：0 使用默认值 50，负数表示取全量（上限 200）
+	Limit int `json:"limit,omitempty"`
+	// BeforeLastUpdate 翻页游标：只取最后更新时间早于该时刻（毫秒）的对话
+	BeforeLastUpdate int64 `json:"beforeLastUpdate,omitempty"`
+	// BeforeThreadID 与 BeforeLastUpdate 组成复合游标，时间相同时用它续接
+	BeforeThreadID string `json:"beforeThreadID,omitempty"`
+}
+
+// SessionListItem 对话列表项，对应一个 thread
+type SessionListItem struct {
+	// ThreadID 线程标识，拉历史时作为 session.history 的 threadID
+	ThreadID string `json:"threadID"`
+	// SessionID 所属会话，继续对话时作为 chat.send 的 sessionID
+	SessionID string `json:"sessionID"`
+	// Agent 该对话使用的 agent
+	Agent string `json:"agent,omitempty"`
+	// Title 对话标题，取首轮提问（截断）；仅含媒体时为空
+	Title string `json:"title,omitempty"`
+	// Preview 最后一条回复（截断），列表页做副标题
+	Preview string `json:"preview,omitempty"`
+	// Turns 轮次数量
+	Turns int64 `json:"turns"`
+	// Completed 末轮是否正常结束，false 表示被中断或仍在生成
+	Completed bool `json:"completed"`
+	// CreatedAt / LastUpdate 毫秒时间戳
+	CreatedAt  int64 `json:"createdAt"`
+	LastUpdate int64 `json:"lastUpdate"`
+}
+
+// SessionListResult 对话列表响应，按 lastUpdate 倒序
+type SessionListResult struct {
+	Items []SessionListItem `json:"items"`
+	// HasMore 是否还有更早的对话
+	HasMore bool `json:"hasMore,omitempty"`
+	// NextBeforeLastUpdate / NextBeforeThreadID 下一页游标，回传即可续拉
+	NextBeforeLastUpdate int64  `json:"nextBeforeLastUpdate,omitempty"`
+	NextBeforeThreadID   string `json:"nextBeforeThreadID,omitempty"`
+}
+
 // SessionHistoryData 上行：拉取会话历史。
 // 层级为 session -> thread -> turn：不指定 threadID 时返回该会话下所有线程及其轮次。
 type SessionHistoryData struct {

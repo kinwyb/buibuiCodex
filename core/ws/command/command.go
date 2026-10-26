@@ -1,21 +1,20 @@
-// Package command 实现 ws 的上行命令：命令注册表与内置命令。
+// Package command 实现 ws 的上行命令。
+//
+// 本文件只做注册与集成：定义依赖、注册表与会话键工具，具体命令按文件拆分——
+// 改哪个命令就看哪个文件，不必在一份长文件里翻找。
+
 package command
 
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/db"
-	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
-	"github.com/kinwyb/buibuiCodex/core/ws/replay"
 )
 
 // Canceller 会话取消能力，由 core.Manager 实现
@@ -28,19 +27,16 @@ type AgentSource interface {
 	ListAgents() []string
 }
 
-// TurnReader 历史轮次读取能力，由 db.ISession 实现。
-// 层级关系为 session -> thread -> turn。
+// TurnReader 会话数据读取能力，由 db.ISession 实现。
+// 层级关系为 session -> thread -> turn：list 按 thread 分页，history 按 turn 展开。
 type TurnReader interface {
 	ThreadList(ctx context.Context, sessionID string) ([]db.SessionThread, error)
+	ThreadPage(ctx context.Context, query db.ThreadQuery) ([]db.SessionThread, error)
+	ThreadSummaries(ctx context.Context, threadIDs []string) (map[string]db.ThreadSummary, error)
 	TurnList(ctx context.Context, query db.TurnQuery) ([]db.SessionTurn, error)
 	TurnQueryByID(ctx context.Context, turnID string) *db.SessionTurn
 	TurnEventList(ctx context.Context, query db.TurnEventQuery) ([]db.TurnEvent, error)
 }
-
-// eventsBatchSize 拉取执行过程时单次查询覆盖的轮次数量。
-// 分批的目的是让单次查询的 limit 只约束一小批轮次，
-// 否则几百轮的会话会被一条查询的条数上限截断，靠后的轮次拿不到帧。
-const eventsBatchSize = 50
 
 // Deps 命令执行依赖
 type Deps struct {
@@ -63,13 +59,24 @@ type Registry struct {
 	handlers map[string]Handler
 }
 
-// NewRegistry 创建注册表并注册内置命令
+// NewRegistry 创建注册表并注册内置命令。
+//
+// 一个命令一个文件，这份清单就是目录：
+//
+//	ping.go             ping
+//	chat_send.go        chat.send
+//	chat_cancel.go      chat.cancel
+//	agent_list.go       agent.list
+//	session_list.go     session.list
+//	session_history.go  session.history
+//	turn_replay.go      session.turn.replay
 func NewRegistry(deps Deps) *Registry {
 	r := &Registry{deps: deps, handlers: make(map[string]Handler)}
 	r.Register(protocol.TypePing, r.ping)
 	r.Register(protocol.TypeChatSend, r.chatSend)
 	r.Register(protocol.TypeChatCancel, r.chatCancel)
 	r.Register(protocol.TypeAgentList, r.agentList)
+	r.Register(protocol.TypeSessionList, r.sessionList)
 	r.Register(protocol.TypeSessionHistory, r.sessionHistory)
 	r.Register(protocol.TypeTurnReplay, r.turnReplay)
 	return r
@@ -110,19 +117,6 @@ func (r *Registry) Dispatch(ctx context.Context, c *conn.Client, env *protocol.E
 	h(ctx, c, env)
 }
 
-// AgentInfos 汇总可用的 agent 列表
-func AgentInfos(src AgentSource) []protocol.AgentInfo {
-	if src == nil {
-		return nil
-	}
-	names := src.ListAgents()
-	infos := make([]protocol.AgentInfo, 0, len(names))
-	for _, name := range names {
-		infos = append(infos, protocol.AgentInfo{Name: name})
-	}
-	return infos
-}
-
 // SessionKey 构造会话键：Channel_UserID_ChatID。
 // AccountID 承载用户身份，因此不同用户的同名 chatID 落在不同会话。
 func (r *Registry) SessionKey(userID, chatID string) string {
@@ -137,427 +131,4 @@ func (r *Registry) ownsSession(userID, sessionID string) bool {
 		return false
 	}
 	return strings.HasPrefix(sessionID, r.deps.Channel+"_"+userID+"_")
-}
-
-// ping 应用层心跳，前端可借此测量往返延迟
-func (r *Registry) ping(_ context.Context, c *conn.Client, env *protocol.Envelope) {
-	var data protocol.PingData
-	_ = env.DecodeData(&data)
-	c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypePong).
-		WithReplyTo(env.ID).
-		WithData(&protocol.PongData{ClientTS: data.TS, ServerTS: time.Now().UnixMilli()}))
-}
-
-// chatSend 把用户消息投递到消息总线，由 core.Manager 交给 agent 处理
-func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.Envelope) {
-	var data protocol.ChatSendData
-	if err := env.DecodeData(&data); err != nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "参数解析失败", Detail: err.Error()})
-		return
-	}
-	if strings.TrimSpace(data.Content) == "" && len(data.Media) == 0 {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "content 与 media 不能同时为空"})
-		return
-	}
-	if data.Agent != "" && r.deps.Agents != nil {
-		if !slices.Contains(r.deps.Agents.ListAgents(), data.Agent) {
-			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeAgentNotFound, Message: "指定的 agent 不存在", Detail: data.Agent})
-			return
-		}
-	}
-
-	userID := c.UserID()
-	sessionID := strings.TrimSpace(data.SessionID)
-	if sessionID != "" && !r.ownsSession(userID, sessionID) {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
-		return
-	}
-
-	chatID := strings.TrimSpace(data.ChatID)
-	if chatID == "" && sessionID != "" {
-		// 从会话键反推 chatID，保证连接上下文与本次会话一致
-		chatID = strings.TrimPrefix(sessionID, r.deps.Channel+"_"+userID+"_")
-	}
-	if chatID == "" {
-		// 前端只带 token 时，沿用握手阶段确定的当前对话
-		chatID = c.ChatID()
-	}
-	if chatID == "" {
-		chatID = uuid.NewString()
-	}
-	if sessionID == "" {
-		sessionID = r.SessionKey(userID, chatID)
-	}
-	c.SetChatID(chatID)
-
-	msg := &types.InputMessage{
-		ID:        uuid.NewString(),
-		Session:   sessionID,
-		Channel:   r.deps.Channel,
-		AccountID: userID,
-		SenderID:  userID,
-		ChatID:    chatID,
-		Content:   data.Content,
-		Media:     data.Media,
-		Metadata:  data.Metadata,
-		AgentName: data.Agent,
-		Timestamp: time.Now(),
-	}
-
-	// 先订阅再发送，避免 agent 首帧早于订阅导致丢失
-	if r.deps.Hub != nil {
-		r.deps.Hub.Subscribe(c, sessionID)
-	}
-
-	if err := r.deps.Bus.PublishInput(ctx, msg); err != nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "消息投递失败", Detail: err.Error()})
-		return
-	}
-	c.ReplyAck(env, &protocol.AckData{OK: true, SessionID: sessionID, ChatID: chatID, ReqID: msg.ID})
-}
-
-// chatCancel 中断指定会话当前运行中的 agent
-func (r *Registry) chatCancel(_ context.Context, c *conn.Client, env *protocol.Envelope) {
-	var data protocol.ChatCancelData
-	if err := env.DecodeData(&data); err != nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "参数解析失败", Detail: err.Error()})
-		return
-	}
-	userID := c.UserID()
-	sessionID := strings.TrimSpace(data.SessionID)
-	chatID := strings.TrimSpace(data.ChatID)
-	if chatID == "" {
-		chatID = c.ChatID()
-	}
-	if sessionID == "" && chatID != "" {
-		sessionID = r.SessionKey(userID, chatID)
-	}
-	if sessionID == "" {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 sessionID 或 chatID"})
-		return
-	}
-	if !r.ownsSession(userID, sessionID) {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
-		return
-	}
-	if r.deps.Canceller == nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "服务未提供会话取消能力"})
-		return
-	}
-	r.deps.Canceller.Cancel(sessionID)
-	c.ReplyAck(env, &protocol.AckData{OK: true, SessionID: sessionID})
-}
-
-// agentList 返回可用 agent 列表
-func (r *Registry) agentList(_ context.Context, c *conn.Client, env *protocol.Envelope) {
-	c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypeAgentList).
-		WithReplyTo(env.ID).
-		WithData(&protocol.AgentListData{
-			Agents:       AgentInfos(r.deps.Agents),
-			DefaultAgent: r.deps.DefaultAgent,
-		}))
-}
-
-// sessionHistory 拉取会话历史，按 session -> thread -> turn 的层级返回。
-// 三种用法：
-//   - 打开会话：只传 sessionID，返回全部线程与轮次；
-//   - 向上翻页：额外传 beforeSeq（取上一页第一条的 seq）；
-//   - 断线补发：额外传 since（本地最后一条轮次的 createdAt）。
-func (r *Registry) sessionHistory(ctx context.Context, c *conn.Client, env *protocol.Envelope) {
-	var data protocol.SessionHistoryData
-	if err := env.DecodeData(&data); err != nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "参数解析失败", Detail: err.Error()})
-		return
-	}
-
-	userID := c.UserID()
-	sessionID := strings.TrimSpace(data.SessionID)
-	chatID := strings.TrimSpace(data.ChatID)
-	if chatID == "" {
-		chatID = c.ChatID()
-	}
-	if sessionID == "" && chatID != "" {
-		sessionID = r.SessionKey(userID, chatID)
-	}
-	if sessionID == "" {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 sessionID 或 chatID"})
-		return
-	}
-	if !r.ownsSession(userID, sessionID) {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
-		return
-	}
-	if r.deps.Turns == nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "服务未启用历史消息"})
-		return
-	}
-
-	// 打开会话即订阅，保证断线重连后能继续收到该会话的实时事件
-	if r.deps.Hub != nil {
-		r.deps.Hub.Subscribe(c, sessionID)
-	}
-
-	result, err := r.loadHistory(ctx, sessionID, data)
-	if err != nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "查询历史消息失败", Detail: err.Error()})
-		return
-	}
-
-	c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypeSessionHistory).
-		WithReplyTo(env.ID).
-		WithSession(sessionID, "").
-		WithData(result))
-}
-
-// loadHistory 按 thread 分组查询轮次
-func (r *Registry) loadHistory(ctx context.Context, sessionID string, data protocol.SessionHistoryData) (*protocol.SessionHistoryResult, error) {
-	query := db.TurnQuery{
-		SessionID: sessionID,
-		ThreadID:  strings.TrimSpace(data.ThreadID),
-		BeforeSeq: data.BeforeSeq,
-		Limit:     data.Limit,
-	}
-	if data.Since > 0 {
-		query.Since = time.UnixMilli(data.Since)
-	}
-	limit := query.NormalizeLimit()
-	result := &protocol.SessionHistoryResult{SessionID: sessionID}
-
-	switch {
-	case query.ThreadID != "":
-		// 指定线程：只返回该线程
-		turns, err := r.deps.Turns.TurnList(ctx, query)
-		if err != nil {
-			return nil, err
-		}
-		result.Threads = append(result.Threads, protocol.HistoryThread{
-			ThreadID: query.ThreadID,
-			Turns:    toHistoryTurns(turns),
-			HasMore:  len(turns) >= limit,
-		})
-	default:
-		// 未指定线程：session -> thread -> turn
-		threads, err := r.deps.Turns.ThreadList(ctx, sessionID)
-		if err != nil {
-			return nil, err
-		}
-		for _, thread := range threads {
-			q := query
-			q.ThreadID = thread.ThreadID
-			turns, err := r.deps.Turns.TurnList(ctx, q)
-			if err != nil {
-				return nil, err
-			}
-			if len(turns) == 0 {
-				continue
-			}
-			result.Threads = append(result.Threads, protocol.HistoryThread{
-				ThreadID:   thread.ThreadID,
-				Agent:      thread.Agent,
-				CreatedAt:  millis(thread.CreateTime),
-				LastUpdate: millis(thread.LastUpdate),
-				Turns:      toHistoryTurns(turns),
-				HasMore:    len(turns) >= limit,
-			})
-		}
-
-		// 兼容没有 thread 记录的历史数据
-		if len(result.Threads) == 0 {
-			q := query
-			q.ThreadID = ""
-			turns, err := r.deps.Turns.TurnList(ctx, q)
-			if err != nil {
-				return nil, err
-			}
-			if len(turns) > 0 {
-				result.Threads = append(result.Threads, protocol.HistoryThread{
-					Turns:   toHistoryTurns(turns),
-					HasMore: len(turns) >= limit,
-				})
-			}
-		}
-	}
-
-	if data.IncludeFrames {
-		if err := r.attachFrames(ctx, result); err != nil {
-			return nil, err
-		}
-	}
-
-	return result, nil
-}
-
-// attachFrames 为历史结果补上逐帧执行过程。
-//
-// 帧按「线程顺序 + 轮次顺序」铺平，与实时流的时序一致；
-// 每轮的帧都复用同一个 ReqID，前端可以直接把它们与实时帧混在一条流水里处理。
-func (r *Registry) attachFrames(ctx context.Context, result *protocol.SessionHistoryResult) error {
-	var turns []protocol.HistoryTurn
-	for _, thread := range result.Threads {
-		turns = append(turns, thread.Turns...)
-	}
-	if len(turns) == 0 {
-		return nil
-	}
-
-	ids := make([]string, 0, len(turns))
-	for _, turn := range turns {
-		if turn.TurnID != "" {
-			ids = append(ids, turn.TurnID)
-		}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-
-	grouped := make(map[string][]db.TurnEvent, len(ids))
-	// 分批查，避免一次 IN 太多轮次时被单条查询的 limit 截到后面的轮次没有帧
-	for start := 0; start < len(ids); start += eventsBatchSize {
-		end := min(start+eventsBatchSize, len(ids))
-		batch := ids[start:end]
-		events, err := r.deps.Turns.TurnEventList(ctx, db.TurnEventQuery{
-			TurnIDs: batch,
-			Methods: replay.KeyMethods(),
-			Limit:   len(batch) * replay.DefaultMaxFrames,
-		})
-		if err != nil {
-			return err
-		}
-		for _, event := range events {
-			grouped[event.TurnID] = append(grouped[event.TurnID], event)
-		}
-	}
-
-	frames := make([]*protocol.Envelope, 0, len(ids))
-	truncated := false
-	for _, turn := range turns {
-		built, cut := replay.Build(grouped[turn.TurnID], replay.Options{
-			SessionID: result.SessionID,
-			ReqID:     turn.ReqID,
-			Agent:     turn.Agent,
-			MaxFrames: replay.DefaultMaxFrames,
-			BodyLimit: replay.DefaultBodyLimit,
-		})
-		truncated = truncated || cut
-		frames = append(frames, built...)
-	}
-	result.Frames = frames
-	result.FramesTruncated = truncated
-	return nil
-}
-
-// turnReplay 回放单轮的完整执行过程。
-// 与 session.history 的区别：不限帧数、不截断内容，供用户点开某一轮后细看。
-func (r *Registry) turnReplay(ctx context.Context, c *conn.Client, env *protocol.Envelope) {
-	var data protocol.TurnReplayData
-	if err := env.DecodeData(&data); err != nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "参数解析失败", Detail: err.Error()})
-		return
-	}
-
-	userID := c.UserID()
-	sessionID := strings.TrimSpace(data.SessionID)
-	chatID := strings.TrimSpace(data.ChatID)
-	if chatID == "" {
-		chatID = c.ChatID()
-	}
-	if sessionID == "" && chatID != "" {
-		sessionID = r.SessionKey(userID, chatID)
-	}
-	if sessionID == "" {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 sessionID 或 chatID"})
-		return
-	}
-	if !r.ownsSession(userID, sessionID) {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
-		return
-	}
-	if r.deps.Turns == nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "服务未启用历史消息"})
-		return
-	}
-
-	turnID := strings.TrimSpace(data.TurnID)
-	if turnID == "" {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "缺少 turnID"})
-		return
-	}
-	turn := r.deps.Turns.TurnQueryByID(ctx, turnID)
-	if turn == nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "轮次不存在", Detail: turnID})
-		return
-	}
-	// 老数据可能没有回填 sessionID，此时只能依赖会话键已通过归属校验
-	if turn.SessionID != "" && turn.SessionID != sessionID {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "该轮次不属于此会话"})
-		return
-	}
-
-	query := db.TurnEventQuery{
-		TurnIDs:  []string{turnID},
-		Methods:  replay.KeyMethods(),
-		AfterSeq: data.AfterSeq,
-		Limit:    data.Limit,
-	}
-	events, err := r.deps.Turns.TurnEventList(ctx, query)
-	if err != nil {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "查询执行过程失败", Detail: err.Error()})
-		return
-	}
-
-	// 详情接口不设帧数上限、不截断内容，完整还原这一轮
-	frames, lossy := replay.Build(events, replay.Options{
-		SessionID: sessionID,
-		ReqID:     turn.ReqID,
-		Agent:     turn.Agent,
-		MaxFrames: -1,
-		BodyLimit: -1,
-	})
-
-	result := &protocol.TurnReplayResult{
-		SessionID: sessionID,
-		TurnID:    turnID,
-		Frames:    frames,
-		HasMore:   len(events) >= query.NormalizeLimit(),
-		Truncated: lossy,
-	}
-	if result.HasMore && len(events) > 0 {
-		result.NextAfterSeq = events[len(events)-1].Seq
-	}
-
-	c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypeTurnReplay).
-		WithReplyTo(env.ID).
-		WithSession(sessionID, "").
-		WithData(result))
-}
-
-// toHistoryTurns 转换数据库轮次为协议结构
-func toHistoryTurns(list []db.SessionTurn) []protocol.HistoryTurn {
-	out := make([]protocol.HistoryTurn, 0, len(list))
-	for _, t := range list {
-		item := protocol.HistoryTurn{
-			Seq:       t.Seq,
-			ReqID:     t.ReqID,
-			ThreadID:  t.ThreadID,
-			TurnID:    t.TurnID,
-			Agent:     t.Agent,
-			Question:  t.Question,
-			Answer:    t.Answer,
-			Completed: t.IsCompleted,
-			CreatedAt: millis(t.CreatedAt),
-		}
-		if t.CompletedAt != nil {
-			item.CompletedAt = millis(*t.CompletedAt)
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-// millis 转毫秒时间戳，零值返回 0 而不是负数
-func millis(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.UnixMilli()
 }
