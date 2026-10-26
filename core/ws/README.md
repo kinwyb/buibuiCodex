@@ -253,11 +253,14 @@ delta == false   全量快照，整体覆盖当前消息
 
 | 方向 | kind / type | 说明 |
 | --- | --- | --- |
-| 下行 | `ui` / `ui.request` | `data.op = observe`（取页面快照）或 `act`（执行命令，带 `cmd` / `params` / `rev`） |
+| 下行 | `ui` / `ui.request` | `data.op` 三选一：`observe` 取快照 / `act` 执行命令（带 `cmd`、`params`、`rev`）/ `navigate` 打开或切换页面（带 `view`，或只给 `query` 搜菜单） |
 | 上行 | `client` / `ui.response` | `replyTo` 指回请求 ID；`data` 为 `{ok, error?, rev?, snapshot?, result?}` |
 
 约定：
 
+- `navigate` 不带 `rev`：打开另一个页面跟当前页面的版本无关。`rev` 按页面（view）分域维护。
+- `navigate` 要等目标页 mount 并就绪（页面自报 ready）后才回执，回执里直接是新页面快照；
+  不等就回执的话，agent 紧接着 observe 会拿到空列表，然后开始自我怀疑。
 - 回执必须把请求帧的 `sessionID` 原样带回，服务端据此校验会话一致性（避免多标签页串号）。
 - 请求按会话投递，页面必须先订阅该会话（发过 `chat.send` / `session.history` / `session.list`）。
   **没有订阅者时立即失败**（`ErrNoUIHost`），不会白等到超时。

@@ -12,7 +12,7 @@ import (
 
 	"github.com/gookit/rotatefile"
 	"github.com/kinwyb/buibuiCodex/channel"
-	_ "github.com/kinwyb/buibuiCodex/channel/wxcom"
+	//_ "github.com/kinwyb/buibuiCodex/channel/wxcom"
 	"github.com/kinwyb/buibuiCodex/core"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"

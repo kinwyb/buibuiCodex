@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/kinwyb/buibuiCodex/codex/jsonRpc"
@@ -26,6 +27,9 @@ import (
 const (
 	uiOpObserve = "observe"
 	uiOpAct     = "act"
+	// uiOpNavigate 打开/切换页面：它是「去哪」，不是「操作当前页」，
+	// 所以不需要 rev —— 跨页面的版本号没有意义。
+	uiOpNavigate = "navigate"
 )
 
 // UITransport 把「服务端 → 浏览器」的反向请求能力注入给界面工具。
@@ -84,6 +88,7 @@ func RegisterUITools(bridge *UIBridge) {
 		"操作 Web 界面：获取用户当前所见页面的快照，并执行界面上的命令",
 		&UIObserveTool{bridge: bridge},
 		&UIActTool{bridge: bridge},
+		&UINavigateTool{bridge: bridge},
 	)
 }
 
@@ -100,7 +105,9 @@ func (t *UIObserveTool) Description() string {
 		"任何界面操作前都应先调用本工具，以取得最新的 rev 与确实可用的命令 id。" +
 		"注意：filters / selection / data 只是「当前是什么」，不能直接改；" +
 		"要改变它们必须执行 actions 里对应的命令（例如「设置筛选条件」那条）。" +
-		"commands 之外不存在任何操作入口。"
+		"commands 之外不存在任何操作入口。" +
+		"guide 是这一页的操作说明（顺序、前置条件、业务术语）；" +
+		"用户停在主页、没打开任何业务页面时，快照会带 navigation 列出可打开的页面，用 ui_navigate 打开。"
 }
 
 func (t *UIObserveTool) Parameters() types.ToolParams {
@@ -170,6 +177,67 @@ func (t *UIActTool) Execute(ctx context.Context, state *types.State, params map[
 	}
 	if rev, ok := int64Param(params["rev"]); ok {
 		req.Rev = rev
+	}
+
+	resp, err := t.bridge.request(ctx, sessionIDOf(state), req)
+	if err != nil {
+		return nil, err
+	}
+	return uiResponseMessage(resp), nil
+}
+
+// UINavigateTool 打开或切换页面
+type UINavigateTool struct {
+	bridge *UIBridge
+}
+
+func (t *UINavigateTool) Name() string { return "ui_navigate" }
+
+func (t *UINavigateTool) Description() string {
+	return "打开或切换一个页面（等价于点左侧菜单），也可以只给 query 按名称搜索可用页面。" +
+		"可用页面的清单见 ui_observe 返回的 navigation；菜单较大时用 query 检索。" +
+		"目标页面打开并就绪后才会返回，回执里直接是新页面的快照，可以基于它继续 ui_act。" +
+		"本工具不需要 rev：打开另一个页面跟当前页面的版本无关。" +
+		"注意 params 只用于「查看某条单据」这类页面入参，不要用它传筛选条件 —— " +
+		"参数不同会被当成不同页签，同一个页面会因此开出多个标签页。"
+}
+
+func (t *UINavigateTool) Parameters() types.ToolParams {
+	return types.ToolParams{
+		Type: "object",
+		Properties: map[string]jsonRpc.ToolProperties{
+			"view": {
+				Type:        "string",
+				Description: "目标页面标识（菜单的 View 字段），取值来自 ui_observe 的 navigation[].view 或本工具搜索结果的 view",
+			},
+			"query": {
+				Type:        "string",
+				Description: "按名称搜索可用页面，只搜不打开；与 view 二选一，不填 view 时才生效",
+			},
+			"params": {
+				Type:        "object",
+				Description: "传给目标页面的入参（例如查看某张单需要 orderId）。注意参数不同会开成不同页签，不要用来传筛选条件",
+			},
+		},
+	}
+}
+
+func (t *UINavigateTool) Execute(ctx context.Context, state *types.State, params map[string]any) (*types.InputMessage, error) {
+	view, _ := params["view"].(string)
+	query, _ := params["query"].(string)
+	view = strings.TrimSpace(view)
+	query = strings.TrimSpace(query)
+	if view == "" && query == "" {
+		return nil, errors.New("需要提供 view（要打开的页面）或 query（按名称搜索可用页面）")
+	}
+
+	req := &protocol.UIRequestData{Op: uiOpNavigate, View: view, Query: query}
+	if raw, ok := params["params"]; ok && raw != nil {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil, fmt.Errorf("params 序列化失败: %w", err)
+		}
+		req.Params = encoded
 	}
 
 	resp, err := t.bridge.request(ctx, sessionIDOf(state), req)

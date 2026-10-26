@@ -146,3 +146,37 @@ func TestUIRequiresSessionAndCommand(t *testing.T) {
 		t.Fatal("通道未就绪时应失败")
 	}
 }
+
+func TestUINavigatePassesViewAndQuery(t *testing.T) {
+	transport := &fakeUITransport{resp: &protocol.UIResponseData{
+		OK:     true,
+		Result: json.RawMessage(`"已打开：预订单管理"`),
+	}}
+	tool := &UINavigateTool{bridge: testUIBridge(transport)}
+
+	// 打开页面：view 前后的空白要去掉，且不能带 rev（跨页面版本没有意义）
+	if _, err := tool.Execute(context.Background(), testState("ws_u1_c1"), map[string]any{
+		"view": " V0189_V0279_V0280 ",
+	}); err != nil {
+		t.Fatalf("导航应成功，实际失败: %v", err)
+	}
+	if transport.req.Op != "navigate" || transport.req.View != "V0189_V0279_V0280" {
+		t.Fatalf("应透传 view，实际 %+v", transport.req)
+	}
+	if transport.req.Rev != 0 {
+		t.Fatalf("导航不应带 rev，实际 %d", transport.req.Rev)
+	}
+
+	// 只给 query：搜菜单，不导航
+	if _, err := tool.Execute(context.Background(), testState("ws_u1_c1"), map[string]any{"query": "预订单"}); err != nil {
+		t.Fatalf("搜索应成功，实际失败: %v", err)
+	}
+	if transport.req.View != "" || transport.req.Query != "预订单" {
+		t.Fatalf("搜索请求不符合预期: %+v", transport.req)
+	}
+
+	// 两个都不给：明确报错，不要发一个空请求出去
+	if _, err := tool.Execute(context.Background(), testState("ws_u1_c1"), map[string]any{}); err == nil {
+		t.Fatal("view 与 query 都为空时应失败")
+	}
+}

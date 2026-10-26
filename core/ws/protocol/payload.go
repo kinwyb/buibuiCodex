@@ -313,13 +313,19 @@ type TurnReplayResult struct {
 
 // UIRequestData 服务端下发的界面操作请求（载荷在 Envelope.Data 里）
 type UIRequestData struct {
-	// Op 操作类型：observe 取快照 | act 执行一条界面命令
+	// Op 操作类型：observe 取快照 | act 执行一条界面命令 | navigate 打开/切换页面
 	Op string `json:"op"`
 	// Cmd act 要执行的命令 ID，取值必须来自最近一次快照的 actions[].id
 	Cmd string `json:"cmd,omitempty"`
-	// Params act 的命令参数，结构由页面自己的命令定义决定
+	// View navigate 的目标页面标识（菜单的 View 字段）
+	View string `json:"view,omitempty"`
+	// Query navigate 的检索词：只给 query 表示「搜菜单」，不导航
+	Query string `json:"query,omitempty"`
+	// Params act 的命令参数 / navigate 传给目标页面的参数，
+	// 结构由页面自己的命令或页面入参决定
 	Params json.RawMessage `json:"params,omitempty"`
 	// Rev 期望的页面版本，来自最近一次快照；不匹配由前端拒绝并要求重新观察
+	// （navigate 不使用：跨页面的版本没有意义）
 	Rev int64 `json:"rev,omitempty"`
 }
 
