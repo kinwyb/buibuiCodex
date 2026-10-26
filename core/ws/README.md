@@ -246,6 +246,28 @@ delta == false   全量快照，整体覆盖当前消息
 | `internal` | 投递失败等服务端异常 |
 | `busy` | 预留 |
 
+### 3.6 下行 · ui（反向请求）
+
+上面几条都是「浏览器问、服务端答」。`ui` 域是反过来的：**服务端问、浏览器答**，
+用于 agent 操作 Web 界面（工具见 `core/ui_tools.go`，实现见 `server/ui.go`）。
+
+| 方向 | kind / type | 说明 |
+| --- | --- | --- |
+| 下行 | `ui` / `ui.request` | `data.op = observe`（取页面快照）或 `act`（执行命令，带 `cmd` / `params` / `rev`） |
+| 上行 | `client` / `ui.response` | `replyTo` 指回请求 ID；`data` 为 `{ok, error?, rev?, snapshot?, result?}` |
+
+约定：
+
+- 回执必须把请求帧的 `sessionID` 原样带回，服务端据此校验会话一致性（避免多标签页串号）。
+- 请求按会话投递，页面必须先订阅该会话（发过 `chat.send` / `session.history` / `session.list`）。
+  **没有订阅者时立即失败**（`ErrNoUIHost`），不会白等到超时。
+- 服务端同步等待回执，默认超时 10s（`Options.UIRequestTimeout`）。超时、无宿主、连接断开
+  都会作为工具失败告知 agent，而不是静默返回空快照。
+- 载荷里的 `snapshot` / `result` / `params` 对服务端是**透传**的 `json.RawMessage`：
+  服务端不理解业务结构，页面结构的变化只影响前端与工具描述。
+- 同一会话有多个页面连接时，请求会投给全部连接，先回执者胜出；要精确到某个标签页
+  需要引入 `targetID`（当前未实现）。
+
 ---
 
 ## 4. 一次完整交互
@@ -575,11 +597,15 @@ go test -race ./core/db/ ./core/ws/...
 | `bridge` | 渠道过滤、完成/错误/审批/增量转换、completed 的 delta=false 断言 |
 | `replay` | 事件→agent 帧的完整映射、delta 与用量事件被跳过、思考拼接、命令/搜索/工具解析、未知类型降级、截断与 UTF-8 边界、审批与失败帧、帧数与 seq 回填 |
 | `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、token 即身份、自定义 Authenticator、非法 userID 拒绝 |
+| `server` · `core` | 界面操作反向 RPC：`ui.request` 往返、无宿主立即失败、会话不一致拒绝、端到端（工具 → 桥 → ws → 浏览器 → 回执 → 工具文本）、工具入参校验与失败文本化 |
 
 ---
 
 ## 10. 已知限制与后续
 
+- **界面操作没有 targetID**：同一会话多标签页时请求投给全部连接、先回执者胜出，无法指定操作哪一个标签页。
+- **界面快照的 rev 只是计数器**：服务端不关心，前端目前按「一次成功操作推进一格」实现，用户自己翻页/改筛选不会推进它；真实实现应由页面状态派生，否则并发操作拦不住。
+- **界面工具只有 observe / act**：没有 select（给 GridTableApi 加按业务 ID 选中行后才能做）、没有审批闭环（有副作用的命令目前靠命令自身 disabled + 页面确认框兜底）。
 - **补发基于数据库轮次**：`session.history(since)` 只能补已落库的轮次；断线期间正在生成的那一轮不补逐帧内容，重连后由后续事件或 `message_completed` 覆盖收敛。
 - **历史帧不是逐帧录像**：`frames` 只还原关键帧（每轮上限 200 帧、单条文本 4KB），而且只覆盖 `turn_events` 里已有的记录。若某轮在落库前就崩溃，过程会有缺口；`turn_events` 也没有 `session_id`，只能靠 `turn_id` 反查。
 - **回放不支持审批回传**：审批帧能展示，但历史里点「同意/拒绝」没有意义（那一轮已经结束），闭环仍待 P2。

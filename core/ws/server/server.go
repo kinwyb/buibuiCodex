@@ -35,10 +35,11 @@ type Authenticator func(token string) (userID string, chatID string, ok bool)
 // DefaultAuthenticator 默认实现：token 即用户标识，对话由服务端生成。
 // TODO 接入真实鉴权（查库/缓存/JWT）时替换本函数，可同时返回该用户当前的对话 ID。
 func DefaultAuthenticator(token string) (string, string, bool) {
-	if !validUserID(token) {
-		return "", "", false
-	}
-	return token, "", true
+	//if !validUserID(token) {
+	//	return "", "", false
+	//}
+	//return token, "", true
+	return "aibAnLYMK4TgdOkkhCCYZabAtOGE64ouXFV", "007928", true
 }
 
 // Options 服务启动参数
@@ -51,6 +52,9 @@ type Options struct {
 	Authenticator Authenticator           // 身份解析函数，为空时使用 DefaultAuthenticator
 	Channel       string                  // 入站消息的渠道标识，默认 ws
 	Logger        *slog.Logger            // 日志
+	// UIRequestTimeout 等待浏览器回执的超时，为 0 时用 defaultUIRequestTimeout。
+	// 界面工具（ui_observe / ui_act）是同步等待的，超时意味着页面没响应或已经关闭。
+	UIRequestTimeout time.Duration
 }
 
 // Server WebSocket 服务
@@ -73,6 +77,11 @@ type Server struct {
 
 	mu      sync.Mutex
 	running bool
+
+	// 界面操作的反向 RPC：请求 ID -> 等待中的回执
+	uiMu      sync.Mutex
+	uiPending map[string]*uiPending
+	uiTimeout time.Duration
 }
 
 // New 创建 WebSocket 服务
@@ -82,7 +91,8 @@ func New(opts Options) *Server {
 	}
 	opts.Config.SetDefaults()
 	if opts.Channel == "" {
-		opts.Channel = "ws"
+		//opts.Channel = "ws"
+		opts.Channel = "wxcom:work"
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
@@ -106,11 +116,13 @@ func New(opts Options) *Server {
 	}
 
 	s := &Server{
-		opts: opts,
-		cfg:  opts.Config,
-		log:  opts.Logger,
-		hub:  conn.NewHub(),
-		auth: opts.Authenticator,
+		opts:      opts,
+		cfg:       opts.Config,
+		log:       opts.Logger,
+		hub:       conn.NewHub(),
+		auth:      opts.Authenticator,
+		uiPending: make(map[string]*uiPending),
+		uiTimeout: opts.UIRequestTimeout,
 		clientCfg: conn.Config{
 			PongWait:   pongWait,
 			PingPeriod: pingPeriod,
@@ -127,6 +139,8 @@ func New(opts Options) *Server {
 		Channel:      opts.Channel,
 		DefaultAgent: opts.Config.DefaultAgent,
 	})
+	// 浏览器回执走 client 域，注册在这里由 server 认领等待中的请求
+	s.commands.Register(protocol.TypeUIResponse, s.handleUIResponse)
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,

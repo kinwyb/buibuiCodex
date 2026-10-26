@@ -30,12 +30,17 @@ const (
 	KindCron Kind = "cron"
 	// KindNotice 预留：业务通知/广播
 	KindNotice Kind = "notice"
+	// KindUI 服务端向浏览器发起的界面操作请求（反向 RPC）
+	//
+	// agent 的界面工具（ui_observe / ui_act）通过这一域向「用户当前打开的那个页面」
+	// 取快照、下发命令；浏览器用 kind=client 的 ui.response 回执，靠 replyTo 关联。
+	KindUI Kind = "ui"
 )
 
 // IsValid Kind 是否属于已定义的枚举
 func (k Kind) IsValid() bool {
 	switch k {
-	case KindAgent, KindSystem, KindClient, KindCron, KindNotice:
+	case KindAgent, KindSystem, KindClient, KindCron, KindNotice, KindUI:
 		return true
 	default:
 		return false
@@ -60,6 +65,14 @@ const (
 	TypeSessionList    = "session.list"        // 拉取对话列表（响应使用同名的 system 类型）
 	TypeSessionHistory = "session.history"     // 拉取历史消息（响应使用同名的 system 类型）
 	TypeTurnReplay     = "session.turn.replay" // 回放单轮的完整执行过程（响应使用同名的 system 类型）
+)
+
+// ui 域消息类型（服务端 → 浏览器；浏览器回执走 client 域）
+const (
+	// TypeUIRequest 服务端下发界面操作请求（observe 取快照 / act 执行命令）
+	TypeUIRequest = "ui.request"
+	// TypeUIResponse 浏览器回执，kind=client，replyTo 指回 ui.request 的 ID
+	TypeUIResponse = "ui.response"
 )
 
 // 错误码

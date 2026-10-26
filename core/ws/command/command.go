@@ -132,3 +132,9 @@ func (r *Registry) ownsSession(userID, sessionID string) bool {
 	}
 	return strings.HasPrefix(sessionID, r.deps.Channel+"_"+userID+"_")
 }
+
+// OwnsSession 导出会话归属判断，供 server 层在协议层复用处校验
+// （例如 ui.response 回执必须来自该会话所属的连接）。
+func (r *Registry) OwnsSession(userID, sessionID string) bool {
+	return r.ownsSession(userID, sessionID)
+}

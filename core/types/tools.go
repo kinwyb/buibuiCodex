@@ -2,6 +2,7 @@ package types
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/kinwyb/buibuiCodex/codex/jsonRpc"
 )
@@ -71,10 +72,14 @@ func (t *BaseTool) Parameters() ToolParams {
 func (t *BaseTool) Execute(ctx context.Context, state *State, params map[string]any) (*InputMessage, error) {
 	var result string
 	var err error
-	if t.executeFuncWithState == nil {
+	// 两个分支原先写反了：带 state 的实现会去调为 nil 的 executeFunc，必然空指针。
+	switch {
+	case t.executeFuncWithState != nil:
 		result, err = t.executeFuncWithState(ctx, state, params)
-	} else {
+	case t.executeFunc != nil:
 		result, err = t.executeFunc(ctx, params)
+	default:
+		return nil, fmt.Errorf("工具 %s 未实现执行函数", t.name)
 	}
 	if err != nil {
 		return nil, err

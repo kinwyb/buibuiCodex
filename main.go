@@ -23,9 +23,9 @@ import (
 )
 
 func main() {
-	cfgPath, err := getConfigPath()
-	//cfgPath := "/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/buibui.json"
-	//var err error
+	//cfgPath, err := getConfigPath()
+	cfgPath := "/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/buibui.json"
+	var err error
 	if err != nil {
 		slog.Error("config path err", "error", err)
 		return
@@ -68,6 +68,10 @@ func main() {
 	}
 	manager := core.NewManager(msgBus, dataStorage)
 	defer manager.Stop()
+	// 界面工具（ui_observe / ui_act）：必须在 InitFromConfig 之前注册，
+	// 工具组是 agent 创建时统一挂载的。传输层要等 ws 起来后再注入。
+	uiBridge := core.NewUIBridge()
+	core.RegisterUITools(uiBridge)
 	err = manager.InitFromConfig(ctx, &cfg.ManagerConfig)
 	if err != nil {
 		slog.Error("register agents failed ", "error", err)
@@ -160,6 +164,8 @@ func main() {
 			slog.Error("start websocket server failed", "error", err)
 			return
 		}
+		// ws 已就绪，把「服务端向浏览器提问」的能力交给界面工具
+		uiBridge.SetTransport(wsServer)
 		defer func() {
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer shutdownCancel()

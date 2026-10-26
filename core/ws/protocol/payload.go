@@ -3,7 +3,11 @@
 // 流式文本的渲染约定见 AgentData 的文档。
 package protocol
 
-import "github.com/kinwyb/buibuiCodex/core/types"
+import (
+	"encoding/json"
+
+	"github.com/kinwyb/buibuiCodex/core/types"
+)
 
 // AgentData KindAgent 的载荷。
 // 只暴露前端需要的字段，避免 channel / accountID 等内部概念外泄。
@@ -294,4 +298,41 @@ type TurnReplayResult struct {
 	NextAfterSeq uint `json:"nextAfterSeq,omitempty"`
 	// Truncated 是否有内容因体积上限被截断
 	Truncated bool `json:"truncated,omitempty"`
+}
+
+// ---- 界面操作（ui 域） ----
+//
+// 服务端 ↔ 浏览器之间的反向 RPC：agent 的界面工具通过这条通道，
+// 向「用户当前打开的那个页面」取快照、下发命令。
+//
+// Snapshot / Result / Params 对服务端是**透传**的 json.RawMessage：服务端不理解业务结构，
+// 只负责按会话投递、关联回执与超时。结构语义分别由两端各自负责——
+// 生产者是前端（快照由页面注册表生成），消费者是模型（读工具描述与返回的 JSON）。
+//
+// 这样后端不需要为每个业务页面改代码：页面结构变化只影响前端与工具描述。
+
+// UIRequestData 服务端下发的界面操作请求（载荷在 Envelope.Data 里）
+type UIRequestData struct {
+	// Op 操作类型：observe 取快照 | act 执行一条界面命令
+	Op string `json:"op"`
+	// Cmd act 要执行的命令 ID，取值必须来自最近一次快照的 actions[].id
+	Cmd string `json:"cmd,omitempty"`
+	// Params act 的命令参数，结构由页面自己的命令定义决定
+	Params json.RawMessage `json:"params,omitempty"`
+	// Rev 期望的页面版本，来自最近一次快照；不匹配由前端拒绝并要求重新观察
+	Rev int64 `json:"rev,omitempty"`
+}
+
+// UIResponseData 浏览器回传的操作结果（上行 kind=client / type=ui.response）
+type UIResponseData struct {
+	// OK 是否执行成功
+	OK bool `json:"ok"`
+	// Error 失败原因，OK=false 时必须有值，会原样交给模型
+	Error string `json:"error,omitempty"`
+	// Rev 执行后页面的版本号，供下一轮命令引用
+	Rev int64 `json:"rev,omitempty"`
+	// Snapshot 页面快照：observe 的返回，或 act 成功后的新快照
+	Snapshot json.RawMessage `json:"snapshot,omitempty"`
+	// Result 命令自身的执行结果
+	Result json.RawMessage `json:"result,omitempty"`
 }
