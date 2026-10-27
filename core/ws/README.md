@@ -216,7 +216,7 @@ delta == false   全量快照，整体覆盖当前消息
 | `reasoning_completed` | false | 覆盖思考 |
 | `tool_*` / `approval` / `error` / `finished` | false | 状态事件，不参与文本追加 |
 
-这条约定不是可选的：服务端在网络拥塞时**会丢弃 delta**，依靠 `message_completed` 的全量内容让界面收敛。如果前端把 `completed` 当增量拼接，丢帧后内容就永远修不回来了。
+这条约定不是可选的：服务端在网络拥塞时**会丢弃 delta**（丢的是积压里最旧的那条，见 §6 背压），依靠 `message_completed` 的全量内容让界面收敛。如果前端把 `completed` 当增量拼接，丢帧后内容就永远修不回来了。
 
 ### 3.4 上行 · client
 
@@ -582,9 +582,13 @@ userID 限制：只允许字母、数字、短横线，**不能含下划线**。
 
 - 每连接两个 goroutine：`readPump`（读 + 处理 pong）与 `writePump`（唯一写者，gorilla 不允许并发写）。
 - 心跳：服务端每 `heartbeat_interval` 发控制帧 ping；浏览器自动回 pong；`read_timeout` 内未收到 pong 则判定连接失效。
-- 背压（`conn/client.go: enqueue`）：
-  - 队列满时，`delta` 直接丢弃（前端靠 `completed` 收敛）；
-  - 其余非增量帧（start/completed/tool/error/finished/approval）入队失败则主动断开，让前端重连。
+- 背压（`conn/queue.go` + `conn/client.go: enqueue`）：
+  - 队列满时**丢最旧的增量帧**（`delta`），不是丢新帧——早期丢新帧的写法在浏览器稍一卡顿时会把一整轮 delta 丢光，
+    界面只能等 `message_completed` 的全量文本才一次性刷出来，现象就是「没有流式」；
+  - 关键帧（start/completed/tool/error/finished/approval/系统帧）永不主动丢弃：队列满时先挤掉一条增量帧给它让位；
+  - 只有队列里全是关键帧、腾不出位置时才断开连接，让前端重连 + 历史补发；
+  - 每次丢弃都会累计计数并限流打一条 warn 日志（`dropped` / `queued` / `capacity`）——
+    「界面不流式」时先看这条日志是否在涨。
 - 关闭顺序：`Stop` → 取消 ctx → 关闭 bridge 订阅 → `http.Server.Shutdown` → 广播 `system/shutdown` → 逐个关闭连接。
 
 ---
@@ -657,7 +661,8 @@ r.Register(protocol.TypeSessionPin, r.sessionPin)
 3. **不要在 `bridge` 里做耗时操作**。它是总线上的消费者，慢一点就会反压到所有渠道。marshal 已放在 `Hub.deliver`（每条事件一次），大 base64 媒体是唯一潜在慢点。
 4. **不要复用 `channel.StreamBuffer`**。那是给"覆盖式更新同一条消息 + 有 RTT/限流"的企业微信接口用的（accumulate + 合并）。ws 走增量 + 前端追加，带宽是 O(n)，套过来会变成 O(n²) 且增加延迟。
 5. **`conn` 不要 import `server`**，用 `conn.Handler` 接口；`bridge` 不要依赖 `Hub` 具体类型，用 `Dispatcher` 接口。破坏这两条会形成循环依赖。
-6. **`Client.Outbound()` 仅用于测试**，生产代码不要消费，否则消息会被偷走。
+6. **`Client.Outbound()` 只是旁路副本，仅用于测试与调试**：它不参与投递，消费它不会偷走消息，
+   但也不要拿它当业务通道；真实发送一律走 `outQueue` + `writePump`。
 7. **`session_turns` 的关联字段靠 UPDATE 写入，且不会被覆盖**。正常轮次由 `cdm` 建 turn 时写入 `SessionID/ThreadID`；`manager` 完成时只补 `Answer`，因为 gorm 的 `Updates(struct)` 跳过零值字段。真正需要额外带 `SessionID` 的是**不走 cdm 建 turn 的路径**（`BeforeAgent` 拦截、`Steer`、`turn.Start` 失败），所以 `RequestSave` 改为在插入时就带上。新增写路径同样要带，否则该轮次在历史接口里查不到；也不要把 `TurnSave` 改成 `Save`，那会整行覆盖已有字段。
 8. **userID 不能含下划线**。会话键与归属判断依赖 `ws_<userID>_` 前缀，`alice_2` 会与 `alice` 混淆。默认 Authenticator 会直接拒绝这类 token；自定义 Authenticator 也必须保证返回值合法。
 9. **回放产物必须是 agent 信封，不能另起结构**。`replay.Build` 输出的是 `kind=agent` 的 `protocol.Envelope`，和 `bridge.convert` 逐字段对齐，前端才能共用一条渲染管线。新增事件映射时不要自定义新 type，优先复用 `types.EventType`；上游新增 item 类型时，在 `replay.itemStep` 的 switch 里补分支，否则会走 `default` 降级成原始 JSON（信息不丢但可读性差）。
@@ -680,7 +685,7 @@ go test -race ./core/db/ ./core/ws/...
 | --- | --- |
 | `db` | 按会话/线程查询、limit 与 beforeSeq 翻页、since 增量、线程列表、RequestSave 写入 sessionID、事件按轮次/白名单/游标查询、线程按账号分页（含复合游标）、首末轮摘要 |
 | `protocol` | 信封往返、6 类非法输入、Kind 校验、IsDelta |
-| `conn` | 按会话分发、注销清理、广播、背压（delta 丢弃 / 关键帧断开） |
+| `conn` | 按会话分发、注销清理、广播、背压（满队列丢最旧增量帧、关键帧优先、全关键帧才断开）、发送队列顺序/丢弃计数/容量复用 |
 | `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、对话列表分页与截断、历史分组/翻页/补发/订阅、历史帧还原、单轮回放、跨用户越权拒绝 |
 | `command` · `preflow` | 会话队列：同会话串行且保序、积压超上限跳过界面判断仍投递、退出时投完积压、不同会话互不阻塞 |
 | `preflow` | 快照→决策→navigate→决策→act 全链路、选空白项与对不上菜单都不动界面、navigate 失败不再点入口、需参数入口转 agent、页面不可用/超时/未启用时静默跳过、选项表重名与容错匹配、分类节点剔除（标记/类型/children 三种线索、全分类时不问模型）、快照宽松解析 |
@@ -712,4 +717,5 @@ go test -race ./core/db/ ./core/ws/...
 - **默认不做真实鉴权**：`DefaultAuthenticator` 只把 token 当 userID，不校验有效性（TODO）。上线前务必替换成查库或 JWT 校验。
 - **无用户管理**：没有用户增删改、token 轮换，也没有 per-user 连接数/速率限制（`max_clients` 是全局的）。
 - **无定向推送**：`Broadcast` 面向所有连接。
-- **未做 delta 合并**：弱网下会出现文字跳跃，如确有必要，在 `conn.writePump` 侧做 per-connection coalescing（16~33ms 窗口），不要动 bridge。
+- **未做 delta 合并**：弱网下会出现文字跳跃。当前策略是「积压时丢最旧的增量帧」（见 `conn/queue.go`），
+  文字会跳但不会整段空白；若要更平滑，可在 `conn.writePump` 侧再做 per-connection coalescing（16~33ms 窗口），不要动 bridge。

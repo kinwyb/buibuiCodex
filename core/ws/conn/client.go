@@ -2,6 +2,7 @@
 package conn
 
 import (
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,7 +46,11 @@ type Client struct {
 	chatMu sync.RWMutex
 	chatID string
 
-	send      chan []byte
+	// out 发送队列：关键帧不退让，增量帧在积压时丢最旧的一条（见 queue.go）
+	out *outQueue
+	// tap 出站消息的旁路副本，只给测试与调试观察用；生产路径不消费
+	tap chan []byte
+
 	done      chan struct{}
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -64,7 +69,8 @@ func NewClient(cfg Config, ws *websocket.Conn, hub *Hub, handler Handler, identi
 		hub:     hub,
 		handler: handler,
 		cfg:     cfg,
-		send:    make(chan []byte, cfg.SendBuffer),
+		out:     newOutQueue(cfg.SendBuffer),
+		tap:     make(chan []byte, cfg.SendBuffer),
 		done:    make(chan struct{}),
 	}
 }
@@ -96,9 +102,12 @@ func (c *Client) SetChatID(chatID string) {
 	c.chatMu.Unlock()
 }
 
-// Outbound 返回出站消息队列，仅用于测试与调试观察，业务代码不应消费
+// Outbound 返回出站消息的旁路副本，仅用于测试与调试观察，业务代码不应消费。
+//
+// 副本只收不取：它不参与投递，队列满时也不会被丢弃策略影响，
+// 因此观察它不会改变真实发送行为。
 func (c *Client) Outbound() <-chan []byte {
-	return c.send
+	return c.tap
 }
 
 // Run 启动读写协程，读协程在当前 goroutine 中阻塞直到连接结束
@@ -146,19 +155,46 @@ func (c *Client) Close() {
 }
 
 // enqueue 投递一条已序列化的消息。
-// 队列满时：增量消息（delta）直接丢弃，由后续完整消息收敛；关键消息则断开连接，靠重连恢复。
+//
+// 背压策略（见 queue.go）：队列满时先丢掉最旧的一条增量帧给新帧让位；
+// 关键帧不会被主动丢弃，只有队列里全是关键帧、腾不出位置时才断开连接，
+// 靠前端重连 + 历史补发恢复。
 func (c *Client) enqueue(raw []byte, critical bool) bool {
 	if len(raw) == 0 || c.closed.Load() {
 		return false
 	}
-	select {
-	case c.send <- raw:
-		return true
-	default:
+	ok, dropped := c.out.push(outbound{raw: raw, critical: critical})
+	if dropped > 0 {
+		c.reportDrop()
+	}
+	if !ok {
 		if critical {
 			c.Close()
 		}
 		return false
+	}
+	c.tapRaw(raw)
+	return true
+}
+
+// reportDrop 记录一次「增量帧被丢弃」。
+// 限流打日志：这是「界面看起来不流式」唯一的现场证据，全量打会把日志冲垮。
+func (c *Client) reportDrop() {
+	queued, dropped := c.out.stats()
+	if dropped == 1 || dropped%100 == 0 {
+		slog.Warn("ws 发送积压，已丢弃最旧的增量帧",
+			"client", c.id,
+			"dropped", dropped,
+			"queued", queued,
+			"capacity", c.cfg.SendBuffer)
+	}
+}
+
+// tapRaw 给旁路副本发一份；满了就跳过，不能影响真实投递
+func (c *Client) tapRaw(raw []byte) {
+	select {
+	case c.tap <- raw:
+	default:
 	}
 }
 
@@ -192,7 +228,10 @@ func (c *Client) readPump() {
 	}
 }
 
-// writePump 唯一的写协程，负责业务消息、心跳与关闭帧
+// writePump 唯一的写协程，负责业务消息、心跳与关闭帧。
+//
+// 每轮先把队列里排队的写完，再等「有新数据 / 心跳 / 关闭」三者之一：
+// 关闭要优先处理，避免积压时迟迟不响应 done。
 func (c *Client) writePump() {
 	ticker := time.NewTicker(c.cfg.PingPeriod)
 	defer func() {
@@ -203,18 +242,25 @@ func (c *Client) writePump() {
 	for {
 		select {
 		case <-c.done:
-			c.flush()
-			_ = c.conn.WriteControl(
-				websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-				time.Now().Add(c.cfg.WriteWait),
-			)
+			c.shutdown()
 			return
-		case raw := <-c.send:
-			if err := c.write(raw); err != nil {
+		default:
+		}
+
+		if item, ok := c.out.pop(); ok {
+			if err := c.write(item.raw); err != nil {
 				c.Close()
 				return
 			}
+			continue
+		}
+
+		select {
+		case <-c.done:
+			c.shutdown()
+			return
+		case <-c.out.wake():
+			// 有新数据，回到循环顶部取
 		case <-ticker.C:
 			if err := c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(c.cfg.WriteWait)); err != nil {
 				c.Close()
@@ -222,6 +268,16 @@ func (c *Client) writePump() {
 			}
 		}
 	}
+}
+
+// shutdown 关闭前尽力把队列里剩下的发完，再走正常的关闭帧
+func (c *Client) shutdown() {
+	c.flush()
+	_ = c.conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		time.Now().Add(c.cfg.WriteWait),
+	)
 }
 
 // write 写入一条文本帧
@@ -239,12 +295,11 @@ func (c *Client) write(raw []byte) error {
 func (c *Client) flush() {
 	deadline := time.Now().Add(c.cfg.WriteWait)
 	for time.Now().Before(deadline) {
-		select {
-		case raw := <-c.send:
-			if err := c.write(raw); err != nil {
-				return
-			}
-		default:
+		item, ok := c.out.pop()
+		if !ok {
+			return
+		}
+		if err := c.write(item.raw); err != nil {
 			return
 		}
 	}

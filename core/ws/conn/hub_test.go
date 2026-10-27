@@ -75,27 +75,39 @@ func TestHubBroadcast(t *testing.T) {
 	}
 }
 
-func TestHubBackpressureDropsDelta(t *testing.T) {
+// 队列满时的取舍：先丢最旧的增量帧，关键帧优先拿到位置。
+//
+// 早期版本是「满就丢新帧」：浏览器稍一卡顿，一整轮的 delta 全被丢光，
+// 界面只能等 message_completed 的全量文本才一次性刷出来 —— 看起来就是「不流式」。
+func TestHubBackpressurePrefersLatestFrames(t *testing.T) {
 	h := NewHub()
 	c := NewClient(Config{SendBuffer: 1}, nil, h, nil, Identity{UserID: "web"})
 	h.Add(c)
 	h.Subscribe(c, "s1")
 
-	// 塞满队列后，增量消息应被丢弃而不是阻塞或断开
+	// 塞满队列（1 条 delta）后再来一条 delta：挤掉最旧的，队列长度仍是 1，且不断开
 	h.Dispatch("s1", protocol.NewEnvelope(protocol.KindAgent, string(types.EventMessageDelta)))
 	h.Dispatch("s1", protocol.NewEnvelope(protocol.KindAgent, string(types.EventMessageDelta)))
-	if h.Count() != 1 {
-		t.Fatal("增量消息丢弃时不应断开连接")
+	if n := h.Count(); n != 1 {
+		t.Fatalf("丢弃增量帧时不应断开连接，当前连接数 %d", n)
+	}
+	if queued, dropped := c.out.stats(); queued != 1 || dropped != 1 {
+		t.Fatalf("应保持 1 条排队、丢弃 1 条，实际 queued=%d dropped=%d", queued, dropped)
 	}
 
-	// 关键消息在队列满时应断开连接
+	// 关键帧到达：同样先挤掉增量帧，不因为积压而断线
 	h.Dispatch("s1", protocol.NewEnvelope(protocol.KindAgent, string(types.EventMessageCompleted)))
-	if h.Count() != 1 {
-		t.Fatal("连接应仍由 Hub 持有，直到读协程注销")
+	select {
+	case <-c.done:
+		t.Fatal("关键帧应挤掉增量帧让位，而不是断开连接")
+	default:
 	}
+
+	// 队列里全是关键帧、腾不出位置时，才退回断开重连
+	h.Dispatch("s1", protocol.NewEnvelope(protocol.KindAgent, string(types.EventFinished)))
 	select {
 	case <-c.done:
 	default:
-		t.Fatal("关键消息投递失败时应触发连接关闭")
+		t.Fatal("队列里全是关键帧时，关键帧投递失败应触发连接关闭")
 	}
 }
