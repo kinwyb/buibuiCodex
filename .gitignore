@@ -1,1 +1,7 @@
 /buibui.json
+
+# CodeGraphContext 自动生成的索引忽略规则，与代码无关
+/.cgcignore
+
+# WorkBuddy 本地会话记忆，不进版本库
+/.workbuddy/
