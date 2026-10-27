@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 	"uuid"
@@ -237,7 +238,11 @@ func (a *Agent) codexRequestParse(state *types.State, request *codex.Event) {
 	}
 }
 
-// lifeEventParse 开始结束通知统一处理
+// lifeEventParse 开始结束通知统一处理。
+//
+// item 类型 -> 事件类型的映射只在下面这一个 switch 里做：填充载荷与决定事件类型必须来自
+// 同一处判断。此处曾存在第二份映射表覆盖 event.Type，dynamicToolCall 不在那份表里，
+// 结果事件类型被清空、在 codexEventParse 里被静默丢弃，前端永远收不到工具调用帧。
 func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 	itemEvt, err := notification.To[jsonRpc.ItemLifecycleEvent]()
 	if err != nil {
@@ -245,16 +250,21 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 		return
 	}
 	event.EventID = itemEvt.Item.ID
+	if event.Metadata == nil {
+		event.Metadata = map[string]any{}
+	}
 	event.Metadata["codex_item_type"] = itemEvt.Item.Type
 	msg := event.Message
 	item := itemEvt.Item
+
+	var eType types.EventType
 	switch item.Type {
 	case jsonRpc.Reasoning:
 		msg.ReasoningContent = strings.Join(itemEvt.Item.ReasoningItemDetail.Summary, "\n")
-		event.Type = types.EventReasoningStart
+		eType = types.EventReasoningStart
 	case jsonRpc.AgentMessage:
 		msg.Content = item.AgentMessageItemDetail.Text
-		event.Type = types.EventMessageStart
+		eType = types.EventMessageStart
 	case jsonRpc.CommandExecution:
 		msg.Role = types.RoleTool
 		calls := types.ToolCall{
@@ -269,7 +279,7 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 			calls.Extra[fmt.Sprintf("action_%d", i)] = fmt.Sprintf("%s_%s", v.Type, v.Command)
 		}
 		msg.ToolCalls = append(msg.ToolCalls, calls)
-		event.Type = types.EventToolStart
+		eType = types.EventToolStart
 	case jsonRpc.WebSearch:
 		msg.Role = types.RoleTool
 		calls := types.ToolCall{
@@ -277,58 +287,78 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 			Type:   types.ToolTypeWebSearch,
 			Name:   "web_search",
 			Params: item.Query,
-			Result: item.WebSearchItemDetail.Results.String(),
+			Result: rawJSONText(item.WebSearchItemDetail.Results),
 			Extra:  make(map[string]any),
 		}
 		for i, v := range item.WebSearchItemDetail.Action.Queries {
 			calls.Extra[fmt.Sprintf("query_%d", i)] = v
 		}
 		msg.ToolCalls = append(msg.ToolCalls, calls)
-		event.Type = types.EventToolStart
+		eType = types.EventToolStart
 	case jsonRpc.DynamicToolCall:
 		msg.Role = types.RoleTool
-		params, _ := json.Marshal(item.ToolCallItemDetail.Arguments)
 		calls := types.ToolCall{
 			ID:     item.ID,
 			Type:   types.ToolTypeFunction,
-			Name:   itemEvt.Item.Tool,
-			Params: string(params),
-			Result: item.ToolCallItemDetail.Result.String(),
+			Name:   item.ToolCallItemDetail.Tool,
+			Params: toolParamsText(item.ToolCallItemDetail.Arguments),
+			Result: rawJSONText(item.ToolCallItemDetail.Result),
 			Extra:  make(map[string]any),
 		}
+		if item.ToolCallItemDetail.Namespace != "" {
+			calls.Extra["namespace"] = item.ToolCallItemDetail.Namespace
+		}
+		if item.ToolCallItemDetail.CallId != "" {
+			calls.Extra["call_id"] = item.ToolCallItemDetail.CallId
+		}
 		msg.ToolCalls = append(msg.ToolCalls, calls)
-		event.Type = types.EventToolStart
+		eType = types.EventToolStart
 	case jsonRpc.UserMessage:
 		msg.Content = notification.RawData.String()
-		event.Type = types.EventUserMessageStart
+		eType = types.EventUserMessageStart
 	default:
 		slog.Warn(fmt.Sprintf("⚠️ life item [%s %s] => %s \n", notification.Method, item.Type, notification.RawData.String()))
 		fmt.Printf("⚠️ [%s %s] => %s \n", notification.Method, item.Type, notification.RawData.String())
 	}
-	event.Type = func(itemType jsonRpc.EventItemType, method codex.NotificationMethod) types.EventType {
-		var eType types.EventType
-		switch item.Type {
-		case jsonRpc.Reasoning:
-			eType = types.EventReasoningStart
-		case jsonRpc.AgentMessage:
-			eType = types.EventMessageStart
-		case jsonRpc.UserMessage:
-			eType = types.EventUserMessageStart
-		case jsonRpc.CommandExecution, jsonRpc.WebSearch:
-			eType = types.EventToolStart
+
+	// item/completed 是该条目的结束帧：上面的 starting 类型统一收敛为对应的 completed 类型。
+	if eType != "" && codex.NotificationMethod(notification.Method) == codex.ItemCompleted {
+		switch eType {
+		case types.EventReasoningStart:
+			eType = types.EventReasoningCompleted
+		case types.EventMessageStart:
+			eType = types.EventMessageCompleted
+		case types.EventToolStart:
+			eType = types.EventToolCompleted
+		case types.EventUserMessageStart:
+			eType = types.EventUserMessageCompleted
 		}
-		if eType != "" && method == codex.ItemCompleted {
-			switch eType {
-			case types.EventReasoningStart:
-				eType = types.EventReasoningCompleted
-			case types.EventMessageStart:
-				eType = types.EventMessageCompleted
-			case types.EventToolStart:
-				eType = types.EventToolCompleted
-			case types.EventUserMessageStart:
-				eType = types.EventUserMessageCompleted
-			}
-		}
-		return eType
-	}(item.Type, codex.NotificationMethod(notification.Method))
+	}
+	event.Type = eType
+}
+
+// rawJSONText 把 json.RawMessage 转成前端可读文本。
+// item/started 阶段结果往往还是 null，直接 String() 会让前端显示字面量 "null"。
+func rawJSONText(raw json.RawMessage) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ""
+	}
+	// 结果若不是字符串而是结构化 JSON，保留原始 JSON 文本，交给前端按需解析
+	if unquoted, err := strconv.Unquote(text); err == nil {
+		return unquoted
+	}
+	return text
+}
+
+// toolParamsText 序列化工具入参，空参数给空串而不是 "null"。
+func toolParamsText(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	params, err := json.Marshal(args)
+	if err != nil {
+		return fmt.Sprint(args)
+	}
+	return string(params)
 }
