@@ -333,6 +333,15 @@ chat.send ──> ack（先应答受理）──> 消息按会话入队，读循
   这种入口会进 `pending`，说明文字里点名让 agent 去点，agent 该拿的参数照样能拿。
 - **快照解析是宽松的**：`navigation`/`menus`/`pages`、`actions`/`commands`/`entries`、
   `title`/`name`/`label` 都能取到；解析不出可用信息就退化成「不做前置路由」。
+- **候选菜单只要业务页面，不要分类节点**。分类节点（点开只是展开分组）带着 view，
+  选中它会把用户带到一个分组页——实测「我要查看预订单」被开到「预订单」分类而不是「预订单管理」。
+  `navigation[]` 里满足任一条即判为分类并剔除，日志用 `skippedGroups` 记账：
+  1）显式标了不可选：`selectable` / `clickable` / `navigable` / `available` / `isLeaf` / `leaf` / `enabled` 为 false；
+  2）`type` / `kind` / `nodeType` / `menuType` 命中 group、category、directory、submenu、folder、header 等；
+  3）`children` / `items` / `submenus` / `options` 非空。
+  **首选还是前端只下发可打开的叶子页面**：只有分类节点自己也带 view、又不带任何标记时，
+  后端没有线索可判。叶子上的 `path` / `route` / `group` / `description` 会拼进选项描述，
+  「预订单」和「预订单管理」这类相近标题就靠它们区分。
 - **每一步都有日志**，「页面没反应」直接看这三条：
 
 ```
@@ -674,7 +683,7 @@ go test -race ./core/db/ ./core/ws/...
 | `conn` | 按会话分发、注销清理、广播、背压（delta 丢弃 / 关键帧断开） |
 | `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、对话列表分页与截断、历史分组/翻页/补发/订阅、历史帧还原、单轮回放、跨用户越权拒绝 |
 | `command` · `preflow` | 会话队列：同会话串行且保序、积压超上限跳过界面判断仍投递、退出时投完积压、不同会话互不阻塞 |
-| `preflow` | 快照→决策→navigate→决策→act 全链路、选空白项与对不上菜单都不动界面、navigate 失败不再点入口、需参数入口转 agent、页面不可用/超时/未启用时静默跳过、选项表重名与容错匹配、快照宽松解析 |
+| `preflow` | 快照→决策→navigate→决策→act 全链路、选空白项与对不上菜单都不动界面、navigate 失败不再点入口、需参数入口转 agent、页面不可用/超时/未启用时静默跳过、选项表重名与容错匹配、分类节点剔除（标记/类型/children 三种线索、全分类时不问模型）、快照宽松解析 |
 | `server` · `preflow` | 端到端：chat.send 先 ack，浏览器依次收到 observe/navigate/act，进 agent 的消息带上「界面已就绪」；模型选空白项与未配置时消息原样投递 |
 | `bridge` | 渠道过滤、完成/错误/审批/增量转换、completed 的 delta=false 断言 |
 | `replay` | 事件→agent 帧的完整映射、delta 与用量事件被跳过、思考拼接、命令/搜索/工具解析、未知类型降级、截断与 UTF-8 边界、审批与失败帧、帧数与 seq 回填 |
@@ -688,6 +697,8 @@ go test -race ./core/db/ ./core/ws/...
 - **界面操作没有 targetID**：同一会话多标签页时请求投给全部连接、先回执者胜出，无法指定操作哪一个标签页。
 - **前置界面路由是尽力而为**：它只在 `chat.send` 且带文字内容时触发，斜杠命令与纯媒体消息直接进 agent；
   打开页面用的 view 取自快照的 `navigation`，页面入参（`navigate.params`）不代填；
+  候选只取可打开的叶子页面，分类节点靠前端标注（`selectable:false` / `type:"group"` / 带 `children`）
+  才能可靠剔除——两者都没有时后端无从判断；
   需要业务参数的入口只报告不代办。开启后 `ack` 早于 `PublishInput`，历史里的 question 会多出
   一行「[界面已就绪] …」说明（`annotate: false` 可关掉）。
 - **界面快照的 rev 只是计数器**：服务端不关心，前端目前按「一次成功操作推进一格」实现，用户自己翻页/改筛选不会推进它；真实实现应由页面状态派生，否则并发操作拦不住。

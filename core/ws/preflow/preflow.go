@@ -134,6 +134,9 @@ type Result struct {
 	Pending []Step
 	// Reason 没动作或提前结束的原因（日志与排查用）
 	Reason string
+	// Skipped 被剔除的分类节点数量：候选菜单看着少就先看这个数，
+	// 说明前端把分组页也塞进了 navigation
+	Skipped int `json:"skipped,omitempty"`
 	// Decisions 每一次判断的过程记录，排查「为什么没反应」就看这里
 	Decisions []Decision
 	// Note 附加到用户消息里的一行说明，为空表示消息保持原样
@@ -199,6 +202,7 @@ func (r *Router) Route(ctx context.Context, req *Request) *Result {
 		return res
 	}
 	current := page
+	res.Skipped = len(page.Groups)
 
 	// 1. 要不要打开另一个页面
 	halted := false
@@ -225,6 +229,9 @@ func (r *Router) Route(ctx context.Context, req *Request) *Result {
 				current = opened
 			}
 		}
+	} else if len(page.Groups) > 0 {
+		// 菜单全是分类节点：说明前端没给出可打开的页面，这时候别硬猜
+		appendReason(res, fmt.Sprintf("没有可打开的业务页面（%d 个分类节点已剔除）", len(page.Groups)))
 	}
 
 	// 2. 页面就位后，要不要再点一个子入口
@@ -309,7 +316,7 @@ func (r *Router) pickPage(ctx context.Context, res *Result, content string, page
 		if i >= r.cfg.MaxPages {
 			break
 		}
-		opts.add(item.Title, item.View, item.View, item.Desc)
+		opts.add(item.Title, item.View, item.View, navDesc(item))
 	}
 	opts.addBlank(optionCurrent, "不用打开新页面，当前页面「"+clip(page.Name(), 40)+"」已经够用", "")
 	opts.addBlank(optionOther, "以上页面都不合适，或这句话与打开页面无关", "")
@@ -317,7 +324,8 @@ func (r *Router) pickPage(ctx context.Context, res *Result, content string, page
 	answer, err := r.ask(ctx, map[string]any{
 		"user_message": clip(content, 600),
 		"current_page": map[string]any{"view": page.View, "title": clip(page.Name(), 40)},
-	}, "page", "用户这句话需要先打开哪个页面（等价于点左侧菜单）？已经在合适的页面、或这句话与打开页面无关，就选 current。", opts)
+	}, "page", "用户这句话需要先打开哪个业务页面（等价于点左侧菜单里的一个可打开项）？"+
+		"名字相近时选更具体的那个界面；已经在合适的页面、或这句话与打开页面无关，就选 current。", opts)
 	if err != nil {
 		r.trace(res, Decision{Kind: "page", Answer: answer.Label(), Confidence: answer.Confidence,
 			Options: len(opts.byName), Top: r.top(answer, opts), Error: err.Error()})
@@ -525,6 +533,22 @@ func prefixOr(s, def string) string {
 	return string([]rune(s)[0])
 }
 
+// navDesc 组一条选项说明：菜单标题之外的线索（分组、路由）都写上，
+// 「预订单」和「预订单管理」这类相近名字全靠这些区分。
+func navDesc(item NavItem) string {
+	parts := make([]string, 0, 3)
+	if clip(item.Desc, 40) != "" {
+		parts = append(parts, clip(item.Desc, 40))
+	}
+	if item.Path != "" {
+		parts = append(parts, "路由 "+clip(item.Path, 40))
+	}
+	if item.Title == "" {
+		parts = append(parts, "view="+item.View)
+	}
+	return strings.Join(parts, " · ")
+}
+
 // lookup 把模型回传的选项名对回真实目标；对不上就当作没选（宁可不跳转也不乱跳）
 func (o *options) lookup(label string) string {
 	label = strings.TrimSpace(label)
@@ -624,6 +648,7 @@ func (r *Router) logResult(req *Request, res *Result) {
 	r.log.Info("preflow 界面前置路由",
 		"session", req.SessionID, "reqID", req.ReqID, "message", clip(req.Content, 40),
 		"applied", jsonValue(res.Steps), "pending", jsonValue(res.Pending),
+		"skippedGroups", res.Skipped,
 		"decisions", jsonValue(res.Decisions), "note", res.Note,
 		"reason", res.Reason, "elapsed", res.Elapsed.Round(time.Millisecond).String())
 }

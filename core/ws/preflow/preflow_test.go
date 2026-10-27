@@ -343,6 +343,64 @@ func TestRouteSnapshotWithoutRoutes(t *testing.T) {
 	}
 }
 
+// 分类节点不进候选：模型只看到能直接打开的业务页面，「预订单」不会抢走「预订单管理」
+func TestRouteOnlyOffersOpenablePages(t *testing.T) {
+	tr := &fakeTransport{replies: map[string][]*protocol.UIResponseData{
+		opObserve: {okResp(1, map[string]any{
+			"view": "Home", "title": "工作台",
+			"navigation": []any{
+				map[string]any{"view": "VGroup", "title": "预订单",
+					"children": []any{map[string]any{"view": "VLeaf", "title": "x"}}},
+				map[string]any{"view": "VLeaf", "title": "预订单管理", "path": "/sales/preorder"},
+			},
+		})},
+		opNavigate: {okResp(9, map[string]any{"view": "VLeaf", "title": "预订单管理"})},
+	}}
+	dec := &fakeDecider{picks: []choice{{"预订单管理", 0.62}, {optionNone, 0.9}}}
+
+	res := newRouter(enabledConfig(), tr, dec).Route(context.Background(), &Request{
+		SessionID: "s", Content: "我要查看越南的预订单",
+	})
+	if len(res.Steps) != 1 || res.Steps[0].Target != "VLeaf" {
+		t.Fatalf("应打开叶子页面 VLeaf: %+v reason=%q", res.Steps, res.Reason)
+	}
+	if res.Skipped != 1 {
+		t.Errorf("被剔除的分类节点要记进日志，实际 %d", res.Skipped)
+	}
+	crit := dec.reqs[0].Questions["page"].Criteria.(decision.ChoiceOptions)
+	if _, ok := crit["预订单"]; ok {
+		t.Errorf("分类节点不该出现在选项里: %+v", crit)
+	}
+	if !strings.Contains(crit["预订单管理"], "/sales/preorder") {
+		t.Errorf("相近标题要靠路由区分: %q", crit["预订单管理"])
+	}
+}
+
+// 整份菜单都是分类时不硬猜：不调决策模型，消息照常进 agent
+func TestRouteAllCategoriesSkipsDecision(t *testing.T) {
+	tr := &fakeTransport{replies: map[string][]*protocol.UIResponseData{
+		opObserve: {okResp(1, map[string]any{
+			"view": "Home",
+			"navigation": []any{
+				map[string]any{"view": "V1", "title": "预订单", "children": []any{map[string]any{"view": "V2"}}},
+				map[string]any{"view": "V3", "title": "生产", "type": "group"},
+			},
+		})},
+	}}
+	dec := &fakeDecider{picks: []choice{{"预订单", 0.9}}}
+
+	res := newRouter(enabledConfig(), tr, dec).Route(context.Background(), &Request{SessionID: "s", Content: "看预订单"})
+	if len(dec.reqs) != 0 {
+		t.Errorf("全是分类时不该问模型: %d 次", len(dec.reqs))
+	}
+	if !strings.Contains(res.Reason, "没有可打开的业务页面") {
+		t.Errorf("Reason = %q", res.Reason)
+	}
+	if res.Skipped != 2 {
+		t.Errorf("Skipped = %d, want 2", res.Skipped)
+	}
+}
+
 func TestRouteBudgetStopsWork(t *testing.T) {
 	tr := &slowTransport{delay: 40 * time.Millisecond}
 	dec := &fakeDecider{picks: []choice{{"生产工单", 0.7}}}

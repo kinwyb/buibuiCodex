@@ -113,6 +113,63 @@ func TestParseSnapshotInvalid(t *testing.T) {
 	}
 }
 
+// 分类节点不能进候选：它带 view，选中只会把用户带到一个分组页
+func TestParseSnapshotSkipsCategoryNodes(t *testing.T) {
+	cases := []struct {
+		name      string
+		item      string
+		wantGroup bool
+	}{
+		{"带下级菜单", `{"view":"VGroup","title":"预订单","children":[{"view":"VLeaf","title":"预订单管理"}]}`, true},
+		{"类型是分组", `{"view":"VGroup","title":"预订单","type":"Category"}`, true},
+		{"显式不可选", `{"view":"VGroup","title":"预订单","selectable":false}`, true},
+		{"标记 disabled", `{"view":"VGroup","title":"预订单","enabled":false}`, true},
+		{"空 children 的叶子", `{"view":"VLeaf","title":"预订单管理","children":[],"path":"/sales/preorder"}`, false},
+		{"没有下级也没有标记", `{"view":"VLeaf","title":"预订单管理"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			page := parseSnapshot(json.RawMessage(`{"view":"Home","navigation":[`+tc.item+`]}`), 0)
+			if page == nil {
+				t.Fatal("解析失败")
+			}
+			if got := len(page.Groups) > 0; got != tc.wantGroup {
+				t.Errorf("判为分类 = %v, want %v（nav=%+v groups=%+v）", got, tc.wantGroup, page.Nav, page.Groups)
+			}
+		})
+	}
+
+	// 同一份菜单里分类被剔除、叶子留下，路由作为区分线索保留
+	page := parseSnapshot(json.RawMessage(`{"view":"Home","navigation":[`+
+		`{"view":"VGroup","title":"预订单","children":[{"view":"VLeaf","title":"x"}]},`+
+		`{"view":"VLeaf","title":"预订单管理","path":"/sales/preorder","group":"销售管理"}]}`), 0)
+	if len(page.Nav) != 1 || page.Nav[0].View != "VLeaf" {
+		t.Fatalf("只应留下可打开的页面: %+v", page.Nav)
+	}
+	if page.Nav[0].Path != "/sales/preorder" {
+		t.Errorf("路由应保留: %+v", page.Nav[0])
+	}
+	if len(page.Groups) != 1 || page.Groups[0].Title != "预订单" {
+		t.Errorf("分类要记下来给日志用: %+v", page.Groups)
+	}
+}
+
+// 字段缺失与字段为 false 是两回事：null / 不填都按「没有标注」处理
+func TestParseSnapshotSelectableMissingIsNotFalse(t *testing.T) {
+	for _, raw := range []string{
+		`{"view":"Home","navigation":[{"view":"V1","title":"甲","selectable":null}]}`,
+		`{"view":"Home","navigation":[{"view":"V1","title":"甲"}]}`,
+	} {
+		page := parseSnapshot(json.RawMessage(raw), 0)
+		if len(page.Nav) != 1 {
+			t.Fatalf("%s: 不该判成不可选: nav=%+v groups=%+v", raw, page.Nav, page.Groups)
+		}
+		if page.Nav[0].Selectable != nil {
+			t.Errorf("%s: null 应视为缺省", raw)
+		}
+	}
+}
+
 func TestPageLookups(t *testing.T) {
 	page := parseSnapshot(json.RawMessage(`{"view":"A","navigation":[{"view":"B","title":"乙"}],"actions":[{"id":"c","label":"丙"}]}`), 0)
 	if item, ok := page.NavOf("B"); !ok || item.Title != "乙" {
