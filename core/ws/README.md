@@ -47,6 +47,7 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
 | `write_timeout` | 10 | 单次写超时（秒） |
 | `forward_all_channels` | false | 是否转发其他渠道（如 wxcom）的事件 |
 | `default_agent` | 空 | 前端未指定 agent 时使用 |
+| `page_router` | 无 | 前置界面路由（决策模型替用户打开页面），见 3.7 |
 
 ### 1.2 启动
 
@@ -270,6 +271,77 @@ delta == false   全量快照，整体覆盖当前消息
   服务端不理解业务结构，页面结构的变化只影响前端与工具描述。
 - 同一会话有多个页面连接时，请求会投给全部连接，先回执者胜出；要精确到某个标签页
   需要引入 `targetID`（当前未实现）。
+
+### 3.7 前置界面路由（决策模型）
+
+「该打开哪个页面」「要不要先点开某个弹窗」这类判断是分类问题，不必花 agent 的 token：
+`chat.send` 收到消息后先交给 [preflow](/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/core/ws/preflow/preflow.go)，
+由百炼决策模型（`decision` 包）判完并把界面就位，消息再进 agent。协议与前端一行都不用改——
+用的还是 3.6 那三条 `ui.request`。
+
+```
+chat.send ──> ack（先应答受理）──> 消息按会话入队，读循环立刻返回
+                                    │
+                  （每个会话一个 worker，串行）
+                  ui.request observe ──> 决策「打开哪个页面」
+                       └─> ui.request navigate ──> 决策「点开哪个入口」
+                               └─> ui.request act ──> PublishInput ──> agent
+```
+
+`websocket.page_router` 配置（凭证留空回落到环境变量 `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL`）：
+
+```json
+"websocket": {
+  "page_router": {
+    "enabled": true,
+    "api_key": "",
+    "base_url": "https://<控制台给的完整地址>/compatible-mode/v1/systemone",
+    "model": "decision-model-preview",
+    "timeout": 8,
+    "deep_action": true,
+    "annotate": true,
+    "max_pages": 60,
+    "max_actions": 40
+  }
+}
+```
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | false | 关闭时 `chat.send` 与改造前完全一致 |
+| `base_url` | 环境变量 | 决策模型接口地址，控制台给什么就填什么 |
+| `timeout` | 8 | 整个前置流程的总预算（秒），超时后消息照常进 agent |
+| `deep_action` | true | 打开页面后是否继续判断子入口 |
+| `annotate` | true | 是否把已做完的界面动作作为一行说明随消息交给 agent |
+| `max_pages` / `max_actions` | 60 / 40 | 送给模型的候选数量上限 |
+
+要点：
+
+- **不能在读循环里等回执**。`ui.response` 恰好要从同一条连接的读循环进来，同步等是自己等自己，
+  必然超时。所以 `chat.send` 先回 `ack`，把消息交给会话队列，由 worker 做完界面动作再
+  `PublishInput`；ack 里的 `reqID` 就是最终那条消息的 ID。
+- **队列而不是每条消息一个 goroutine**。裸 goroutine 只解死锁，不解顺序与并发：用户连发两条时
+  后一条可能先到 agent，两个 worker 还会交叉操作同一个页面。`command/preflow_queue.go` 保证
+  一个会话最多一个 worker、严格先进先出；积压超过 32 条后新消息不再做界面判断，只排队照常投递。
+  服务 `Stop` 时先 `commands.Shutdown()`：已排队的消息投完，只是不再发起新的界面动作。
+- **不设置信度门槛**：选项里带了 `current` / `none` / `other` 三个空白项，模型选哪个就照做，
+  不需要跳转时它自己会选空白项。52 个菜单里 top1 只有 0.36 是常态，用绝对置信度当闸门会把
+  正确判断一起挡掉（本项目踩过：现象是「在主界面说要看预订单却没反应」）。
+- **fail-open**：页面没开、决策失败、navigate 被拒、总预算超时——都只是不做什么，
+  消息照常进 agent，不会挡住聊天。
+- **声明了参数的入口不代办**：决策模型只出分类与概率，不生成文本，填不出 `orderId` 这类业务参数。
+  这种入口会进 `pending`，说明文字里点名让 agent 去点，agent 该拿的参数照样能拿。
+- **快照解析是宽松的**：`navigation`/`menus`/`pages`、`actions`/`commands`/`entries`、
+  `title`/`name`/`label` 都能取到；解析不出可用信息就退化成「不做前置路由」。
+- **每一步都有日志**，「页面没反应」直接看这三条：
+
+```
+INFO preflow 界面请求   session=ws_u1_c1 op=navigate view=OrderList outcome=ok snapshotBytes=94 elapsed=0s
+INFO preflow 决策       kind=page answer=p1 target=OrderList confidence=0.94 options=3
+INFO preflow 界面前置路由 session=... message=帮我建个工单 applied=[...] decisions=[...] note=... reason=...
+```
+
+`reason` 就是没动界面的原因（`取页面快照失败：no ui host connected for session` 表示这条会话没有页面连接）。
 
 ---
 
@@ -582,6 +654,10 @@ r.Register(protocol.TypeSessionPin, r.sessionPin)
 9. **回放产物必须是 agent 信封，不能另起结构**。`replay.Build` 输出的是 `kind=agent` 的 `protocol.Envelope`，和 `bridge.convert` 逐字段对齐，前端才能共用一条渲染管线。新增事件映射时不要自定义新 type，优先复用 `types.EventType`；上游新增 item 类型时，在 `replay.itemStep` 的 switch 里补分支，否则会走 `default` 降级成原始 JSON（信息不丢但可读性差）。
 10. **`replay` 与 `bridge` 的字段口径要一致**。两边都在填 `AgentData`，任何一边改了 `role` / `delta` / `toolCalls` 的语义，另一边都得同步，否则历史与实时渲染出来会长得不一样。这也是 `replay` 单独成包而不是塞进 `command` 的原因：它和 `bridge` 是一对镜像实现。
 11. **新命令放独立文件，别塞回 `command.go`**。那个文件只做注册集成（接口、Deps、Registry、分发、会话键）。命令一旦混进去，找某条命令的行为就得翻整份文件；现在一个命令一个文件，出问题直接打开同名文件即可。
+12. **凡是要等浏览器回执的逻辑，都不能在 `conn.readPump` 上同步等**。`ui.response` 就是从这条读循环进来的，
+    在 `chat.send` 里直接 `Request` 会稳定超时（本项目实现时踩过：现象是「页面没反应」，日志只有
+    `ui request timeout after 2s`）。正确做法是 `routeQueue.submit` 排队，见 3.7 与 `command/preflow_queue.go`。
+    同理，agent 的界面工具走的是另一条链路（`core.UIBridge` → `Server.Request`），不在读循环上，才允许同步等。
 
 ---
 
@@ -597,6 +673,9 @@ go test -race ./core/db/ ./core/ws/...
 | `protocol` | 信封往返、6 类非法输入、Kind 校验、IsDelta |
 | `conn` | 按会话分发、注销清理、广播、背压（delta 丢弃 / 关键帧断开） |
 | `command` | chat.send 投递与 ack、空内容/未知 agent/未知命令/非 client 域拒绝、SessionKey 一致性、对话列表分页与截断、历史分组/翻页/补发/订阅、历史帧还原、单轮回放、跨用户越权拒绝 |
+| `command` · `preflow` | 会话队列：同会话串行且保序、积压超上限跳过界面判断仍投递、退出时投完积压、不同会话互不阻塞 |
+| `preflow` | 快照→决策→navigate→决策→act 全链路、选空白项与对不上菜单都不动界面、navigate 失败不再点入口、需参数入口转 agent、页面不可用/超时/未启用时静默跳过、选项表重名与容错匹配、快照宽松解析 |
+| `server` · `preflow` | 端到端：chat.send 先 ack，浏览器依次收到 observe/navigate/act，进 agent 的消息带上「界面已就绪」；模型选空白项与未配置时消息原样投递 |
 | `bridge` | 渠道过滤、完成/错误/审批/增量转换、completed 的 delta=false 断言 |
 | `replay` | 事件→agent 帧的完整映射、delta 与用量事件被跳过、思考拼接、命令/搜索/工具解析、未知类型降级、截断与 UTF-8 边界、审批与失败帧、帧数与 seq 回填 |
 | `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、token 即身份、自定义 Authenticator、非法 userID 拒绝 |
@@ -607,6 +686,10 @@ go test -race ./core/db/ ./core/ws/...
 ## 10. 已知限制与后续
 
 - **界面操作没有 targetID**：同一会话多标签页时请求投给全部连接、先回执者胜出，无法指定操作哪一个标签页。
+- **前置界面路由是尽力而为**：它只在 `chat.send` 且带文字内容时触发，斜杠命令与纯媒体消息直接进 agent；
+  打开页面用的 view 取自快照的 `navigation`，页面入参（`navigate.params`）不代填；
+  需要业务参数的入口只报告不代办。开启后 `ack` 早于 `PublishInput`，历史里的 question 会多出
+  一行「[界面已就绪] …」说明（`annotate: false` 可关掉）。
 - **界面快照的 rev 只是计数器**：服务端不关心，前端目前按「一次成功操作推进一格」实现，用户自己翻页/改筛选不会推进它；真实实现应由页面状态派生，否则并发操作拦不住。
 - **界面工具只有 observe / act**：没有 select（给 GridTableApi 加按业务 ID 选中行后才能做）、没有审批闭环（有副作用的命令目前靠命令自身 disabled + 页面确认框兜底）。
 - **补发基于数据库轮次**：`session.history(since)` 只能补已落库的轮次；断线期间正在生成的那一轮不补逐帧内容，重连后由后续事件或 `message_completed` 覆盖收敛。

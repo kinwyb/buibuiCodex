@@ -17,6 +17,9 @@ type WebSocketConfig struct {
 	HeartbeatInterval  int      `json:"heartbeat_interval"`   // 心跳间隔（秒），默认 30
 	ForwardAllChannels bool     `json:"forward_all_channels"` // 是否转发所有渠道的事件，默认仅转发 ws 渠道
 	DefaultAgent       string   `json:"default_agent"`        // 前端未指定时使用的 agent
+	// PageRouter 前置界面路由：消息进 agent 之前，先用决策模型判断要不要替用户打开页面 / 点开入口。
+	// 为空或未启用时完全不影响现有流程。
+	PageRouter *PageRouterConfig `json:"page_router"`
 }
 
 // SetDefaults 填充默认值，不覆盖已显式配置的字段
@@ -48,4 +51,63 @@ func (c *WebSocketConfig) SetDefaults() {
 	if c.HeartbeatInterval <= 0 {
 		c.HeartbeatInterval = 30
 	}
+	if c.PageRouter != nil {
+		c.PageRouter.SetDefaults()
+	}
+}
+
+// PageRouterConfig 前置界面路由配置（决策模型 + 界面动作预算）。
+//
+// 决策模型的凭证留空时回落到环境变量（DASHSCOPE_API_KEY / DASHSCOPE_WORKSPACE_ID 等），
+// 详见 decision.New。
+type PageRouterConfig struct {
+	Enabled bool `json:"enabled"`
+
+	// 决策模型接入
+	APIKey  string `json:"api_key"`  // 留空读 DASHSCOPE_API_KEY
+	BaseURL string `json:"base_url"` // 决策模型完整接口地址，留空读 DASHSCOPE_BASE_URL
+	Model   string `json:"model"`    // 默认 decision-model-preview
+
+	// 行为开关
+	DeepAction *bool `json:"deep_action"` // 打开页面后是否继续判断子入口，默认 true
+	Annotate   *bool `json:"annotate"`    // 是否把已完成的界面动作附到用户消息里交给 agent，默认 true
+
+	// 预算与门槛
+	Timeout    int `json:"timeout"`     // 整个前置流程的总预算（秒），默认 8
+	MaxPages   int `json:"max_pages"`   // 送给模型的候选页面数上限，默认 60
+	MaxActions int `json:"max_actions"` // 送给模型的界面入口数上限，默认 40
+}
+
+// SetDefaults 填充默认值，不覆盖已显式配置的字段
+func (c *PageRouterConfig) SetDefaults() {
+	if c.Model == "" {
+		c.Model = "decision-model-preview"
+	}
+	if c.Timeout <= 0 {
+		c.Timeout = 8
+	}
+	if c.MaxPages <= 0 {
+		c.MaxPages = 60
+	}
+	if c.MaxActions <= 0 {
+		c.MaxActions = 40
+	}
+}
+
+// DeepActionEnabled 打开页面后是否继续判断子入口（默认开）
+func (c *PageRouterConfig) DeepActionEnabled() bool {
+	return boolOr(c.DeepAction, true)
+}
+
+// AnnotateEnabled 是否把结果附到用户消息里（默认开）
+func (c *PageRouterConfig) AnnotateEnabled() bool {
+	return boolOr(c.Annotate, true)
+}
+
+// boolOr 取 *bool 配置，nil 时用默认值
+func boolOr(v *bool, def bool) bool {
+	if v == nil {
+		return def
+	}
+	return *v
 }

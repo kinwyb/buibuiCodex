@@ -18,13 +18,8 @@ const (
 	// APIPath 决策模型接口路径。
 	APIPath = "/compatible-mode/v1/systemone"
 
-	APIKeyEnv      = "DASHSCOPE_API_KEY"
-	BaseURLEnv     = "DASHSCOPE_BASE_URL"
-	WorkspaceIDEnv = "DASHSCOPE_WORKSPACE_ID"
-	RegionEnv      = "DASHSCOPE_REGION"
-
-	RegionBeijing   = "cn-beijing"
-	RegionSingapore = "ap-southeast-1"
+	APIKeyEnv  = "DASHSCOPE_API_KEY"
+	BaseURLEnv = "DASHSCOPE_BASE_URL"
 
 	// singleID 单题快捷方法使用的问题 id。
 	singleID = "decision"
@@ -40,8 +35,8 @@ type Client struct {
 	// Model 模型名，默认 decision-model-preview。
 	// 单次请求可用 Request.Model 覆盖。
 	Model string
-	// Endpoint 归一化后的完整接口地址（网关 + /compatible-mode/v1/systemone）。
-	// 由 WithBaseURL/WithWorkspace 设置，只给域名时自动补齐路径。
+	// Endpoint 接口地址，形如 https://<your-host>/compatible-mode/v1/systemone。
+	// 只给到域名时会自动补齐这段路径。
 	Endpoint string
 	// HTTPClient 底层 HTTP 客户端，为空时使用 defaultTimeout 创建。
 	HTTPClient *http.Client
@@ -60,20 +55,9 @@ func WithModel(model string) Option {
 	return func(c *Client) { c.Model = model }
 }
 
-// WithBaseURL 指定网关地址，例如 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com。
+// WithBaseURL 设置接口地址：控制台给出的完整地址原样填进来即可。
 func WithBaseURL(baseURL string) Option {
 	return func(c *Client) { c.Endpoint = baseURL }
-}
-
-// WithWorkspace 按业务空间 ID 与地域拼出网关地址，地域为空取华北2（北京）。
-// 业务空间 ID 见「地域与域名」文档。
-func WithWorkspace(workspaceID, region string) Option {
-	return func(c *Client) {
-		if region == "" {
-			region = RegionBeijing
-		}
-		c.Endpoint = fmt.Sprintf("https://%s.%s.maas.aliyuncs.com", workspaceID, region)
-	}
 }
 
 // WithHTTPClient 复用外部 HTTP 客户端（连接池、代理、测试桩）。
@@ -81,18 +65,12 @@ func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) { c.HTTPClient = h }
 }
 
-// New 创建客户端。未显式配置时读取环境变量
-// DASHSCOPE_API_KEY / DASHSCOPE_BASE_URL / DASHSCOPE_WORKSPACE_ID / DASHSCOPE_REGION。
+// New 创建客户端。未显式配置时读取环境变量 DASHSCOPE_API_KEY / DASHSCOPE_BASE_URL。
 func New(opts ...Option) (*Client, error) {
 	c := &Client{
 		APIKey:   os.Getenv(APIKeyEnv),
 		Model:    DefaultModel,
 		Endpoint: os.Getenv(BaseURLEnv),
-	}
-	if c.Endpoint == "" {
-		if ws := os.Getenv(WorkspaceIDEnv); ws != "" {
-			WithWorkspace(ws, os.Getenv(RegionEnv))(c)
-		}
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -101,7 +79,7 @@ func New(opts ...Option) (*Client, error) {
 		return nil, fmt.Errorf("decision: 缺少 API Key（传 WithAPIKey 或设置 %s）", APIKeyEnv)
 	}
 	if strings.TrimSpace(c.Endpoint) == "" {
-		return nil, fmt.Errorf("decision: 缺少网关地址（传 WithBaseURL/WithWorkspace 或设置 %s、%s）", BaseURLEnv, WorkspaceIDEnv)
+		return nil, fmt.Errorf("decision: 缺少接口地址（传 WithBaseURL 或设置 %s）", BaseURLEnv)
 	}
 	if c.Model == "" {
 		c.Model = DefaultModel
@@ -110,9 +88,9 @@ func New(opts ...Option) (*Client, error) {
 		c.HTTPClient = &http.Client{Timeout: defaultTimeout}
 	}
 	c.Endpoint = normalizeBaseURL(c.Endpoint)
-	// 提前校验地址，避免把 {WorkspaceId} 这类占位符留到请求阶段才报错。
+	// 提前校验地址，别让占位符或漏写 scheme 拖到请求阶段才报错。
 	if u, err := url.Parse(c.Endpoint); err != nil || u.Host == "" {
-		return nil, fmt.Errorf("decision: 网关地址不合法 %q（需替换 {WorkspaceId}，且带 https://）", c.Endpoint)
+		return nil, fmt.Errorf("decision: 接口地址不合法 %q（需要带 https:// 的完整地址）", c.Endpoint)
 	}
 	return c, nil
 }

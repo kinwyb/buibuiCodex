@@ -41,7 +41,7 @@ func (s *stub) RoundTrip(r *http.Request) (*http.Response, error) {
 	return rec.Result(), nil
 }
 
-const stubBaseURL = "https://ws-1." + RegionBeijing + ".maas.aliyuncs.com/compatible-mode/v1"
+const stubBaseURL = "https://decision.example.com/compatible-mode/v1"
 
 func newTestClient(t *testing.T, handler http.HandlerFunc) (*Client, *stub) {
 	t.Helper()
@@ -70,18 +70,17 @@ func TestNormalizeBaseURL(t *testing.T) {
 func TestNewRequiresKeyAndBase(t *testing.T) {
 	t.Setenv(APIKeyEnv, "")
 	t.Setenv(BaseURLEnv, "")
-	t.Setenv(WorkspaceIDEnv, "")
 	if _, err := New(WithBaseURL("https://x.example.com")); err == nil {
 		t.Fatal("缺少 API Key 时应报错")
 	}
 	if _, err := New(WithAPIKey("k")); err == nil {
-		t.Fatal("缺少网关地址时应报错")
+		t.Fatal("缺少接口地址时应报错")
 	}
-	c, err := New(WithAPIKey("k"), WithWorkspace("ws-1", ""))
+	c, err := New(WithAPIKey("k"), WithBaseURL("https://decision.example.com"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	want := "https://ws-1." + RegionBeijing + ".maas.aliyuncs.com" + APIPath
+	want := "https://decision.example.com" + APIPath
 	if c.Endpoint != want {
 		t.Errorf("Endpoint = %q, want %q", c.Endpoint, want)
 	}
@@ -90,10 +89,12 @@ func TestNewRequiresKeyAndBase(t *testing.T) {
 	}
 }
 
-func TestNewRejectsPlaceholderHost(t *testing.T) {
-	_, err := New(WithAPIKey("k"), WithBaseURL("https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com"))
-	if err == nil {
-		t.Fatal("未替换 {WorkspaceId} 时应立即报错")
+func TestNewRejectsBadAddress(t *testing.T) {
+	// 占位符没替换、漏写 scheme，都应在创建时就报错，而不是等到发请求。
+	for _, base := range []string{"https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com", "ws-1.cn-beijing.maas.aliyuncs.com"} {
+		if _, err := New(WithAPIKey("k"), WithBaseURL(base)); err == nil {
+			t.Errorf("地址 %q 应被拒绝", base)
+		}
 	}
 }
 

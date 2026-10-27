@@ -21,13 +21,13 @@
 ```go
 client, err := decision.New(
     decision.WithAPIKey(os.Getenv("DASHSCOPE_API_KEY")),
-    decision.WithWorkspace("{WorkspaceId}", decision.RegionBeijing), // 华北2（北京）
+    decision.WithBaseURL("https://<your-host>/compatible-mode/v1/systemone"),
 )
 ```
 
-不传选项时按环境变量读取：`DASHSCOPE_API_KEY`、`DASHSCOPE_BASE_URL`、`DASHSCOPE_WORKSPACE_ID`、
-`DASHSCOPE_REGION`。已经有完整网关地址时用 `decision.WithBaseURL("https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com")`，
-只到域名、到 `/compatible-mode/v1`、到 `/systemone` 三种写法都能正确归一。
+地址直接填控制台给出的完整接口地址，本包不参与业务空间与域名的拼装（地域对照见文档「地域与域名」）；
+只填到域名时会自动补上 `/compatible-mode/v1/systemone`。
+配置留空时回落到环境变量 `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL`。
 `WithHTTPClient` 可复用连接池或注入测试桩。
 
 ## 一次问多个问题

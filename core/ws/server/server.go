@@ -19,6 +19,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/ws/bridge"
 	"github.com/kinwyb/buibuiCodex/core/ws/command"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
+	"github.com/kinwyb/buibuiCodex/core/ws/preflow"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
 )
 
@@ -55,6 +56,10 @@ type Options struct {
 	// UIRequestTimeout 等待浏览器回执的超时，为 0 时用 defaultUIRequestTimeout。
 	// 界面工具（ui_observe / ui_act）是同步等待的，超时意味着页面没响应或已经关闭。
 	UIRequestTimeout time.Duration
+	// PreflowDecider 界面前置路由使用的决策模型入口，正常传 *decision.Client。
+	// 为空且 websocket.page_router.enabled 时，按配置里的地址与密钥自己建一个；
+	// 留出这个注入点是为了测试与自定义网关。
+	PreflowDecider preflow.Decider
 }
 
 // Server WebSocket 服务
@@ -138,6 +143,7 @@ func New(opts Options) *Server {
 		Turns:        opts.Turns,
 		Channel:      opts.Channel,
 		DefaultAgent: opts.Config.DefaultAgent,
+		Preflow:      s.newPreflow(),
 	})
 	// 浏览器回执走 client 域，注册在这里由 server 认领等待中的请求
 	s.commands.Register(protocol.TypeUIResponse, s.handleUIResponse)
@@ -222,6 +228,8 @@ func (s *Server) Stop(ctx context.Context) error {
 	if httpServer != nil {
 		_ = httpServer.Shutdown(ctx)
 	}
+	// 前置路由队列最后停：已排队的消息投完再退，不再发起新的界面动作
+	s.commands.Shutdown()
 	s.hub.CloseAll("server shutting down")
 	s.log.Info("websocket server stopped")
 	return nil

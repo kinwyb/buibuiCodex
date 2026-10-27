@@ -14,6 +14,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
+	"github.com/kinwyb/buibuiCodex/core/ws/preflow"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
 )
 
@@ -47,6 +48,15 @@ type Deps struct {
 	Turns        TurnReader // 历史消息数据源，为空时 session.history 返回未启用
 	Channel      string     // 入站消息的渠道标识
 	DefaultAgent string     // 前端未指定时使用的 agent
+	Preflow      Preflow    // 界面前置路由，为空表示不启用
+}
+
+// Preflow 用户消息进入 agent 之前的界面路由，由 preflow.Router 实现。
+//
+// 它只处理「该打开哪个页面、要不要再点开某个入口」这类判断，做完就把消息交回主流程；
+// 结果的 Note 为空表示消息原样投递。未配置决策模型时这个依赖为空，整条链路不生效。
+type Preflow interface {
+	Route(ctx context.Context, req *preflow.Request) *preflow.Result
 }
 
 // Handler 命令处理函数
@@ -57,6 +67,8 @@ type Registry struct {
 	deps     Deps
 	mu       sync.RWMutex
 	handlers map[string]Handler
+	// routeQueue 界面前置路由的执行队列；未配置 Preflow 时为空
+	routeQueue *preflowQueue
 }
 
 // NewRegistry 创建注册表并注册内置命令。
@@ -72,6 +84,10 @@ type Registry struct {
 //	turn_replay.go      session.turn.replay
 func NewRegistry(deps Deps) *Registry {
 	r := &Registry{deps: deps, handlers: make(map[string]Handler)}
+	if deps.Preflow != nil && deps.Bus != nil {
+		// 队列持有 deps 的副本：Preflow 与 Bus 在运行期不会被替换
+		r.routeQueue = newPreflowQueue(deps)
+	}
 	r.Register(protocol.TypePing, r.ping)
 	r.Register(protocol.TypeChatSend, r.chatSend)
 	r.Register(protocol.TypeChatCancel, r.chatCancel)
@@ -137,4 +153,10 @@ func (r *Registry) ownsSession(userID, sessionID string) bool {
 // （例如 ui.response 回执必须来自该会话所属的连接）。
 func (r *Registry) OwnsSession(userID, sessionID string) bool {
 	return r.ownsSession(userID, sessionID)
+}
+
+// Shutdown 停止前置路由队列，服务关闭时调用。
+// 已排队的消息会投完再退出，只是不再做界面动作。
+func (r *Registry) Shutdown() {
+	r.routeQueue.Shutdown()
 }
