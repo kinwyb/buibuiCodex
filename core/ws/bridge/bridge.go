@@ -26,6 +26,9 @@ type Options struct {
 	Channel    string // 需要转发的来源渠道
 	ForwardAll bool   // 是否转发所有渠道的事件
 	Logger     *slog.Logger
+	// Coalesce 增量帧合并（delta_coalescer.go）：把同一片段的连续 delta 攒成更大的增量帧，
+	// 只降帧数不升带宽。Enabled 为 false 时逐帧直发，与改造前完全一致。
+	Coalesce CoalesceConfig
 }
 
 // Bridge 事件总线到 ws 连接的转换器
@@ -35,6 +38,9 @@ type Bridge struct {
 	mu     sync.Mutex
 	sub    *bus.EventSubscription
 	closed bool
+
+	// coalescer 增量帧合并；所有下行事件都从它过一道（见 delta_coalescer.go）
+	coalescer *deltaCoalescer
 }
 
 // New 创建桥接器
@@ -42,7 +48,12 @@ func New(opts Options) *Bridge {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	return &Bridge{opts: opts}
+	b := &Bridge{opts: opts}
+	coalesce := opts.Coalesce
+	coalesce.Logger = opts.Logger
+	// 出口是 b.send：合并后的帧与关键帧共用同一条 convert + dispatch 路径
+	b.coalescer = newDeltaCoalescer(coalesce, b.send)
+	return b
 }
 
 // Run 订阅事件总线并持续转发，直到 ctx 结束或订阅被关闭
@@ -76,6 +87,7 @@ func (b *Bridge) Run(ctx context.Context) {
 	}
 	b.sub = sub
 	b.mu.Unlock()
+	b.coalescer.Start(ctx)
 
 	for {
 		select {
@@ -102,6 +114,8 @@ func (b *Bridge) Close() {
 		b.sub.Close()
 		b.sub = nil
 	}
+	// 窗口里的增量尽力落地，别把一轮回答的尾巴留在内存里
+	b.coalescer.Close()
 }
 
 // forward 过滤来源渠道后转发单个事件。
@@ -119,6 +133,13 @@ func (b *Bridge) forward(event *types.Event) {
 	if !b.accept(event.Channel) {
 		return
 	}
+	// 交给合并器：文本增量进窗口，其余事件先落地积压再直发（delta_coalescer.go）
+	b.coalescer.Push(event)
+}
+
+// send 事件 → 信封 → 按会话投递。bridge 唯一的出口，合并后的增量帧也走这里，
+// 因此必须保持非阻塞（入队即返回），见 README §8.3。
+func (b *Bridge) send(event *types.Event) {
 	env := b.convert(event)
 	if env == nil {
 		return

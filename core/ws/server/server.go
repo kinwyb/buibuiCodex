@@ -188,6 +188,12 @@ func (s *Server) Start(ctx context.Context) error {
 		Channel:    s.opts.Channel,
 		ForwardAll: s.cfg.ForwardAllChannels,
 		Logger:     s.log,
+		Coalesce: bridge.CoalesceConfig{
+			Enabled:     s.cfg.StreamCoalesceEnabled(),
+			Interval:    time.Duration(s.cfg.StreamCoalesceMs) * time.Millisecond,
+			MaxBytes:    s.cfg.StreamCoalesceMaxBytes,
+			MaxSegments: 128, // 跟踪片段数的兜底上限，正常一轮不会同时开这么多段
+		},
 	})
 	httpServer := s.httpServer
 	msgBridge := s.bridge

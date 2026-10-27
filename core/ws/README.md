@@ -26,6 +26,9 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
   "allow_origins": ["*"],
   "max_clients": 100,
   "send_buffer": 256,
+  "stream_coalesce": true,
+  "stream_coalesce_ms": 50,
+  "stream_coalesce_max_bytes": 4096,
   "heartbeat_interval": 30,
   "read_timeout": 60,
   "write_timeout": 10,
@@ -42,6 +45,9 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
 | `allow_origins` | 空 | 为空不限制；支持 `*`、完整 Origin、主机名 |
 | `max_clients` | 100 | 超过返回 503 |
 | `send_buffer` | 256 | 单连接发送队列长度，满时的策略见第 6 节 |
+| `stream_coalesce` | true | 是否合并增量帧（`bridge/delta_coalescer.go`），关掉即逐帧直发 |
+| `stream_coalesce_ms` | 50 | 合并窗口（毫秒）：窗口内同一片段的增量拼成一帧发出 |
+| `stream_coalesce_max_bytes` | 4096 | 单片段攒到多少字节就不等窗口立刻落地 |
 | `heartbeat_interval` | 30 | 控制帧 ping 间隔（秒） |
 | `read_timeout` | 60 | 读超时（秒），需大于心跳间隔 |
 | `write_timeout` | 10 | 单次写超时（秒） |
@@ -217,6 +223,8 @@ delta == false   全量快照，整体覆盖当前消息
 | `tool_*` / `approval` / `error` / `finished` | false | 状态事件，不参与文本追加 |
 
 这条约定不是可选的：服务端在网络拥塞时**会丢弃 delta**（丢的是积压里最旧的那条，见 §6 背压），依靠 `message_completed` 的全量内容让界面收敛。如果前端把 `completed` 当增量拼接，丢帧后内容就永远修不回来了。
+
+`message_delta` / `reasoning_delta` 会被合并（见 §6 增量帧合并）：**一帧的内容可能是好几个 token 拼起来的一段文本，但 `delta` 仍然是 `true`**，前端继续按追加处理，不需要区分是不是合并帧。合并只发生在同一片段（同 `eventID`）内部，不会把思考与正文混进一帧。
 
 ### 3.4 上行 · client
 
@@ -589,6 +597,19 @@ userID 限制：只允许字母、数字、短横线，**不能含下划线**。
   - 只有队列里全是关键帧、腾不出位置时才断开连接，让前端重连 + 历史补发；
   - 每次丢弃都会累计计数并限流打一条 warn 日志（`dropped` / `queued` / `capacity`）——
     「界面不流式」时先看这条日志是否在涨。
+- 增量帧合并（`bridge/delta_coalescer.go`，配置 `stream_coalesce*`）：
+  - 目的在**降帧数**：上游逐 token 发 delta，一轮回答动辄上百帧，而前端每帧都要重渲染整段 Markdown；
+    渲染慢过帧间隔，浏览器就不再从 socket 读，上面的队列填满，于是开始丢 delta，
+    界面退化成「等 `message_completed` 才一次性刷出来」。帧数压一个量级，队列基本不再填满；
+  - 合并窗口默认 50ms，按**片段**分组（sessionID + reqID + eventID + 类型），
+    攒够 `stream_coalesce_max_bytes` 就不等窗口立刻落地；
+  - 合并的是**增量**不是全文：一帧的内容仍是「要追加的那一段」，带宽保持 O(n)；
+  - 关键帧（start / completed / tool / approval / error / finished）不参与合并，
+    且发出前会先把该会话窗口里的积压落地，保证「增量在前、关键帧在后」；
+    `*_completed` 之后顺手释掉该片段的状态；
+  - 带 `toolCalls` / `media` / `approval` / `extra` 的 delta 帧原样直发，不拼进文本帧；
+  - 排查：`stream_coalesce: false` 回到逐帧直发的旧行为；没 `Start` 起窗口时同样直发，
+    所以单独调 `forward` 的测试不会看到帧被窗口吞掉。
 - 关闭顺序：`Stop` → 取消 ctx → 关闭 bridge 订阅 → `http.Server.Shutdown` → 广播 `system/shutdown` → 逐个关闭连接。
 
 ---
@@ -658,8 +679,8 @@ r.Register(protocol.TypeSessionPin, r.sessionPin)
 
 1. **`message_completed` 必须是全量文本**。它来自 `codex/cdm/eventHandler.go` 的 `item.AgentMessageItemDetail.Text`。若上游改成只发增量，第 6 节的丢帧策略立刻不安全，前端会永久缺字。`bridge_test.go` 有断言守着这一点。
 2. **`bridge.Run` 必须保证退出时注销订阅**。总线 fanout 是单 goroutine 顺序 push 且不带超时，残留订阅无人消费时，队列写满会阻塞整个 fanout，连带企业微信一起收不到消息。当前用 `defer b.Close()` + 两层 `recover` 兜住，改动时不要删。
-3. **不要在 `bridge` 里做耗时操作**。它是总线上的消费者，慢一点就会反压到所有渠道。marshal 已放在 `Hub.deliver`（每条事件一次），大 base64 媒体是唯一潜在慢点。
-4. **不要复用 `channel.StreamBuffer`**。那是给"覆盖式更新同一条消息 + 有 RTT/限流"的企业微信接口用的（accumulate + 合并）。ws 走增量 + 前端追加，带宽是 O(n)，套过来会变成 O(n²) 且增加延迟。
+3. **不要在 `bridge` 里做耗时操作**。它是总线上的消费者，慢一点就会反压到所有渠道。marshal 已放在 `Hub.deliver`（每条事件一次），大 base64 媒体是唯一潜在慢点。增量合并的出口 `bridge.send` 也在同一条链上（`deltaCoalescer` 持锁调用 emit），因此 `emit` 必须保持「入队即返回」，不要往里塞阻塞操作或 IO。
+4. **不要复用 `channel.StreamBuffer`**，ws 的合并在 `bridge/delta_coalescer.go`。企业微信那份是「按 reqID 分组 + 累积全文覆盖同一条消息」：搬过来会把一轮里交错的多个 `eventID` 片段混成一个，而且每帧重发全文，带宽从 O(n) 变成 O(n²)，长回答下反而更贵。ws 这份的三条差别：按片段分组、**窗口内只拼接增量**、关键帧先落地积压再直发。
 5. **`conn` 不要 import `server`**，用 `conn.Handler` 接口；`bridge` 不要依赖 `Hub` 具体类型，用 `Dispatcher` 接口。破坏这两条会形成循环依赖。
 6. **`Client.Outbound()` 只是旁路副本，仅用于测试与调试**：它不参与投递，消费它不会偷走消息，
    但也不要拿它当业务通道；真实发送一律走 `outQueue` + `writePump`。
@@ -691,6 +712,7 @@ go test -race ./core/db/ ./core/ws/...
 | `preflow` | 快照→决策→navigate→决策→act 全链路、选空白项与对不上菜单都不动界面、navigate 失败不再点入口、需参数入口转 agent、页面不可用/超时/未启用时静默跳过、选项表重名与容错匹配、分类节点剔除（标记/类型/children 三种线索、全分类时不问模型）、快照宽松解析 |
 | `server` · `preflow` | 端到端：chat.send 先 ack，浏览器依次收到 observe/navigate/act，进 agent 的消息带上「界面已就绪」；模型选空白项与未配置时消息原样投递 |
 | `bridge` | 渠道过滤、完成/错误/审批/增量转换、completed 的 delta=false 断言 |
+| `bridge` · `delta_coalescer` | 窗口内拼成一条增量、关键帧前先落地积压且顺序正确、多片段互不混用、累积全文切成真正增量与重复帧丢弃、攒够字节立刻落地、带媒体的帧直发、未 Start / 关掉时逐帧直发、定时器到点只发一次、Close 落地积压、不改写上游共享事件指针 |
 | `replay` | 事件→agent 帧的完整映射、delta 与用量事件被跳过、思考拼接、命令/搜索/工具解析、未知类型降级、截断与 UTF-8 边界、审批与失败帧、帧数与 seq 回填 |
 | `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、token 即身份、自定义 Authenticator、非法 userID 拒绝 |
 | `server` · `core` | 界面操作反向 RPC：`ui.request` 往返、无宿主立即失败、会话不一致拒绝、端到端（工具 → 桥 → ws → 浏览器 → 回执 → 工具文本）、工具入参校验与失败文本化 |
@@ -717,5 +739,9 @@ go test -race ./core/db/ ./core/ws/...
 - **默认不做真实鉴权**：`DefaultAuthenticator` 只把 token 当 userID，不校验有效性（TODO）。上线前务必替换成查库或 JWT 校验。
 - **无用户管理**：没有用户增删改、token 轮换，也没有 per-user 连接数/速率限制（`max_clients` 是全局的）。
 - **无定向推送**：`Broadcast` 面向所有连接。
-- **未做 delta 合并**：弱网下会出现文字跳跃。当前策略是「积压时丢最旧的增量帧」（见 `conn/queue.go`），
-  文字会跳但不会整段空白；若要更平滑，可在 `conn.writePump` 侧再做 per-connection coalescing（16~33ms 窗口），不要动 bridge。
+- **delta 合并在 bridge，不在 `conn.writePump`**：到 `conn` 那一层载荷已经序列化好了，
+  合并只能重新解析 JSON，或者让每个连接各自 marshal 一次，而片段身份（`eventID`）在这一层也不必再读。
+  所以合并放在 `bridge/delta_coalescer.go`（序列化之前、按片段合并），`conn` 的丢帧策略退回成纯兜底。
+  代价是节奏按会话统一：某个慢标签页不会让别的连接拿到更细的帧，真卡死的页面仍由丢弃策略 + 重连补发处理。
+- **合并帧没有周期性全量快照**：被丢弃或跳过的中间文本仍要等 `message_completed` 才收敛（与原策略一致）。
+  若出现「长回答里文字跳得明显」，再考虑加一条秒级的全量快照帧，注意那会重新引入 O(n²) 带宽。

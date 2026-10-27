@@ -11,12 +11,20 @@ type WebSocketConfig struct {
 	ReadTimeout  int    `json:"read_timeout"`  // 读超时（秒），默认 60
 	WriteTimeout int    `json:"write_timeout"` // 写超时（秒），默认 10
 
-	AllowOrigins       []string `json:"allow_origins"`        // 允许的 Origin 白名单，为空表示不限制
-	MaxClients         int      `json:"max_clients"`          // 最大连接数，默认 100
-	SendBuffer         int      `json:"send_buffer"`          // 单连接发送缓冲，默认 256
-	HeartbeatInterval  int      `json:"heartbeat_interval"`   // 心跳间隔（秒），默认 30
-	ForwardAllChannels bool     `json:"forward_all_channels"` // 是否转发所有渠道的事件，默认仅转发 ws 渠道
-	DefaultAgent       string   `json:"default_agent"`        // 前端未指定时使用的 agent
+	AllowOrigins []string `json:"allow_origins"` // 允许的 Origin 白名单，为空表示不限制
+	MaxClients   int      `json:"max_clients"`   // 最大连接数，默认 100
+	SendBuffer   int      `json:"send_buffer"`   // 单连接发送缓冲，默认 256
+
+	// 增量帧合并：把同一轮、同一片段的 message_delta / reasoning_delta 在一个窗口内
+	// 拼成更大的增量帧再发。只降帧数、不升带宽（合并的是增量，不是全文），
+	// 目的是别让 conn 的发送队列因浏览器卡顿而填满 —— 队列一满就丢最旧的 delta，
+	// 界面退化成等 message_completed 一次性刷出来，现象就是「没有流式」。
+	StreamCoalesce         *bool  `json:"stream_coalesce"`           // 默认开启
+	StreamCoalesceMs       int    `json:"stream_coalesce_ms"`        // 合并窗口（毫秒），默认 50
+	StreamCoalesceMaxBytes int    `json:"stream_coalesce_max_bytes"` // 单片段攒到多少字节立刻落地，默认 4096
+	HeartbeatInterval      int    `json:"heartbeat_interval"`        // 心跳间隔（秒），默认 30
+	ForwardAllChannels     bool   `json:"forward_all_channels"`      // 是否转发所有渠道的事件，默认仅转发 ws 渠道
+	DefaultAgent           string `json:"default_agent"`             // 前端未指定时使用的 agent
 	// PageRouter 前置界面路由：消息进 agent 之前，先用决策模型判断要不要替用户打开页面 / 点开入口。
 	// 为空或未启用时完全不影响现有流程。
 	PageRouter *PageRouterConfig `json:"page_router"`
@@ -51,9 +59,21 @@ func (c *WebSocketConfig) SetDefaults() {
 	if c.HeartbeatInterval <= 0 {
 		c.HeartbeatInterval = 30
 	}
+	if c.StreamCoalesceMs <= 0 {
+		c.StreamCoalesceMs = 50
+	}
+	if c.StreamCoalesceMaxBytes <= 0 {
+		c.StreamCoalesceMaxBytes = 4096
+	}
 	if c.PageRouter != nil {
 		c.PageRouter.SetDefaults()
 	}
+}
+
+// StreamCoalesceEnabled 是否合并增量帧（默认开）。关掉后退化成逐帧直发，
+// 弱网/慢页面下会重新出现「丢最旧 delta → 整段一次性刷出」的现象。
+func (c *WebSocketConfig) StreamCoalesceEnabled() bool {
+	return boolOr(c.StreamCoalesce, true)
 }
 
 // PageRouterConfig 前置界面路由配置（决策模型 + 界面动作预算）。
