@@ -240,15 +240,29 @@ func itemStep(ev db.TurnEvent, bodyLimit int) (*protocol.AgentData, string) {
 			Type: types.ToolTypeFunction,
 			Name: name,
 		}
+		extra := map[string]any{}
 		if item.Namespace != "" {
-			call.Extra = map[string]any{"namespace": item.Namespace}
+			extra["namespace"] = item.Namespace
 		}
 		if item.CallId != "" {
-			call.Extra = ensureExtra(call.Extra)
-			call.Extra["callID"] = item.CallId
+			extra["callID"] = item.CallId
+		}
+		// 与实时流保持同一套 extra 字段，前端才能用同一条渲染分支
+		if item.Status != "" {
+			extra["status"] = item.Status
+		}
+		if item.ToolCallItemDetail.Success != nil {
+			extra["success"] = *item.ToolCallItemDetail.Success
+		}
+		if item.DurationMs > 0 {
+			extra["durationMs"] = item.DurationMs
+		}
+		if len(extra) > 0 {
+			call.Extra = extra
 		}
 		call.Params, _ = clip(string(params), bodyLimit)
-		call.Result, data.Truncated = clip(rawText(item.Result), bodyLimit)
+		// 结果在 contentItems 里，result 只是兜底；两条链路共用同一份解析
+		call.Result, data.Truncated = clip(item.ToolCallItemDetail.ResultText(), bodyLimit)
 		data.ToolCalls = []types.ToolCall{call}
 
 	default:

@@ -83,6 +83,63 @@ func Test_lifeEventParse_dynamicToolCall(t *testing.T) {
 	}
 }
 
+// Test_lifeEventParse_toolResultFromContentItems 用线上真实报文验证工具结果能被带出去。
+// codex 的 item/completed 里没有 result 字段，结果在 contentItems[].text；
+// 早期实现只读 result，导致前端永远拿到空结果。
+func Test_lifeEventParse_toolResultFromContentItems(t *testing.T) {
+	started := `{"item":{"type":"dynamicToolCall","id":"call_4d19a68d5f2f4ba7b5f27273","namespace":"base","tool":"send_file","arguments":{"caption":"测试文件重发","file_path":"/workspace/test_file.txt"},"status":"inProgress","contentItems":null,"success":null,"durationMs":null},"threadId":"th","turnId":"tu","startedAtMs":1789434686293}`
+	completed := `{"item":{"type":"dynamicToolCall","id":"call_4d19a68d5f2f4ba7b5f27273","namespace":"base","tool":"send_file","arguments":{"caption":"测试文件重发","file_path":"/workspace/test_file.txt"},"status":"completed","contentItems":[{"type":"inputText","text":"✅ 文件已成功发送"}],"success":true,"durationMs":865},"threadId":"th","turnId":"tu","completedAtMs":1789434687158}`
+
+	parse := func(method codex.NotificationMethod, raw string) *types.Event {
+		state := types.NewState(&types.InputMessage{ID: "req", Session: "ws_user_chat", Channel: "ws"})
+		var got *types.Event
+		state.EventHandler = func(event *types.Event) { got = event }
+		(&Agent{}).codexEventParse(state, &codex.Event{
+			Type:    codex.EventTypeNotification,
+			Method:  string(method),
+			RawData: []byte(raw),
+		})
+		return got
+	}
+
+	startEvent := parse(codex.ItemStarted, started)
+	if startEvent == nil || startEvent.Type != types.EventToolStart {
+		t.Fatalf("开始帧应为 tool_start: %+v", startEvent)
+	}
+	startCall := startEvent.Message.ToolCalls[0]
+	if startCall.Result != "" {
+		t.Fatalf("开始帧不应带结果，实际 %q", startCall.Result)
+	}
+	if startCall.Extra["status"] != "inProgress" {
+		t.Fatalf("开始帧应带 status=inProgress: %+v", startCall.Extra)
+	}
+
+	doneEvent := parse(codex.ItemCompleted, completed)
+	if doneEvent == nil || doneEvent.Type != types.EventToolCompleted {
+		t.Fatalf("完成帧应为 tool_completed: %+v", doneEvent)
+	}
+	doneCall := doneEvent.Message.ToolCalls[0]
+	if doneCall.Result != "✅ 文件已成功发送" {
+		t.Fatalf("结果应取自 contentItems[].text，实际 %q", doneCall.Result)
+	}
+	if doneCall.Name != "send_file" {
+		t.Fatalf("工具名不符: %q", doneCall.Name)
+	}
+	if doneCall.Extra["success"] != true {
+		t.Fatalf("完成帧应带 success: %+v", doneCall.Extra)
+	}
+	if doneCall.Extra["durationMs"] != int64(865) {
+		t.Fatalf("完成帧应带耗时: %+v", doneCall.Extra)
+	}
+	if doneCall.Extra["status"] != "completed" {
+		t.Fatalf("完成帧 status 不符: %+v", doneCall.Extra)
+	}
+	// 同一 item 的开始帧与完成帧必须共享 ID，前端按它覆盖更新同一条工具记录
+	if startEvent.EventID != doneEvent.EventID {
+		t.Fatalf("开始/完成帧 eventID 应一致: %q != %q", startEvent.EventID, doneEvent.EventID)
+	}
+}
+
 // Test_lifeEventParse_startedResultNotLiteralNull 确认开始帧不会把 null 结果渲染成字面量。
 func Test_lifeEventParse_startedResultNotLiteralNull(t *testing.T) {
 	raw := `{"item":{"id":"item_2","type":"dynamicToolCall","tool":"read_file","arguments":{},"result":null}}`

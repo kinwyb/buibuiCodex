@@ -302,14 +302,21 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 			Type:   types.ToolTypeFunction,
 			Name:   item.ToolCallItemDetail.Tool,
 			Params: toolParamsText(item.ToolCallItemDetail.Arguments),
-			Result: rawJSONText(item.ToolCallItemDetail.Result),
+			Result: item.ToolCallItemDetail.ResultText(),
 			Extra:  make(map[string]any),
 		}
 		if item.ToolCallItemDetail.Namespace != "" {
 			calls.Extra["namespace"] = item.ToolCallItemDetail.Namespace
 		}
-		if item.ToolCallItemDetail.CallId != "" {
-			calls.Extra["call_id"] = item.ToolCallItemDetail.CallId
+		// 报文里没有 callId，item.ID 本身就是 call_xxx，回给模型时用的就是它
+		if item.Status != "" {
+			calls.Extra["status"] = item.Status
+		}
+		if item.ToolCallItemDetail.Success != nil {
+			calls.Extra["success"] = *item.ToolCallItemDetail.Success
+		}
+		if item.DurationMs > 0 {
+			calls.Extra["durationMs"] = item.DurationMs
 		}
 		msg.ToolCalls = append(msg.ToolCalls, calls)
 		eType = types.EventToolStart

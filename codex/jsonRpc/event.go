@@ -1,6 +1,10 @@
 package jsonRpc
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
 
 // EventNotification 统一下发事件包装
 type EventNotification struct {
@@ -56,13 +60,65 @@ type itemlifecycle struct {
 	ToolCallItemDetail
 }
 
-// ToolCallItemDetail 函数调用
+// ToolCallItemDetail 函数调用。
+//
+// 注意字段来源：codex 的 item/completed 里工具结果是 contentItems，不是 result，
+// 后者在本协议中并不存在（全库事件无一例带 result）。只读 result 会让工具结果永远为空。
+// status / durationMs 与本结构体的兄弟 CommandExecutionItemDetail 同名，共用同一 tag，
+// 这里不再重复声明，直接读 item.Status / item.DurationMs。
 type ToolCallItemDetail struct {
-	CallId    string          `json:"callId"`
-	Namespace string          `json:"namespace"`
-	Tool      string          `json:"tool"`
-	Arguments map[string]any  `json:"arguments"`
-	Result    json.RawMessage `json:"result"`
+	CallId       string                  `json:"callId"`
+	Namespace    string                  `json:"namespace"`
+	Tool         string                  `json:"tool"`
+	Arguments    map[string]any          `json:"arguments"`
+	Result       json.RawMessage         `json:"result"`
+	Success      *bool                   `json:"success"`
+	ContentItems []ToolOutputContentItem `json:"contentItems"`
+}
+
+// ToolOutputContentItem 工具输出项，对应 codex 的 DynamicToolCallResponse.contentItems。
+// 与回给 codex 的 ToolResponse.Content 是同一份结构的两个视角。
+type ToolOutputContentItem struct {
+	// Type 取值 inputText | inputImage | inputAudio
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"imageUrl,omitempty"`
+	AudioURL string `json:"audioUrl,omitempty"`
+}
+
+// ResultText 取工具执行结果的文本形式，供实时流与历史回放共用。
+//
+// 结果的主载体是 contentItems（codex 的 item/completed 里没有 result 字段），
+// result 只在少数版本回填，作为兜底放在后面。逻辑集中在这里，避免两条解析路径各写一份。
+func (d ToolCallItemDetail) ResultText() string {
+	if text := rawJSONText(d.Result); text != "" {
+		return text
+	}
+	parts := make([]string, 0, len(d.ContentItems))
+	for _, item := range d.ContentItems {
+		switch {
+		case item.Text != "":
+			parts = append(parts, item.Text)
+		case item.ImageURL != "":
+			parts = append(parts, "[图片] "+item.ImageURL)
+		case item.AudioURL != "":
+			parts = append(parts, "[音频] "+item.AudioURL)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// rawJSONText 把 json.RawMessage 转成可读文本：null / 空 给空串，
+// JSON 字符串去引号，结构化内容保留原文。
+func rawJSONText(raw json.RawMessage) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ""
+	}
+	if unquoted, err := strconv.Unquote(text); err == nil {
+		return unquoted
+	}
+	return text
 }
 
 // ReasoningItemDetail 对应 type: "reasoning" (深度思考/思维链节点)
