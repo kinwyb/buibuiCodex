@@ -180,3 +180,36 @@ func TestUINavigatePassesViewAndQuery(t *testing.T) {
 		t.Fatal("view 与 query 都为空时应失败")
 	}
 }
+
+func TestUIResponseForwardsPatchToModel(t *testing.T) {
+	// 小调整时前端只回 patch 不回完整快照：补丁必须原样进工具结果，
+	// 否则模型看到「执行成功但什么界面信息都没有」，只能重新 observe。
+	patch := `[{"op":"replace","path":"/filters/workPlace","value":"越南"}]`
+	transport := &fakeUITransport{resp: &protocol.UIResponseData{
+		OK:     true,
+		Rev:    5,
+		Result: json.RawMessage(`"筛选条件已更新"`),
+		Patch:  json.RawMessage(patch),
+	}}
+	tool := &UIActTool{bridge: testUIBridge(transport)}
+
+	msg, err := tool.Execute(context.Background(), testState("ws_u1_c1"), map[string]any{"cmd": "filter.set"})
+	if err != nil {
+		t.Fatalf("执行命令应成功，实际失败: %v", err)
+	}
+	var out struct {
+		OK       bool            `json:"ok"`
+		Rev      int64           `json:"rev"`
+		Snapshot json.RawMessage `json:"snapshot"`
+		Patch    json.RawMessage `json:"patch"`
+	}
+	if err := json.Unmarshal([]byte(msg.Content), &out); err != nil {
+		t.Fatalf("返回内容应是 JSON: %v (%s)", err, msg.Content)
+	}
+	if string(out.Patch) != patch {
+		t.Fatalf("补丁应原样交给模型，实际 %s", out.Patch)
+	}
+	if out.Snapshot != nil {
+		t.Fatalf("前端没回快照时不该凭空造一个，实际 %s", out.Snapshot)
+	}
+}

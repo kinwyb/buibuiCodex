@@ -32,6 +32,15 @@ const (
 	uiOpNavigate = "navigate"
 )
 
+// patchHint 界面回执里增量补丁的读法。
+//
+// 页面对后端是黑盒：快照与补丁的内容都由前端定义，服务端只透传。
+// 所以「patch 是什么、该怎么用」只能靠工具描述告诉模型，
+// 否则模型看到只有 patch 的回执会以为页面没返回数据。
+const patchHint = "回执可能只带 patch（对上一次快照的增量修改）而不带完整 snapshot：" +
+	"看到 patch 就把它合入上一轮的快照当作最新页面，不要当成缺失数据；" +
+	"拿不准或页面变化很大时再 ui_observe 取完整 snapshot。"
+
 // UITransport 把「服务端 → 浏览器」的反向请求能力注入给界面工具。
 //
 // 由 *ws.Server 实现（见 core/ws/server/ui.go 的 Request）。
@@ -107,7 +116,8 @@ func (t *UIObserveTool) Description() string {
 		"要改变它们必须执行 actions 里对应的命令（例如「设置筛选条件」那条）。" +
 		"commands 之外不存在任何操作入口。" +
 		"guide 是这一页的操作说明（顺序、前置条件、业务术语）；" +
-		"用户停在主页、没打开任何业务页面时，快照会带 navigation 列出可打开的页面，用 ui_navigate 打开。"
+		"用户停在主页、没打开任何业务页面时，快照会带 navigation 列出可打开的页面，用 ui_navigate 打开。" +
+		patchHint
 }
 
 func (t *UIObserveTool) Parameters() types.ToolParams {
@@ -135,10 +145,11 @@ func (t *UIActTool) Name() string { return "ui_act" }
 func (t *UIActTool) Description() string {
 	return "执行一条界面命令。cmd 必须取自最近一次 ui_observe 返回的 actions[].id，" +
 		"并带上同一次快照的 rev；params 按该 action 的 params 声明构造（键名即参数名），" +
-		"没有 params 声明就表示这条命令不需要参数。返回执行结果与执行后的新快照。" +
+		"没有 params 声明就表示这条命令不需要参数。返回执行结果与执行后的新快照或增量补丁。" +
 		"返回的快照是尽力而为的最新视图（命令可能还在异步落定）；需要权威状态时再 ui_observe 一次。 " +
 		"失败（rev 已过期、命令不再可用、参数不合法）会返回具体原因，此时应重新 ui_observe 再决定下一步。" +
-		"不要凭猜测构造命令 id 或参数名：快照里没有的就一定不存在。"
+		"不要凭猜测构造命令 id 或参数名：快照里没有的就一定不存在。" +
+		patchHint
 }
 
 func (t *UIActTool) Parameters() types.ToolParams {
@@ -278,7 +289,8 @@ func uiResponseMessage(resp *protocol.UIResponseData) *types.InputMessage {
 		Rev      int64           `json:"rev,omitempty"`
 		Snapshot json.RawMessage `json:"snapshot,omitempty"`
 		Result   json.RawMessage `json:"result,omitempty"`
-	}{OK: true, Rev: resp.Rev, Snapshot: resp.Snapshot, Result: resp.Result}
+		Patch    json.RawMessage `json:"patch,omitempty"`
+	}{OK: true, Rev: resp.Rev, Snapshot: resp.Snapshot, Result: resp.Result, Patch: resp.Patch}
 	return &types.InputMessage{Content: encodeJSON(out)}
 }
 

@@ -366,4 +366,6 @@ type UIResponseData struct {
 	Snapshot json.RawMessage `json:"snapshot,omitempty"`
 	// Result 命令自身的执行结果
 	Result json.RawMessage `json:"result,omitempty"`
+	// Patch 快照补丁,小调整不再依赖完整获取快照
+	Patch json.RawMessage `json:"patch,omitempty"`
 }

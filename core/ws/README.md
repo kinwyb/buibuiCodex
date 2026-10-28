@@ -288,7 +288,7 @@ delta == false   全量快照，整体覆盖当前消息
 | 方向 | kind / type | 说明 |
 | --- | --- | --- |
 | 下行 | `ui` / `ui.request` | `data.op` 三选一：`observe` 取快照 / `act` 执行命令（带 `cmd`、`params`、`rev`）/ `navigate` 打开或切换页面（带 `view`，或只给 `query` 搜菜单） |
-| 上行 | `client` / `ui.response` | `replyTo` 指回请求 ID；`data` 为 `{ok, error?, rev?, snapshot?, result?}` |
+| 上行 | `client` / `ui.response` | `replyTo` 指回请求 ID；`data` 为 `{ok, error?, rev?, snapshot?, result?, patch?}` |
 
 约定：
 
@@ -300,8 +300,12 @@ delta == false   全量快照，整体覆盖当前消息
   **没有订阅者时立即失败**（`ErrNoUIHost`），不会白等到超时。
 - 服务端同步等待回执，默认超时 10s（`Options.UIRequestTimeout`）。超时、无宿主、连接断开
   都会作为工具失败告知 agent，而不是静默返回空快照。
-- 载荷里的 `snapshot` / `result` / `params` 对服务端是**透传**的 `json.RawMessage`：
+- 载荷里的 `snapshot` / `result` / `patch` / `params` 对服务端是**透传**的 `json.RawMessage`：
   服务端不理解业务结构，页面结构的变化只影响前端与工具描述。
+- `patch` 是**对上一次快照的增量修改**：页面只做了小调整时，前端可以只回 `patch` 不回 `snapshot`，
+  省掉重复的大快照。它原样进工具结果（`ui_tools.go` 的 `uiResponseMessage`），怎么合入上一轮快照由模型判断。
+  因此 `observe` / `navigate` 必须回**完整快照**：前置路由（`preflow`）只认 `snapshot`，
+  拿到空快照会直接判定「取页面快照失败」，patch 对它是不可见的。
 - 同一会话有多个页面连接时，请求会投给全部连接，先回执者胜出；要精确到某个标签页
   需要引入 `targetID`（当前未实现）。
 
