@@ -1,11 +1,61 @@
 package cdm
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/kinwyb/buibuiCodex/codex"
+	"github.com/kinwyb/buibuiCodex/core/config"
+	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
 )
+
+// TestClientEventClearsTurnDelta 覆盖增量事件的回收时机：
+// 事件照旧落库，但 item/completed 一到，该轮逐 token 的 delta 必须被清掉；
+// 清理按 turn 隔离，不能动其他轮次的增量。
+func TestClientEventClearsTurnDelta(t *testing.T) {
+	storage, err := db.NewSQLiteStorage(filepath.Join(t.TempDir(), "cdm.db"))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	data := db.NewData(storage)
+	defer data.Close()
+
+	sess := data.Session()
+	ctx := context.Background()
+	a := NewAgent(&config.AgentConfig{Name: "codex", SessionDB: sess}, 0)
+
+	notify := func(method codex.NotificationMethod, turnID, raw string) {
+		a.clientEvent(&codex.Event{
+			Type:    codex.EventTypeNotification,
+			Method:  string(method),
+			TurnID:  turnID,
+			RawData: []byte(raw),
+		})
+	}
+
+	notify(codex.ItemAgentMessageDelta, "u1", `{"itemId":"i1","delta":"你"}`)
+	notify(codex.ItemAgentMessageDelta, "u1", `{"itemId":"i1","delta":"好"}`)
+	notify(codex.ItemAgentMessageDelta, "u2", `{"itemId":"i2","delta":"保"}`)
+	notify(codex.ItemCompleted, "u1", `{"item":{"id":"i1","type":"agentMessage","text":"你好"}}`)
+
+	u1, err := sess.TurnEventList(ctx, db.TurnEventQuery{TurnIDs: []string{"u1"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(u1) != 1 || u1[0].Method != string(codex.ItemCompleted) {
+		t.Fatalf("u1 应只剩 item/completed，实际 %+v", u1)
+	}
+
+	u2, err := sess.TurnEventList(ctx, db.TurnEventQuery{TurnIDs: []string{"u2"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(u2) != 1 || u2[0].Method != string(codex.ItemAgentMessageDelta) {
+		t.Fatalf("u2 的增量不应被清理，实际 %+v", u2)
+	}
+}
 
 // Test_lifeEventParse_dynamicToolCall 覆盖回归场景：
 // dynamicToolCall 的 item/started、item/completed 必须产出 tool_start / tool_completed，

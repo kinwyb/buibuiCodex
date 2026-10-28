@@ -6,7 +6,8 @@
 //
 // 只还原关键帧（item 生命周期、审批、错误），不重放 token 级 delta：
 // 回放是给人检查「哪一步出了问题」用的，逐帧打字机对判断毫无帮助，
-// 却会让载荷膨胀几个数量级。delta 在库里仍然完整保留，需要时按 method 再取。
+// 却会让载荷膨胀几个数量级。delta 只在生成过程中存在于库里——
+// item/completed 一到就会被清理（见 cdm.clientEvent），回放本就拿不到它们。
 package replay
 
 import (

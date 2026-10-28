@@ -121,7 +121,8 @@ type TurnEventQuery struct {
 	// ThreadID 线程标识，与 TurnIDs 二选一
 	ThreadID string
 	// Methods 只取这些 method 的事件。
-	// 逐 token 的 delta 也在表里，回放时传关键帧白名单可把行数压到千分之一。
+	// 生成过程中逐 token 的 delta 也会落库（item 完成即被清理），
+	// 回放时传关键帧白名单可把行数压到千分之一。
 	Methods []string
 	// AfterSeq 只取 seq 大于该值的事件，用于向后翻页
 	AfterSeq uint
@@ -228,6 +229,11 @@ type ISession interface {
 	TurnEventSave(ctx context.Context, turn *TurnEvent) error
 	// TurnEventList 按轮次/线程查询会话事件，结果按 seq 升序返回
 	TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error)
+	// TurnEventDeleteByMethods 删除某轮下指定 method 的事件。
+	// 用于在 item 结束后丢弃逐 token 的增量帧：完整内容已随 item/completed 落库，
+	// 这些碎片不再参与回放，留着只会让 turn_events 无限膨胀。
+	// turnID 或 methods 为空时不做任何事，避免误删整表。
+	TurnEventDeleteByMethods(ctx context.Context, turnID string, methods []string) error
 	// TurnTokenUsage 根据 turnID 更新本轮的 token 用量，
 	// contextWindow 为模型上下文窗口（0 表示上游未提供，保留原值）
 	TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage, contextWindow int64) error
@@ -294,6 +300,10 @@ func (s *sessionDefautStorage) TurnEventSave(ctx context.Context, turn *TurnEven
 
 func (s *sessionDefautStorage) TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error) {
 	return nil, nil
+}
+
+func (s *sessionDefautStorage) TurnEventDeleteByMethods(ctx context.Context, turnID string, methods []string) error {
+	return nil
 }
 
 func (s *sessionDefautStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage, contextWindow int64) error {
@@ -584,6 +594,16 @@ func (s *sessionStorage) TurnEventList(ctx context.Context, query TurnEventQuery
 		return nil, err
 	}
 	return list, nil
+}
+
+func (s *sessionStorage) TurnEventDeleteByMethods(ctx context.Context, turnID string, methods []string) error {
+	// 缺任一条都退化为无条件删除，因此这里必须显式挡住
+	if turnID == "" || len(methods) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).
+		Where("turn_id = ? AND method IN ?", turnID, methods).
+		Delete(&TurnEvent{}).Error
 }
 
 func (s *sessionStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage, contextWindow int64) error {

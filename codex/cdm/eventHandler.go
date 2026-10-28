@@ -17,8 +17,25 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/types"
 )
 
+// deltaEventMethods 增量事件的 method 清单：逐 token 的文本增量与命令/文件输出流。
+// 这类事件只在生成过程中有意义——item 一完成，完整内容就随 item/completed 落库了，
+// 碎片再留着既不能用于回放（回放只取关键帧），又会让 turn_events 表无限膨胀。
+var deltaEventMethods = []string{
+	string(codex.ItemAgentMessageDelta),
+	string(codex.ItemReasoningTextDelta),
+	string(codex.ItemReasoningSummaryTextDelta),
+	string(codex.ItemPlanDelta),
+	string(codex.ItemCommandExecutionOutputDelta),
+	string(codex.ItemFileChangeOutputDelta),
+	string(codex.CommandExecOutputDelta),
+	string(codex.ProcessOutputDelta),
+}
+
 // clientEvent 这里可以获取到所有客户的事件,注意这里事件和thread，turn等事件是重复分发的,注意重复处理问题
 func (a *Agent) clientEvent(event *codex.Event) {
+	if a.cfg == nil || a.cfg.SessionDB == nil {
+		return
+	}
 	// 将事件保存入数据库
 	dbErr := a.cfg.SessionDB.TurnEventSave(context.Background(), &db.TurnEvent{
 		ID:         uuid.NewV4().String(),
@@ -31,6 +48,14 @@ func (a *Agent) clientEvent(event *codex.Event) {
 	})
 	if dbErr != nil {
 		slog.Error("fail to save db thread event", "error", dbErr.Error())
+	}
+	// item 结束即回收该轮的增量事件。codex 的 item 在一轮内是串行的，
+	// 此刻已完成 item 的 delta 全部失效，未开始 item 的 delta 尚未产生，
+	// 因此按 turn 粒度清理是安全的，而且不必逐 item 比对 ID。
+	if codex.NotificationMethod(event.Method) == codex.ItemCompleted {
+		if err := a.cfg.SessionDB.TurnEventDeleteByMethods(context.Background(), event.TurnID, deltaEventMethods); err != nil {
+			slog.Error("fail to delete turn delta events", "error", err.Error(), "turnID", event.TurnID)
+		}
 	}
 }
 

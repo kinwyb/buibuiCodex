@@ -292,6 +292,72 @@ func TestTurnEventListAfterSeq(t *testing.T) {
 	}
 }
 
+func TestTurnEventDeleteByMethodsScopesTurn(t *testing.T) {
+	s := newTestSessionStorage(t)
+	ctx := context.Background()
+	base := time.Now()
+
+	events := []TurnEvent{
+		{ID: "d1", ThreadID: "t1", TurnID: "u1", Method: "item/agentMessage/delta", RawData: `{"itemId":"i1","delta":"你"}`, CreateTime: base},
+		{ID: "d2", ThreadID: "t1", TurnID: "u1", Method: "item/reasoning/textDelta", RawData: `{"itemId":"i1","delta":"想"}`, CreateTime: base},
+		{ID: "k1", ThreadID: "t1", TurnID: "u1", Method: "item/completed", RawData: `{"item":{"id":"i1","type":"agentMessage","text":"你想"}}`, CreateTime: base},
+		// 另一轮的增量不在清理范围内
+		{ID: "d3", ThreadID: "t1", TurnID: "u2", Method: "item/agentMessage/delta", RawData: `{"itemId":"i2","delta":"保"}`, CreateTime: base},
+		{ID: "k2", ThreadID: "t1", TurnID: "u2", Method: "item/completed", RawData: `{"item":{"id":"i2","type":"agentMessage","text":"保留"}}`, CreateTime: base},
+	}
+	for i := range events {
+		if err := s.TurnEventSave(ctx, &events[i]); err != nil {
+			t.Fatalf("写入事件失败: %v", err)
+		}
+	}
+
+	deltas := []string{"item/agentMessage/delta", "item/reasoning/textDelta"}
+	if err := s.TurnEventDeleteByMethods(ctx, "u1", deltas); err != nil {
+		t.Fatalf("删除增量事件失败: %v", err)
+	}
+
+	left, err := s.TurnEventList(ctx, TurnEventQuery{TurnIDs: []string{"u1"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(left) != 1 || left[0].Method != "item/completed" {
+		t.Fatalf("u1 应只剩 item/completed，实际 %+v", left)
+	}
+
+	other, err := s.TurnEventList(ctx, TurnEventQuery{TurnIDs: []string{"u2"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(other) != 2 {
+		t.Fatalf("u2 的事件不应被清理，实际 %d 条: %+v", len(other), other)
+	}
+}
+
+func TestTurnEventDeleteByMethodsRequiresScope(t *testing.T) {
+	s := newTestSessionStorage(t)
+	ctx := context.Background()
+	ev := &TurnEvent{ID: "d1", ThreadID: "t1", TurnID: "u1", Method: "item/agentMessage/delta", CreateTime: time.Now()}
+	if err := s.TurnEventSave(ctx, ev); err != nil {
+		t.Fatalf("写入事件失败: %v", err)
+	}
+
+	// 任一条缺失都可能退化成无条件删除，必须原样保留数据
+	if err := s.TurnEventDeleteByMethods(ctx, "", []string{"item/agentMessage/delta"}); err != nil {
+		t.Fatalf("空 turnID 不应报错: %v", err)
+	}
+	if err := s.TurnEventDeleteByMethods(ctx, "u1", nil); err != nil {
+		t.Fatalf("空 methods 不应报错: %v", err)
+	}
+
+	list, err := s.TurnEventList(ctx, TurnEventQuery{TurnIDs: []string{"u1"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("缺少范围条件时不应删除任何数据，实际剩 %d 条", len(list))
+	}
+}
+
 func TestTurnEventListRequiresScope(t *testing.T) {
 	s := newTestSessionStorage(t)
 	if _, err := s.TurnEventList(context.Background(), TurnEventQuery{}); err == nil {
