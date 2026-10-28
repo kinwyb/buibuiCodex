@@ -127,6 +127,27 @@ type PongData struct {
 	ServerTS int64 `json:"serverTS"`
 }
 
+// FileInfo 文件元信息：上传接口的响应体，也是 chat.send 里 fileIDs 指向的对象。
+//
+// URL 是相对地址（形如 /ws/files/<id>），前端拼上自己的 host 与 token 即可访问：
+// 加 ?download=1 触发另存，不加则按 MIME 内联展示（图片、文本、PDF 可直接渲染）。
+type FileInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+	// Mime 由文件名后缀推断，取不到时为空，下载时会再嗅探一次
+	Mime string `json:"mime,omitempty"`
+	// URL 相对访问地址
+	URL string `json:"url"`
+	// ExpiresAt 毫秒时间戳，过期后 fileID 失效
+	ExpiresAt int64 `json:"expiresAt,omitempty"`
+}
+
+// FileListData 文件列表（GET /ws/files 的响应）
+type FileListData struct {
+	Items []FileInfo `json:"items"`
+}
+
 // AgentListData agent 列表
 type AgentListData struct {
 	Agents       []AgentInfo `json:"agents"`
@@ -143,8 +164,12 @@ type ChatSendData struct {
 	Agent string `json:"agent,omitempty"`
 	// Content 文本内容
 	Content string `json:"content,omitempty"`
-	// Media 媒体文件
+	// Media 媒体文件。小图可以直接内联 base64，但单帧上限 1MB（见 MaxMessageSize），
+	// 稍大的文件请先走文件上传接口拿 fileID，再用 FileIDs 引用。
 	Media []types.Media `json:"media,omitempty"`
+	// FileIDs 已上传文件的标识，按顺序追加到 Media 之后。
+	// 服务端会取出真实路径与文件名，拼成 Media 再投递，因此帧里不需要带文件内容。
+	FileIDs []string `json:"fileIDs,omitempty"`
 	// Metadata 元数据
 	Metadata map[string]any `json:"metadata,omitempty"`
 }

@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // WebSocketConfig WebSocket 服务配置
 type WebSocketConfig struct {
@@ -25,6 +28,16 @@ type WebSocketConfig struct {
 	HeartbeatInterval      int    `json:"heartbeat_interval"`        // 心跳间隔（秒），默认 30
 	ForwardAllChannels     bool   `json:"forward_all_channels"`      // 是否转发所有渠道的事件，默认仅转发 ws 渠道
 	DefaultAgent           string `json:"default_agent"`             // 前端未指定时使用的 agent
+	// Channel 入站消息的渠道标识。会话键形如 <channel>_<userID>_<chatID>，
+	// 同时决定 agent 的 send_file 请求回流到哪个通道。留空用 "ws"。
+	Channel string `json:"channel"`
+	// 文件收发：上传落盘目录、单文件上限、保留时长。
+	// FileDir 为空时用 ./tmp/ws，上限默认 50MB，保留默认 24 小时。
+	// 上行附件最终会被 core.Manager 移到 agent 工作区的 tmp 下，
+	// 所以这里的目录只需是本机可写路径，不必与 agent 工作区重合。
+	FileDir       string `json:"file_dir"`
+	MaxUploadSize int64  `json:"max_upload_size"` // 单文件字节上限
+	FileTTL       int    `json:"file_ttl"`        // 文件保留时长（秒）
 	// PageRouter 前置界面路由：消息进 agent 之前，先用决策模型判断要不要替用户打开页面 / 点开入口。
 	// 为空或未启用时完全不影响现有流程。
 	PageRouter *PageRouterConfig `json:"page_router"`
@@ -65,9 +78,34 @@ func (c *WebSocketConfig) SetDefaults() {
 	if c.StreamCoalesceMaxBytes <= 0 {
 		c.StreamCoalesceMaxBytes = 4096
 	}
+	if c.Channel == "" {
+		c.Channel = "ws"
+	}
+	if c.MaxUploadSize <= 0 {
+		c.MaxUploadSize = DefaultMaxUploadSize
+	}
+	if c.FileTTL <= 0 {
+		c.FileTTL = int(DefaultFileTTL.Seconds())
+	}
 	if c.PageRouter != nil {
 		c.PageRouter.SetDefaults()
 	}
+}
+
+const (
+	// DefaultMaxUploadSize 单文件默认上限 50MB。
+	// ws 单帧限制 1MB，所以大文件必须走 HTTP 上传端点，不能塞在 chat.send 里。
+	DefaultMaxUploadSize int64 = 50 << 20
+	// DefaultFileTTL 文件默认保留 24 小时
+	DefaultFileTTL = 24 * time.Hour
+)
+
+// FileTTLDuration 文件保留时长
+func (c *WebSocketConfig) FileTTLDuration() time.Duration {
+	if c.FileTTL <= 0 {
+		return DefaultFileTTL
+	}
+	return time.Duration(c.FileTTL) * time.Second
 }
 
 // StreamCoalesceEnabled 是否合并增量帧（默认开）。关掉后退化成逐帧直发，

@@ -376,7 +376,17 @@ func (a *Agent) buildInput(turn *codex.Turn, message *types.InputMessage, inputs
 				result = turn.BuildInputWithImage("data:"+item.MimeType+";base64,"+item.Base64, result...)
 			}
 		} else if item.Type == types.MediaTypeFile {
-			filename := item.Metadata["filename"].(string)
+			// metadata 可能为空：外部渠道未必填 filename，缺了就按路径末段或随机名兜底。
+			// 这里不能直接做 .(string) 单值断言——值不存在时会 panic，整轮对话直接断掉。
+			filename := ""
+			if item.Metadata != nil {
+				if v, ok := item.Metadata["filename"].(string); ok {
+					filename = v
+				}
+			}
+			if filename == "" && item.URL != "" && !strings.HasPrefix(item.URL, "http") {
+				filename = filepath.Base(item.URL)
+			}
 			if filename == "" {
 				filename = uuid.NewV4().String()
 			}

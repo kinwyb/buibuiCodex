@@ -14,6 +14,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
+	"github.com/kinwyb/buibuiCodex/core/ws/filestore"
 	"github.com/kinwyb/buibuiCodex/core/ws/preflow"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
 )
@@ -49,6 +50,9 @@ type Deps struct {
 	Channel      string     // 入站消息的渠道标识
 	DefaultAgent string     // 前端未指定时使用的 agent
 	Preflow      Preflow    // 界面前置路由，为空表示不启用
+	// Files 文件存储，用于把 chat.send 里的 fileID 还原成本地路径。
+	// 为空时 fileIDs 不可用（只有内联 media 能走通）。
+	Files *filestore.Store
 }
 
 // Preflow 用户消息进入 agent 之前的界面路由，由 preflow.Router 实现。

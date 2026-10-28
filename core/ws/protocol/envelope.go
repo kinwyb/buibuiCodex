@@ -79,12 +79,16 @@ const (
 const (
 	CodeBadRequest     = "bad_request"      // 请求结构或参数不合法
 	CodeUnauthorized   = "unauthorized"     // 鉴权失败
-	CodeForbidden      = "forbidden"        // 越权访问其他用户的会话
+	CodeForbidden      = "forbidden"        // 越权访问其他用户的会话或文件
 	CodeUnsupported    = "unsupported"      // 未支持的消息类型
 	CodeAgentNotFound  = "agent_not_found"  // 指定的 agent 不存在
 	CodeBusy           = "busy"             // 服务繁忙
 	CodeTooManyClients = "too_many_clients" // 连接数超过上限
 	CodeInternal       = "internal"         // 服务端内部错误
+	CodeFileNotFound   = "file_not_found"   // 文件不存在或已过期
+	CodeFileTooLarge   = "file_too_large"   // 超过单文件上限
+	CodeUploadFailed   = "upload_failed"    // 上传写入失败
+	CodeFileRequired   = "file_required"    // 上传未带文件字段
 )
 
 // Envelope 传输信封，上下行统一结构

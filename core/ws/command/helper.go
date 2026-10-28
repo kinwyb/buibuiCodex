@@ -3,8 +3,24 @@
 package command
 
 import (
+	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/kinwyb/buibuiCodex/core/types"
 )
+
+// mediaTypeByName 按扩展名判断媒体类型，图片/音频单独归类，其余按文档处理
+func mediaTypeByName(name string) types.MediaType {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico", ".heic":
+		return types.MediaTypeImage
+	case ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".amr", ".silk":
+		return types.MediaTypeAudio
+	default:
+		return types.MediaTypeFile
+	}
+}
 
 // truncateRunes 按字符数截断，超出时补省略号
 func truncateRunes(s string, limit int) string {

@@ -19,9 +19,13 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/ws/bridge"
 	"github.com/kinwyb/buibuiCodex/core/ws/command"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
+	"github.com/kinwyb/buibuiCodex/core/ws/filestore"
 	"github.com/kinwyb/buibuiCodex/core/ws/preflow"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
 )
+
+// defaultUploadLimit 兜底的单文件上限，与 config.DefaultMaxUploadSize 保持一致
+const defaultUploadLimit int64 = 50 << 20
 
 // Authenticator 由 token 解析连接身份。
 //
@@ -60,6 +64,9 @@ type Options struct {
 	// 为空且 websocket.page_router.enabled 时，按配置里的地址与密钥自己建一个；
 	// 留出这个注入点是为了测试与自定义网关。
 	PreflowDecider preflow.Decider
+	// Files 文件存储。为空时按 cfg.FileDir / cfg.FileTTL 自建，
+	// 注入的场景是测试，或多个 Server 实例共享同一目录。
+	Files *filestore.Store
 }
 
 // Server WebSocket 服务
@@ -87,6 +94,13 @@ type Server struct {
 	uiMu      sync.Mutex
 	uiPending map[string]*uiPending
 	uiTimeout time.Duration
+
+	// 文件收发：存储按需初始化（见 files.go）
+	fileStore *filestore.Store
+	filesOnce sync.Once
+	// syncHandlerRegistered 记录本通道是否已接管 bus 的同步请求，
+	// 重复 Start / Stop 时避免反复订阅与误删别人的 handler
+	syncHandlerRegistered bool
 }
 
 // New 创建 WebSocket 服务
@@ -96,8 +110,13 @@ func New(opts Options) *Server {
 	}
 	opts.Config.SetDefaults()
 	if opts.Channel == "" {
-		//opts.Channel = "ws"
-		opts.Channel = "wxcom:work"
+		// 渠道标识决定会话键前缀，也决定 agent 的 send_file 请求回流到哪：
+		// 用 "ws" 才能把文件回给浏览器；用其它渠道名（例如共用企业微信会话）
+		// 时，文件会被对应通道接管，web 端收不到。
+		opts.Channel = opts.Config.Channel
+	}
+	if opts.Channel == "" {
+		opts.Channel = "ws"
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
@@ -144,6 +163,8 @@ func New(opts Options) *Server {
 		Channel:      opts.Channel,
 		DefaultAgent: opts.Config.DefaultAgent,
 		Preflow:      s.newPreflow(),
+		// 与 HTTP 端点共用同一个存储实例：上传拿到的 fileID 必须在 chat.send 里认得
+		Files: s.files(),
 	})
 	// 浏览器回执走 client 域，注册在这里由 server 认领等待中的请求
 	s.commands.Register(protocol.TypeUIResponse, s.handleUIResponse)
@@ -168,6 +189,8 @@ func (s *Server) Start(ctx context.Context) error {
 	addr := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.cfg.Path, s.handleWebSocket)
+	// 文件端点挂在同一个端口上：字节走 HTTP，ws 只传 fileID（见 files.go）
+	s.registerFileRoutes(mux)
 
 	s.mu.Lock()
 	if s.running {
@@ -208,8 +231,46 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go msgBridge.Run(ctx)
 
-	s.log.Info("websocket server started", "addr", addr, "path", s.cfg.Path)
+	// 接管本通道的同步请求：agent 的 send_file 按 channel 路由到这里，
+	// 由 ws 登记文件并把下载地址推回浏览器。换个渠道标识就等于关掉这个能力。
+	if err := s.attachSyncHandler(); err != nil {
+		s.log.Error("websocket register sync handler failed", "channel", s.opts.Channel, "error", err)
+	}
+	go s.gcLoop(ctx)
+
+	s.log.Info("websocket server started", "addr", addr, "path", s.cfg.Path,
+		"files", s.fileBase(), "channel", s.opts.Channel)
 	return nil
+}
+
+// attachSyncHandler 把自己注册为当前渠道的同步请求处理器
+func (s *Server) attachSyncHandler() error {
+	s.mu.Lock()
+	if s.syncHandlerRegistered || s.opts.Bus == nil {
+		s.mu.Unlock()
+		return nil
+	}
+	s.syncHandlerRegistered = true
+	s.mu.Unlock()
+
+	if err := s.opts.Bus.SubscribeSyncHandler(s.opts.Channel, s.handleSyncRequest); err != nil {
+		s.mu.Lock()
+		s.syncHandlerRegistered = false
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// detachSyncHandler 撤销订阅，避免服务停了还把请求吸过来
+func (s *Server) detachSyncHandler() {
+	s.mu.Lock()
+	registered := s.syncHandlerRegistered
+	s.syncHandlerRegistered = false
+	s.mu.Unlock()
+	if registered && s.opts.Bus != nil {
+		_ = s.opts.Bus.UnsubscribeSyncHandler(s.opts.Channel)
+	}
 }
 
 // Stop 停止服务并关闭所有连接
@@ -228,6 +289,8 @@ func (s *Server) Stop(ctx context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
+	// 先撤同步请求订阅：服务要停了，send_file 不该再往这里路由
+	s.detachSyncHandler()
 	if msgBridge != nil {
 		msgBridge.Close()
 	}

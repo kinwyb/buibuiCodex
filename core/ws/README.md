@@ -33,7 +33,11 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
   "read_timeout": 60,
   "write_timeout": 10,
   "forward_all_channels": false,
-  "default_agent": "codex"
+  "default_agent": "codex",
+  "channel": "ws",
+  "file_dir": "./tmp/ws",
+  "max_upload_size": 52428800,
+  "file_ttl": 86400
 }
 ```
 
@@ -53,6 +57,10 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
 | `write_timeout` | 10 | 单次写超时（秒） |
 | `forward_all_channels` | false | 是否转发其他渠道（如 wxcom）的事件 |
 | `default_agent` | 空 | 前端未指定 agent 时使用 |
+| `channel` | `ws` | 入站消息的渠道标识。会话键为 `<channel>_<userID>_<chatID>`，同时决定 agent 的 `send_file` 回流到哪个通道，见 3.8 |
+| `file_dir` | `./tmp/ws` | 上传文件落盘目录 |
+| `max_upload_size` | 50MB | 单文件字节上限 |
+| `file_ttl` | 86400 | 文件保留时长（秒） |
 | `page_router` | 无 | 前置界面路由（决策模型替用户打开页面），见 3.7 |
 
 ### 1.2 启动
@@ -113,10 +121,11 @@ core/ws/
 │   └── hub.go       连接注册表、按会话订阅、广播、全局序号
 ├── bridge/          总线桥接：types.Event → protocol.Envelope
 ├── replay/          历史回放：turn_events → protocol.Envelope（与 bridge 产出同构）
+├── filestore/       文件存储：落盘、索引、归属校验、过期回收
 ├── command/         上行命令：一个命令一个文件
 │   ├── command.go        依赖、注册表、分发、会话键（只做注册与集成）
 │   ├── ping.go           ping
-│   ├── chat_send.go      chat.send
+│   ├── chat_send.go      chat.send（含 fileID 还原）
 │   ├── chat_cancel.go    chat.cancel
 │   ├── agent_list.go     agent.list
 │   ├── session_list.go   session.list
@@ -124,6 +133,9 @@ core/ws/
 │   ├── turn_replay.go    session.turn.replay
 │   └── helper.go         命令间共用的小工具
 └── server/          HTTP 升级、鉴权、Origin、生命周期、组装
+    ├── server.go         服务主体
+    ├── files.go          文件端点 + send_file 回流
+    └── ui.go / preflow.go 界面反向 RPC 与前置路由
 ```
 
 依赖方向（单向，无环）：
@@ -232,7 +244,7 @@ delta == false   全量快照，整体覆盖当前消息
 
 | type | data | 说明 |
 | --- | --- | --- |
-| `chat.send` | `sessionID?`、`chatID?`、`agent?`、`content`、`media`、`metadata` | 发送提问 |
+| `chat.send` | `sessionID?`、`chatID?`、`agent?`、`content`、`media`、`fileIDs?`、`metadata` | 发送提问 |
 | `chat.cancel` | `sessionID?`、`chatID?` | 中断当前会话 |
 | `ping` | `ts` | 应用层心跳，测 RTT |
 | `agent.list` | — | 拉取可用 agent |
@@ -246,14 +258,24 @@ delta == false   全量快照，整体覆盖当前消息
 
 | code | 场景 |
 | --- | --- |
-| `bad_request` | JSON 非法、缺字段、content 与 media 同时为空 |
+| `bad_request` | JSON 非法、缺字段、content / media / fileIDs 全为空、fileID 不可用 |
 | `unauthorized` | 实际以 HTTP 401 返回，不进协议层 |
-| `forbidden` | 访问不属于当前用户 `sessionID` 的会话 |
+| `forbidden` | 访问不属于当前用户 `sessionID` 的会话，或他人的文件 |
 | `unsupported` | 未知 `kind` 或 `type` |
 | `agent_not_found` | 指定的 agent 不存在 |
 | `too_many_clients` | 以 HTTP 503 返回 |
 | `internal` | 投递失败等服务端异常 |
 | `busy` | 预留 |
+
+文件端点走 HTTP 状态码，响应体是 `{"code":"...","message":"..."}`：
+
+| code | HTTP | 场景 |
+| --- | --- | --- |
+| `file_required` | 400 | 上传没带 `file` 字段 |
+| `file_too_large` | 413 | 超过 `max_upload_size` |
+| `file_not_found` | 404 | fileID 不存在、已过期或文件已被移走 |
+| `forbidden` | 403 | 他人的文件 |
+| `upload_failed` | 500 | 落盘失败 |
 
 ### 3.6 下行 · ui（反向请求）
 
@@ -359,6 +381,79 @@ INFO preflow 界面前置路由 session=... message=帮我建个工单 applied=[
 ```
 
 `reason` 就是没动界面的原因（`取页面快照失败：no ui host connected for session` 表示这条会话没有页面连接）。
+
+### 3.8 文件收发（HTTP）
+
+文件字节不走 WebSocket：单帧上限 1MB（`protocol.MaxMessageSize`），base64 再膨胀 4/3，
+稍大的附件就撞墙；而且帧内传输没法断点续传，也没法用浏览器自身的下载与预览能力。
+所以**字节走 HTTP，ws 只传 fileID**。
+
+端点挂在升级路径下（`path=/ws` 时是 `/ws/files`），鉴权与 ws 共用同一个 token：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/ws/files` | `multipart/form-data`，字段名 `file`（可多个）。响应 `{"items":[FileInfo]}` |
+| `PUT` | `/ws/files?name=xx.txt` | 请求体即文件本身，适合大文件与上传进度 |
+| `GET` | `/ws/files/{id}` | 取文件内容。默认内联，`?download=1` 另存，`?meta=1` 只返回元信息 |
+| `GET` | `/ws/files` | 列出当前用户仍在有效期内的文件 |
+| `DELETE` | `/ws/files/{id}` | 删除自己的文件 |
+
+```bash
+# 上传
+curl -F "file=@报表.xlsx" "http://127.0.0.1:8765/ws/files?token=alice"
+# {"items":[{"id":"a1b2...","name":"报表.xlsx","size":20480,"url":"/ws/files/a1b2...","expiresAt":...}]}
+
+# 让 agent 处理这个文件
+# {"v":1,"id":"c2","kind":"client","type":"chat.send","data":{"content":"看看这个表格","fileIDs":["a1b2..."]}}
+
+# 前端预览（图片/文本/PDF 可直接渲染）
+# <img src="/ws/files/a1b2...?token=alice">
+```
+
+**上行链路**：
+
+```
+POST /ws/files        落盘到 file_dir，返回 fileID
+  ↓
+chat.send{fileIDs}    命令层取回本地路径，拼成 Media{URL: /abs/path, Metadata: {filename}}
+  ↓
+core.Manager          mapMediaToContainer 把文件移到该 agent 的 <WorkSpace>/tmp，
+                      并把 URL 换成容器路径（/tmp/xxx）交给模型
+```
+
+路径转换刻意放在 `core.Manager` 而不是命令层：`chat.send` 执行的时刻还不知道
+最终由哪个 agent 处理（前端可能指定，也可能落到默认 agent），而每个 agent 的
+工作区映射是不同的。**不要在这条链路上提前把路径转成容器路径。**
+
+注意文件是被**移动**而不是复制，同一个 fileID 只能用一次；移动后原路径消失，
+`filestore.Get` 会做一次 `stat` 校验并把失效索引清掉。
+
+**下行链路**：
+
+```
+agent 调 send_file 工具
+  ↓ 工具层已做 ToHost（容器路径 → 宿主机路径）
+bus.SyncMessage(send_file)  按 event.Channel 路由
+  ↓
+server.handleSyncRequest    登记文件 → 推一帧 kind=agent / type=tool_completed
+  ↓                          data.media[0].url = /ws/files/<id>
+浏览器收到附件卡片，可下载或内联预览
+```
+
+这条路由的键就是渠道标识 `channel`。**它必须是 `ws`**：与 wxcom 共用标识
+（例如 `wxcom:work`）时，`send_file` 会被企业微信通道接管，文件真的发到
+企业微信会话里，web 端收不到任何东西。改这个值等于关掉文件回传，
+同时会话键前缀从 `ws_<userID>_<chatID>` 变成 `<channel>_<userID>_<chatID>`，
+历史会话会对不上——确有需要时再改。
+
+安全约定：
+
+- 下载端点默认内联，但 HTML / SVG / XML 一律降级为 `attachment`，
+  并统一带 `X-Content-Type-Options: nosniff`。可执行的类型内联在同源下
+  等于把 XSS 开口子交给上传者。
+- fileID 是 16 字节随机串，按连接身份校验归属：拿到别人的 fileID 也读不到内容。
+- 文件按 `file_ttl` 过期，服务每小时回收一次；进程重启后索引丢失，
+  磁盘目录靠 mtime + ttl 兜底清理。
 
 ---
 
@@ -693,6 +788,14 @@ r.Register(protocol.TypeSessionPin, r.sessionPin)
     在 `chat.send` 里直接 `Request` 会稳定超时（本项目实现时踩过：现象是「页面没反应」，日志只有
     `ui request timeout after 2s`）。正确做法是 `routeQueue.submit` 排队，见 3.7 与 `command/preflow_queue.go`。
     同理，agent 的界面工具走的是另一条链路（`core.UIBridge` → `Server.Request`），不在读循环上，才允许同步等。
+13. **`channel` 不要随便改**。它同时是会话键前缀和 `bus.SyncMessage` 的路由键（见 3.8）。
+    改成 `wxcom:work` 之类会立刻失去两点：`send_file` 的文件被对应通道接管、web 端收不到；
+    以及历史会话因为前缀不一致而查不出来。要改就得同时迁移 `sessions` 里的旧键。
+14. **文件路径不要在命令层转成容器路径**。`chat.send` 执行时还不知道最终哪个 agent 处理，
+    各 agent 的工作区映射也不同。统一交给 `core.Manager.mapMediaToContainer`（投递前调用），
+    它会移动文件并换成 `/tmp/...`。提前转换会得到一个容器里不存在、宿主机上也找不到的路径。
+15. **上传文件的落盘名带 fileID 前缀**。附件随后被移到 agent 工作区的 `tmp`，那里按文件名铺平，
+    不带前缀会在同名文件之间互相覆盖（用户连着传两个「报告.xlsx」就中招）。展示名用 `Item.Name`，别用路径末段。
 
 ---
 
@@ -715,6 +818,8 @@ go test -race ./core/db/ ./core/ws/...
 | `bridge` · `delta_coalescer` | 窗口内拼成一条增量、关键帧前先落地积压且顺序正确、多片段互不混用、累积全文切成真正增量与重复帧丢弃、攒够字节立刻落地、带媒体的帧直发、未 Start / 关掉时逐帧直发、定时器到点只发一次、Close 落地积压、不改写上游共享事件指针 |
 | `replay` | 事件→agent 帧的完整映射、delta 与用量事件被跳过、思考拼接、命令/搜索/工具解析、未知类型降级、截断与 UTF-8 边界、审批与失败帧、帧数与 seq 回填 |
 | `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、token 即身份、自定义 Authenticator、非法 userID 拒绝 |
+| `filestore` | 落盘与取回、恰好等于上限、超限清理半成品、跨平台文件名清洗与超长截断、归属校验、Adopt 不动原文件、文件被移走后视为不存在、过期回收、按用户列表 |
+| `server` · 文件 | multipart / PUT 上传、超限 413、缺字段 400、下载内容与 Content-Disposition、`download=1` 强制另存、`meta=1`、他人文件 403、无 token 401、删除 204、chat.send 的 fileIDs 还原为本地绝对路径、他人 fileID 拒绝、send_file 推帧并能从下载端点取回、同步处理器注册幂等 |
 | `server` · `core` | 界面操作反向 RPC：`ui.request` 往返、无宿主立即失败、会话不一致拒绝、端到端（工具 → 桥 → ws → 浏览器 → 回执 → 工具文本）、工具入参校验与失败文本化 |
 
 ---
@@ -735,8 +840,10 @@ go test -race ./core/db/ ./core/ws/...
 - **回放不支持审批回传**：审批帧能展示，但历史里点「同意/拒绝」没有意义（那一轮已经结束），闭环仍待 P2。
 - **对话列表只读 thread 表**：`session.list` 依赖 `sessions` 表关联出归属，若某会话在 `sessions` 里没有记录（历史数据缺失），对应 thread 不会出现在列表中；标题/预览取首末轮，中间轮次不参与。
 - **不支持审批回传**：`approval` 事件能下发，但客户端无法回应，审批闭环待 P2。
-- **媒体原样透传**：`types.Media` 直接下发，若上游填了 `base64` 会原样传输；P2 计划改为只传 URL，避免大帧拖慢 bridge。
-- **默认不做真实鉴权**：`DefaultAuthenticator` 只把 token 当 userID，不校验有效性（TODO）。上线前务必替换成查库或 JWT 校验。
+- **媒体原样透传**：`AgentData.media` 里的 `types.Media` 直接下发；内联 `base64` 仍可传，但受 1MB 单帧限制，稍大的文件请走 3.8 的上传端点。
+- **文件只在单机**：`filestore` 落在本地磁盘、索引在内存，多实例部署时上传与下载必须落到同一进程（或共享同一 `file_dir` 并接受索引不共享），也没有对象存储与 CDN 加速。
+- **附件不进历史**：`send_file` 推的是实时帧，不落 `turn_events`；回放时看不到当时发过的附件（文件多半也过期了）。
+- **默认不做真实鉴权**：`DefaultAuthenticator` 把任何 token 都折成同一个固定用户，既不校验有效性，也让文件归属校验形同虚设（TODO）。上线前务必替换成查库或 JWT 校验。
 - **无用户管理**：没有用户增删改、token 轮换，也没有 per-user 连接数/速率限制（`max_clients` 是全局的）。
 - **无定向推送**：`Broadcast` 面向所有连接。
 - **delta 合并在 bridge，不在 `conn.writePump`**：到 `conn` 那一层载荷已经序列化好了，

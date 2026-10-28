@@ -4,6 +4,8 @@ package command
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -21,8 +23,8 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "参数解析失败", Detail: err.Error()})
 		return
 	}
-	if strings.TrimSpace(data.Content) == "" && len(data.Media) == 0 {
-		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "content 与 media 不能同时为空"})
+	if strings.TrimSpace(data.Content) == "" && len(data.Media) == 0 && len(data.FileIDs) == 0 {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "content、media 与 fileIDs 不能同时为空"})
 		return
 	}
 	if data.Agent != "" && r.deps.Agents != nil {
@@ -33,6 +35,20 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 	}
 
 	userID := c.UserID()
+
+	// 把已上传文件的 fileID 还原成 media：只带本地路径，文件内容不出现在帧里。
+	// 容器路径转换不在这里做 —— 此刻还不知道最终由哪个 agent 处理，
+	// core.Manager 的 mapMediaToContainer 会在投递前移动文件并换成容器路径。
+	media := data.Media
+	if len(data.FileIDs) > 0 {
+		files, err := r.resolveFileIDs(userID, data.FileIDs)
+		if err != nil {
+			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "文件不可用", Detail: err.Error()})
+			return
+		}
+		media = append(append([]types.Media{}, media...), files...)
+	}
+
 	sessionID := strings.TrimSpace(data.SessionID)
 	if sessionID != "" && !r.ownsSession(userID, sessionID) {
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
@@ -70,7 +86,7 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		SenderID:  userID,
 		ChatID:    chatID,
 		Content:   data.Content,
-		Media:     data.Media,
+		Media:     media,
 		Metadata:  data.Metadata,
 		AgentName: data.Agent,
 		Timestamp: time.Now(),
@@ -90,4 +106,37 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		return
 	}
 	c.ReplyAck(env, &protocol.AckData{OK: true, SessionID: sessionID, ChatID: chatID, ReqID: msg.ID})
+}
+
+// resolveFileIDs 把已上传文件的 fileID 还原成 media。
+//
+// 只填宿主机本地路径与文件名，不带文件内容：帧里多几十字节的引用，
+// 比塞 base64 撞 1MB 单帧上限要稳。归属校验按当前连接身份做，
+// 拿到别人的 fileID 也读不到内容。
+func (r *Registry) resolveFileIDs(userID string, ids []string) ([]types.Media, error) {
+	if r.deps.Files == nil {
+		return nil, errors.New("服务端未启用文件存储")
+	}
+	out := make([]types.Media, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		item, err := r.deps.Files.GetOwned(id, userID)
+		if err != nil {
+			return nil, fmt.Errorf("fileID %s: %w", id, err)
+		}
+		out = append(out, types.Media{
+			Type:     mediaTypeByName(item.Name),
+			URL:      item.Path,
+			MimeType: item.Mime,
+			Metadata: map[string]any{
+				"filename": item.Name,
+				"fileID":   item.ID,
+				"size":     item.Size,
+			},
+		})
+	}
+	return out, nil
 }
