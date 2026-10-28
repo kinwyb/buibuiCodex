@@ -91,6 +91,11 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		AgentName: data.Agent,
 		Timestamp: time.Now(),
 	}
+	// web过来的不需要历史记录
+	if msg.Metadata == nil {
+		msg.Metadata = make(map[string]any)
+		msg.Metadata["no_history"] = true
+	}
 
 	// 界面前置路由要发 ui.request 并等浏览器回执，而回执恰好要从这条连接的读循环里读进来：
 	// 在读循环里等就是自己等自己。所以这里先应答受理，把消息排进所属会话的队列，

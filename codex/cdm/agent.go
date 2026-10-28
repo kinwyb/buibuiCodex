@@ -11,6 +11,7 @@ import (
 	"time"
 	"uuid"
 
+	"gitee.com/kinwyb/conv"
 	"github.com/kinwyb/buibuiCodex/codex"
 	"github.com/kinwyb/buibuiCodex/codex/jsonRpc"
 	"github.com/kinwyb/buibuiCodex/codex/proc"
@@ -295,6 +296,13 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 		NetworkAccess: true,
 	}), codex.TurnStartWithApprovalPolicy(jsonRpc.Never))
 	var inputs []jsonRpc.InputItem
+	// 指定不需要历史记录，那就忽略历史记录
+	if state.Input != nil && state.Input.Metadata != nil && state.Input.Metadata["no_history"] != nil {
+		noHistory := conv.ToBool(state.Input.Metadata["no_history"])
+		if noHistory {
+			hisotryContent = ""
+		}
+	}
 	if hisotryContent != "" {
 		inputs = append(inputs, turn.BuildInputWithText(hisotryContent)...)
 	}

@@ -67,7 +67,7 @@ func buildMcpTool(tool IMcpTool) server.ServerTool {
 	return server.ServerTool{
 		Tool: t,
 		Handler: func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			slog.Debug("mcp call tool: ", tool.Name())
+			slog.Debug("mcp call tool", "name", tool.Name())
 			defer slog.Debug("mcp call tool [" + tool.Name() + "] finished")
 			var userID string
 			// 查询请求头是否附带了状态数据，如果存在，从请求头的状态数据获取用户信息
