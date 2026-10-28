@@ -75,6 +75,7 @@ func (r *Registry) sessionList(ctx context.Context, c *conn.Client, env *protoco
 			Completed:  summary.LastCompleted,
 			CreatedAt:  millis(thread.CreateTime),
 			LastUpdate: millis(thread.LastUpdate),
+			Usage:      threadUsageOf(thread),
 		})
 	}
 

@@ -196,6 +196,11 @@ func (b *Bridge) convert(event *types.Event) *protocol.Envelope {
 		}
 		data.Error = &protocol.ErrorBody{Code: "agent_error", Message: message}
 	}
+	if event.Usage != nil {
+		// token 计数与文本无关，单独透出：前端把它挂在用量面板上，
+		// 不参与正文的追加/覆盖（见 protocol.AgentData 的渲染语义）。
+		data.Usage = event.Usage
+	}
 	if len(event.Metadata) > 0 {
 		data.Meta = event.Metadata
 	}

@@ -91,11 +91,19 @@ func (r *Registry) loadHistory(ctx context.Context, sessionID string, data proto
 		if err != nil {
 			return nil, err
 		}
-		result.Threads = append(result.Threads, protocol.HistoryThread{
+		item := protocol.HistoryThread{
 			ThreadID: query.ThreadID,
 			Turns:    toHistoryTurns(turns),
 			HasMore:  len(turns) >= limit,
-		})
+		}
+		// 线程级累计用量只在 thread 记录里，单独补一次查询
+		if meta := r.deps.Turns.ThreadQueryByID(ctx, query.ThreadID); meta != nil {
+			item.Agent = meta.Agent
+			item.CreatedAt = millis(meta.CreateTime)
+			item.LastUpdate = millis(meta.LastUpdate)
+			item.Usage = threadUsageOf(*meta)
+		}
+		result.Threads = append(result.Threads, item)
 	default:
 		// 未指定线程：session -> thread -> turn
 		threads, err := r.deps.Turns.ThreadList(ctx, sessionID)
@@ -119,6 +127,7 @@ func (r *Registry) loadHistory(ctx context.Context, sessionID string, data proto
 				LastUpdate: millis(thread.LastUpdate),
 				Turns:      toHistoryTurns(turns),
 				HasMore:    len(turns) >= limit,
+				Usage:      threadUsageOf(thread),
 			})
 		}
 
@@ -225,6 +234,7 @@ func toHistoryTurns(list []db.SessionTurn) []protocol.HistoryTurn {
 		if t.CompletedAt != nil {
 			item.CompletedAt = millis(*t.CompletedAt)
 		}
+		item.Usage = turnUsageOf(t)
 		out = append(out, item)
 	}
 	return out

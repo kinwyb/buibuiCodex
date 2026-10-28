@@ -228,8 +228,9 @@ type ISession interface {
 	TurnEventSave(ctx context.Context, turn *TurnEvent) error
 	// TurnEventList 按轮次/线程查询会话事件，结果按 seq 升序返回
 	TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error)
-	// TurnTokenUsage 根据turnID更新token用量
-	TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage) error
+	// TurnTokenUsage 根据 turnID 更新本轮的 token 用量，
+	// contextWindow 为模型上下文窗口（0 表示上游未提供，保留原值）
+	TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage, contextWindow int64) error
 	// ThreadTokenUsage 根据ThreadID更新token用量
 	ThreadTokenUsage(ctx context.Context, threadID string, tokenUsage TokenUsage) error
 }
@@ -295,7 +296,7 @@ func (s *sessionDefautStorage) TurnEventList(ctx context.Context, query TurnEven
 	return nil, nil
 }
 
-func (s *sessionDefautStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage) error {
+func (s *sessionDefautStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage, contextWindow int64) error {
 	return nil
 }
 
@@ -585,8 +586,10 @@ func (s *sessionStorage) TurnEventList(ctx context.Context, query TurnEventQuery
 	return list, nil
 }
 
-func (s *sessionStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage) error {
-	return s.db.WithContext(ctx).Where("turn_id = ?", turnID).Updates(&SessionTurn{TokenUsage: tokenUsage}).Error
+func (s *sessionStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage, contextWindow int64) error {
+	// contextWindow 为 0 时 gorm 的 Updates(struct) 会忽略该字段，保留库里已有的值
+	return s.db.WithContext(ctx).Where("turn_id = ?", turnID).
+		Updates(&SessionTurn{TokenUsage: tokenUsage, ModelContextWindow: contextWindow}).Error
 }
 
 func (s *sessionStorage) ThreadTokenUsage(ctx context.Context, threadID string, tokenUsage TokenUsage) error {

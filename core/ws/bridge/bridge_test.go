@@ -140,3 +140,48 @@ func TestConvertKeepsEventIDAcrossLifecycle(t *testing.T) {
 		t.Fatalf("无实体的事件不应带 eventID，实际 %q", env.EventID)
 	}
 }
+
+// token 用完统计必须作为独立载荷透出：它是状态而不是文本，
+// Delta 恒为 false，前端只更新用量面板、不碰正文。
+func TestConvertTokenUsage(t *testing.T) {
+	b := New(Options{Channel: "ws"})
+	env := b.convert(&types.Event{
+		EventID:   "tu_1",
+		SessionID: "s1",
+		ReqID:     "r1",
+		Type:      types.EventTokenUsage,
+		Channel:   "ws",
+		Message:   &types.Message{Role: types.RoleAssistant},
+		Usage: &types.TokenUsage{
+			Total:              types.TokenDetail{TotalTokens: 900, InputTokens: 700, OutputTokens: 200},
+			Last:               types.TokenDetail{TotalTokens: 120, InputTokens: 100, OutputTokens: 20},
+			ModelContextWindow: 200000,
+		},
+	})
+
+	var data protocol.AgentData
+	if err := env.DecodeData(&data); err != nil {
+		t.Fatalf("解析载荷失败: %v", err)
+	}
+	if data.Event != string(types.EventTokenUsage) {
+		t.Fatalf("载荷事件类型不符: %q", data.Event)
+	}
+	if data.Delta {
+		t.Fatal("token_usage 不属于增量，Delta 应为 false")
+	}
+	if data.Content != "" {
+		t.Fatalf("token_usage 不应携带正文: %q", data.Content)
+	}
+	if data.Usage == nil {
+		t.Fatal("缺少 usage 载荷")
+	}
+	if data.Usage.Total.TotalTokens != 900 || data.Usage.Last.TotalTokens != 120 {
+		t.Fatalf("用量数据不符: %+v", data.Usage)
+	}
+	if data.Usage.ModelContextWindow != 200000 {
+		t.Fatalf("上下文窗口不符: %d", data.Usage.ModelContextWindow)
+	}
+	if protocol.IsDelta(protocol.KindAgent, string(types.EventTokenUsage)) {
+		t.Fatal("token_usage 不应被当作可丢弃的增量帧")
+	}
+}

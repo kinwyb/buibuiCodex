@@ -34,6 +34,8 @@ type AgentSource interface {
 type TurnReader interface {
 	ThreadList(ctx context.Context, sessionID string) ([]db.SessionThread, error)
 	ThreadPage(ctx context.Context, query db.ThreadQuery) ([]db.SessionThread, error)
+	// ThreadQueryByID 按 threadID 查单个线程，历史接口据此补线程级累计用量
+	ThreadQueryByID(ctx context.Context, threadID string) *db.SessionThread
 	ThreadSummaries(ctx context.Context, threadIDs []string) (map[string]db.ThreadSummary, error)
 	TurnList(ctx context.Context, query db.TurnQuery) ([]db.SessionTurn, error)
 	TurnQueryByID(ctx context.Context, turnID string) *db.SessionTurn

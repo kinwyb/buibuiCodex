@@ -28,6 +28,7 @@ import (
 //	reasoning_completed  Delta=false，Reasoning 为完整思考，覆盖
 //	tool_start / tool_completed / approval / error / finished
 //	                     Delta=false，属于状态或事件，不参与文本追加
+//	token_usage          Delta=false，Content 为空，只更新 Usage 面板
 //
 // 该约定保证：中间 delta 即使因背压被丢弃，前端在 message_completed 时
 // 用全量内容覆盖，界面仍能收敛到正确结果。
@@ -62,6 +63,9 @@ type AgentData struct {
 	Media []types.Media `json:"media,omitempty"`
 	// Approval 审批信息，仅 approval 事件携带
 	Approval *ApprovalData `json:"approval,omitempty"`
+	// Usage token 用量，仅 token_usage 事件携带。
+	// 同一轮会多次推送（每次模型调用后更新），前端按 eventID 覆盖即可。
+	Usage *types.TokenUsage `json:"usage,omitempty"`
 	// Error 错误信息，仅 error 事件携带
 	Error *ErrorBody `json:"error,omitempty"`
 	// Meta 透传元数据
@@ -223,6 +227,8 @@ type SessionListItem struct {
 	// CreatedAt / LastUpdate 毫秒时间戳
 	CreatedAt  int64 `json:"createdAt"`
 	LastUpdate int64 `json:"lastUpdate"`
+	// Usage 该对话的累计用量，取 Usage.Total（Last 为空），用于列表直接展示消耗
+	Usage *types.TokenUsage `json:"usage,omitempty"`
 }
 
 // SessionListResult 对话列表响应，按 lastUpdate 倒序
@@ -270,6 +276,9 @@ type HistoryTurn struct {
 	Completed   bool   `json:"completed"`
 	CreatedAt   int64  `json:"createdAt"`
 	CompletedAt int64  `json:"completedAt,omitempty"`
+	// Usage 本轮 token 用量：只有 Last（本轮）与 ModelContextWindow 有值，
+	// Total 留空，对话累计看 HistoryThread.Usage。老数据没有记录时为 nil。
+	Usage *types.TokenUsage `json:"usage,omitempty"`
 }
 
 // HistoryThread 一个线程及其轮次
@@ -280,6 +289,8 @@ type HistoryThread struct {
 	LastUpdate int64         `json:"lastUpdate,omitempty"`
 	Turns      []HistoryTurn `json:"turns"`
 	HasMore    bool          `json:"hasMore,omitempty"`
+	// Usage 该对话的累计用量，取 Usage.Total；Last 无意义（为空）。
+	Usage *types.TokenUsage `json:"usage,omitempty"`
 }
 
 // SessionHistoryResult 历史消息响应，threads 按创建时间升序，turns 按 seq 升序。

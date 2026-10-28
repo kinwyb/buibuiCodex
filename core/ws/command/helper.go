@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
 )
 
@@ -37,4 +38,39 @@ func millis(t time.Time) int64 {
 		return 0
 	}
 	return t.UnixMilli()
+}
+
+// turnUsageOf 把库里一轮的用量还原成协议结构：只有 Last 与上下文窗口有值。
+// 没有任何用量记录时返回 nil，前端据此不展示「0 tokens」。
+func turnUsageOf(turn db.SessionTurn) *types.TokenUsage {
+	usage := types.TokenUsage{
+		Last:               tokenDetailOf(turn.TokenUsage),
+		ModelContextWindow: turn.ModelContextWindow,
+	}
+	if usage.Last == (types.TokenDetail{}) && usage.ModelContextWindow == 0 {
+		return nil
+	}
+	return &usage
+}
+
+// threadUsageOf 把库里一个 thread 的累计用量还原成协议结构，取 Total。
+// 未产生过用量时返回 nil。
+func threadUsageOf(thread db.SessionThread) *types.TokenUsage {
+	total := tokenDetailOf(thread.TokenUsage)
+	if total == (types.TokenDetail{}) {
+		return nil
+	}
+	return &types.TokenUsage{Total: total}
+}
+
+// tokenDetailOf 库表字段 → 协议明细
+func tokenDetailOf(usage db.TokenUsage) types.TokenDetail {
+	return types.TokenDetail{
+		TotalTokens:           usage.TotalTokens,
+		InputTokens:           usage.InputTokens,
+		CachedInputTokens:     usage.CachedInputTokens,
+		CacheWriteInputTokens: usage.CacheWriteInputTokens,
+		OutputTokens:          usage.OutputTokens,
+		ReasoningOutputTokens: usage.ReasoningOutputTokens,
+	}
 }

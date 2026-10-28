@@ -24,6 +24,9 @@ const (
 	EventError                EventType = "error"
 	EventApproval             EventType = "approval"
 	EventFinished             EventType = "finished"
+	// EventTokenUsage token 用量更新。不是消息内容，前端只更新用量面板，
+	// 不参与正文的追加/覆盖；同一轮可能多次到达，按 EventID 覆盖即可。
+	EventTokenUsage EventType = "token_usage"
 )
 
 type Event struct {
@@ -37,6 +40,7 @@ type Event struct {
 	SenderID   string         `json:"senderID"`
 	ChatID     string         `json:"chatID"`
 	Message    *Message       `json:"message,omitempty"`
+	Usage      *TokenUsage    `json:"usage,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
 	Timestamp  time.Time      `json:"timestamp"`
 }

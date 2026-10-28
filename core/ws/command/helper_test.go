@@ -64,6 +64,15 @@ func (f *fakeTurnReader) ThreadList(_ context.Context, _ string) ([]db.SessionTh
 	return f.threads, nil
 }
 
+func (f *fakeTurnReader) ThreadQueryByID(_ context.Context, threadID string) *db.SessionThread {
+	for i := range f.threads {
+		if f.threads[i].ThreadID == threadID {
+			return &f.threads[i]
+		}
+	}
+	return nil
+}
+
 func (f *fakeTurnReader) TurnList(_ context.Context, q db.TurnQuery) ([]db.SessionTurn, error) {
 	f.queries = append(f.queries, q)
 	return f.turns[q.ThreadID], nil

@@ -149,32 +149,33 @@ func (a *Agent) codexEventParse(state *types.State, notification *codex.Event) {
 			fmt.Printf("item lifecycle event error: %v\n", err)
 			return
 		}
-		if a.cfg.SessionDB != nil {
-			dErr := a.cfg.SessionDB.TurnTokenUsage(context.Background(), itemEvt.TurnID, db.TokenUsage{
-				TotalTokens:           itemEvt.TokenUsage.Last.TotalTokens,
-				InputTokens:           itemEvt.TokenUsage.Last.InputTokens,
-				CachedInputTokens:     itemEvt.TokenUsage.Last.CachedInputTokens,
-				CacheWriteInputTokens: itemEvt.TokenUsage.Last.CacheWriteInputTokens,
-				OutputTokens:          itemEvt.TokenUsage.Last.OutputTokens,
-				ReasoningOutputTokens: itemEvt.TokenUsage.Last.ReasoningOutputTokens,
-			})
+		usage := tokenUsageOf(itemEvt.TokenUsage)
+		if a.cfg != nil && a.cfg.SessionDB != nil {
+			dErr := a.cfg.SessionDB.TurnTokenUsage(context.Background(), itemEvt.TurnID,
+				dbTokenUsage(itemEvt.TokenUsage.Last), itemEvt.TokenUsage.ModelContextWindow)
 			if dErr != nil {
 				slog.Error("fail to save token usage", "error", dErr.Error())
 			}
-			dErr = a.cfg.SessionDB.ThreadTokenUsage(context.Background(), itemEvt.ThreadID, db.TokenUsage{
-				TotalTokens:           itemEvt.TokenUsage.Total.TotalTokens,
-				InputTokens:           itemEvt.TokenUsage.Total.InputTokens,
-				CachedInputTokens:     itemEvt.TokenUsage.Total.CachedInputTokens,
-				CacheWriteInputTokens: itemEvt.TokenUsage.Total.CacheWriteInputTokens,
-				OutputTokens:          itemEvt.TokenUsage.Total.OutputTokens,
-				ReasoningOutputTokens: itemEvt.TokenUsage.Total.ReasoningOutputTokens,
-			})
+			dErr = a.cfg.SessionDB.ThreadTokenUsage(context.Background(), itemEvt.ThreadID,
+				dbTokenUsage(itemEvt.TokenUsage.Total))
 			if dErr != nil {
 				slog.Error("fail to save thread token usage", "error", dErr.Error())
 			}
 		}
-		fmt.Printf("\n\n🎉 [Turn token消耗统计] Total Tokens: %d,Last Tokens: %d\n",
-			itemEvt.TokenUsage.Total.TotalTokens, itemEvt.TokenUsage.Last.TotalTokens)
+		// 计数器是给前端展示的，不落 Message：整帧只有 Usage 有意义。
+		// 同一轮内可能多次推送，EventID 统一用 turnID，前端据此覆盖而不是追加。
+		event.Type = types.EventTokenUsage
+		event.EventID = itemEvt.TurnID
+		event.Usage = usage
+		if event.Metadata == nil {
+			event.Metadata = map[string]any{}
+		}
+		event.Metadata["codex_token_total"] = usage.Total.TotalTokens
+		event.Metadata["codex_token_last"] = usage.Last.TotalTokens
+		slog.Debug("turn token 用量更新",
+			"turnID", itemEvt.TurnID,
+			"totalTokens", usage.Total.TotalTokens,
+			"lastTokens", usage.Last.TotalTokens)
 	}
 	if event.Type != "" {
 		state.EventHandler(event)

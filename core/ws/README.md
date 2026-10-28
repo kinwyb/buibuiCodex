@@ -214,8 +214,9 @@ server ──> command ──> replay ──> protocol
 | `approval` | 需要审批 |
 | `error` | agent 执行失败 |
 | `finished` | 本轮结束 |
+| `token_usage` | token 用量更新（`data.usage`，见 3.3.1） |
 
-data 结构见 `protocol.AgentData`：`event`、`agent`、`role`、`delta`、`content`、`reasoning`、`toolCalls`、`media`、`approval`、`error`、`meta`、`truncated`。
+data 结构见 `protocol.AgentData`：`event`、`agent`、`role`、`delta`、`content`、`reasoning`、`toolCalls`、`media`、`approval`、`usage`、`error`、`meta`、`truncated`。
 
 `truncated` 只在历史回放里可能出现，标记该条内容因为体积上限被截断；实时事件不会置位。
 
@@ -240,6 +241,28 @@ delta == false   全量快照，整体覆盖当前消息
 这条约定不是可选的：服务端在网络拥塞时**会丢弃 delta**（丢的是积压里最旧的那条，见 §6 背压），依靠 `message_completed` 的全量内容让界面收敛。如果前端把 `completed` 当增量拼接，丢帧后内容就永远修不回来了。
 
 `message_delta` / `reasoning_delta` 会被合并（见 §6 增量帧合并）：**一帧的内容可能是好几个 token 拼起来的一段文本，但 `delta` 仍然是 `true`**，前端继续按追加处理，不需要区分是不是合并帧。合并只发生在同一片段（同 `eventID`）内部，不会把思考与正文混进一帧。
+
+#### 3.3.1 token 用量（`token_usage`）
+
+上游每完成一次模型调用就会推一次 `thread/tokenUsage/updated`，服务端把它转成独立的 `token_usage` 帧：
+
+```json
+{"v":1,"kind":"agent","type":"token_usage","sessionID":"ws_web_c1","reqID":"r1",
+ "eventID":"tu_1","chunk":12,"data":{"event":"token_usage","delta":false,
+ "usage":{"total":{"totalTokens":1200,"inputTokens":900,"outputTokens":300},
+          "last":{"totalTokens":120,"inputTokens":100,"outputTokens":20},
+          "modelContextWindow":200000}}}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `usage.total` | 当前对话（thread）累计用量，展示「本对话共消耗」 |
+| `usage.last` | 本次交互（本轮 turn）用量，展示「这条回答消耗」 |
+| `usage.modelContextWindow` | 模型上下文窗口，用于算占用率；缺失为 0 |
+
+两个明细都包含 `totalTokens`、`inputTokens`、`cachedInputTokens`、`cacheWriteInputTokens`、`outputTokens`、`reasoningOutputTokens`。
+
+渲染约定：`delta` 恒为 `false`、`content` 恒为空，**只更新用量面板，不要拼接正文**。同一轮会多次到达，`eventID` 固定是该轮的 `turnID`，前端按它覆盖即可。刷新页面后的累计值从 `session.list` / `session.history` 的 `usage` 字段取（见 §5），不必依赖这条实时帧。
 
 ### 3.4 上行 · client
 
@@ -576,7 +599,9 @@ curl -X PUT --data-binary @report.md \
       "threadID": "th-2", "sessionID": "ws_web_c2", "agent": "codex",
       "title": "分析昨天良率", "preview": "生产良率为 98.2%，主要瓶颈在二号线…",
       "turns": 6, "completed": true,
-      "createdAt": 1761432000000, "lastUpdate": 1761435600000
+      "createdAt": 1761432000000, "lastUpdate": 1761435600000,
+      "usage": {"total": {"totalTokens": 18342, "inputTokens": 15000, "cachedInputTokens": 9000,
+                          "cacheWriteInputTokens": 0, "outputTokens": 3342, "reasoningOutputTokens": 620}}
     }
   ],
   "hasMore": true,
@@ -598,6 +623,7 @@ curl -X PUT --data-binary @report.md \
 - `preview` 取末轮回答（80 字符）
 - `turns` 是轮次数量，不需要再拉详情就能显示「共 N 轮」
 - `completed=false` 表示末轮没有正常结束（被中断或仍在跑）
+- `usage.total` 是该对话的累计 token 用量；从未产生过用量时整个 `usage` 字段省略，前端不要显示「0 tokens」
 - 只返回当前用户自己的对话：归属过滤在 SQL 里通过 `sessions` 表关联完成，不能靠 `session_id` 前缀匹配——会话键里的下划线在 `LIKE` 里是通配符，`ws_alice_` 会误命中 `ws-alice_`
 
 翻页：把 `nextBeforeLastUpdate` + `nextBeforeThreadID` 原样回传即可。用复合游标而非单一时间戳，是因为多个对话的 `last_update` 可能落在同一毫秒，只比时间会漏项。
@@ -630,10 +656,13 @@ curl -X PUT --data-binary @report.md \
     {
       "threadID": "th-1", "agent": "codex",
       "createdAt": 1761432000000, "lastUpdate": 1761432600000,
+      "usage": {"total": {"totalTokens": 18342, "inputTokens": 15000, "outputTokens": 3342}},
       "turns": [
         {"seq": 12, "reqID": "r1", "threadID": "th-1", "turnID": "tu-1", "agent": "codex",
          "question": "分析昨天良率", "answer": "生产良率为 98.2%", "completed": true,
-         "createdAt": 1761432000000, "completedAt": 1761432120000}
+         "createdAt": 1761432000000, "completedAt": 1761432120000,
+         "usage": {"last": {"totalTokens": 120, "inputTokens": 100, "outputTokens": 20},
+                   "modelContextWindow": 200000}}
       ],
       "hasMore": false
     }
@@ -650,6 +679,7 @@ curl -X PUT --data-binary @report.md \
 - `question` 只有媒体时是媒体 JSON，前端需要兜底展示。
 - `completed=false` 的轮次表示请求已落库但未完成（例如进程重启导致中断），可展示为「已中断」。
 - 补发基于**数据库轮次**而非事件缓冲：断线期间正在生成的那一轮不补逐帧内容，重连后由后续事件或 `message_completed` 覆盖收敛。
+- `usage` 分两级：`threads[].usage.total` 是对话累计，`turns[].usage.last` 是该轮消耗（另含 `modelContextWindow`）；没有用量记录时字段省略。`frames` 里不重放 `token_usage`，用量看这两处即可。
 
 #### 执行过程（frames）
 
