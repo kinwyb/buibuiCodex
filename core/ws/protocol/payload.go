@@ -373,10 +373,10 @@ type UIResponseData struct {
 	Error string `json:"error,omitempty"`
 	// Rev 执行后页面的版本号，供下一轮命令引用
 	Rev int64 `json:"rev,omitempty"`
-	// Snapshot 页面快照：observe 的返回，或 act 成功后的新快照
+	// Snapshot 页面快照：observe / navigate 的返回，或 act 里声明 returns=full 的命令
 	Snapshot json.RawMessage `json:"snapshot,omitempty"`
 	// Result 命令自身的执行结果
 	Result json.RawMessage `json:"result,omitempty"`
-	// Patch 快照补丁,小调整不再依赖完整获取快照
+	// Patch 快照补丁：act 的默认回执（写命令只回变化的那几段，模型自己合进上一份快照）
 	Patch json.RawMessage `json:"patch,omitempty"`
 }

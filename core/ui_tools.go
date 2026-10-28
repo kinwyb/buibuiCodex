@@ -37,9 +37,15 @@ const (
 // 页面对后端是黑盒：快照与补丁的内容都由前端定义，服务端只透传。
 // 所以「patch 是什么、该怎么用」只能靠工具描述告诉模型，
 // 否则模型看到只有 patch 的回执会以为页面没返回数据。
-const patchHint = "回执可能只带 patch（对上一次快照的增量修改）而不带完整 snapshot：" +
-	"看到 patch 就把它合入上一轮的快照当作最新页面，不要当成缺失数据；" +
-	"拿不准或页面变化很大时再 ui_observe 取完整 snapshot。"
+//
+// 前端的默认回执就是 patch（见 bodaWay 的 protocol/ui.ts 里 UIAction.returns）：
+// 这段描述要说清「patch 不带目录类内容」与「三种回执各自怎么处理」，
+// 否则模型会因为一份补丁里找不到列目录而多跑一次 ui_observe。
+const patchHint = "回执按命令性质分三档：纯读命令只回 result（页面状态与 rev 都没变）；" +
+	"写命令默认只回 patch（对上一份快照的增量），把它合进手里那份快照当最新页面 —— " +
+	"没出现的段表示没变，列目录 data.columns、guide、actions[].params 不会重复下发，别当成缺失数据、也别为此多跑 ui_observe；" +
+	"只有视野真的换掉（打开表单弹窗、切页、切模式）才回完整 snapshot，那时整份替换手里那份。" +
+	"失败回 error + patch。rev 在每次回执里给，下一条命令直接用它。"
 
 // UITransport 把「服务端 → 浏览器」的反向请求能力注入给界面工具。
 //
@@ -145,9 +151,10 @@ func (t *UIActTool) Name() string { return "ui_act" }
 func (t *UIActTool) Description() string {
 	return "执行一条界面命令。cmd 必须取自最近一次 ui_observe 返回的 actions[].id，" +
 		"并带上同一次快照的 rev；params 按该 action 的 params 声明构造（键名即参数名），" +
-		"没有 params 声明就表示这条命令不需要参数。返回执行结果与执行后的新快照或增量补丁。" +
-		"返回的快照是尽力而为的最新视图（命令可能还在异步落定）；需要权威状态时再 ui_observe 一次。 " +
-		"失败（rev 已过期、命令不再可用、参数不合法）会返回具体原因，此时应重新 ui_observe 再决定下一步。" +
+		"没有 params 声明就表示这条命令不需要参数。返回执行结果，页面状态按 result / patch / snapshot 三档给。" +
+		"回执里的状态是尽力而为的最新视图（命令可能还在异步落定）；需要权威状态时再 ui_observe 一次。 " +
+		"失败（rev 已过期、命令不再可用、参数不合法）会返回具体原因与此刻的增量变化：按原因修正后再来，" +
+		"只有 rev 过期才需要重新 ui_observe。" +
 		"不要凭猜测构造命令 id 或参数名：快照里没有的就一定不存在。" +
 		patchHint
 }
@@ -278,11 +285,14 @@ func uiResponseMessage(resp *protocol.UIResponseData) *types.InputMessage {
 		if reason == "" {
 			reason = "界面操作失败，且未返回原因"
 		}
-		return &types.InputMessage{Content: encodeJSON(map[string]any{
-			"ok":    false,
-			"error": reason,
-			"rev":   resp.Rev,
-		})}
+		// 失败也带上前端给的增量变化：很多错误只存在于页面状态里（表单红格、明细校验），
+		// 丢掉它模型就只能再 observe 一次才知道「到底哪里不对」。
+		return &types.InputMessage{Content: encodeJSON(struct {
+			OK    bool            `json:"ok"`
+			Error string          `json:"error"`
+			Rev   int64           `json:"rev,omitempty"`
+			Patch json.RawMessage `json:"patch,omitempty"`
+		}{OK: false, Error: reason, Rev: resp.Rev, Patch: resp.Patch})}
 	}
 	out := struct {
 		OK       bool            `json:"ok"`

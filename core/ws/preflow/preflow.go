@@ -420,7 +420,10 @@ func (r *Router) navigate(ctx context.Context, sessionID, view string) (*Page, e
 	return page, nil
 }
 
-// act 点开一个入口，返回执行后的页面快照
+// act 点开一个入口，返回执行后的页面状态。
+//
+// v3 起写命令默认只回增量 patch（不带 snapshot），这里要的也只是执行后的 rev ——
+// 后面不再基于动作表做决策，所以 snapshot 为空属于正常，不是「前端没回页面结构」。
 func (r *Router) act(ctx context.Context, sessionID, cmd string, rev int64) (*Page, error) {
 	resp, err := r.ui(ctx, sessionID, &protocol.UIRequestData{Op: opAct, Cmd: cmd, Rev: rev})
 	if err != nil {
@@ -451,7 +454,7 @@ func (r *Router) ui(ctx context.Context, sessionID string, req *protocol.UIReque
 	}
 	r.log.Info("preflow 界面请求",
 		"session", sessionID, "op", req.Op, "view", req.View, "cmd", req.Cmd, "rev", req.Rev,
-		"outcome", outcome, "snapshotBytes", snapshotLen(resp),
+		"outcome", outcome, "snapshotBytes", snapshotLen(resp), "patchBytes", patchLen(resp),
 		"elapsed", time.Since(started).Round(time.Millisecond).String())
 	return resp, err
 }
@@ -463,6 +466,15 @@ func snapshotLen(resp *protocol.UIResponseData) int {
 		return 0
 	}
 	return len(resp.Snapshot)
+}
+
+// patchLen 取增量补丁的字节数：act 成功时回执一般只有 patch，
+// 与 snapshotBytes 一起看才能判断「前端是回了小补丁还是什么都没回」。
+func patchLen(resp *protocol.UIResponseData) int {
+	if resp == nil {
+		return 0
+	}
+	return len(resp.Patch)
 }
 
 // trace 记录一次判断并立刻打印：后面即使超时或界面拒绝，也能看出模型当时选了什么
