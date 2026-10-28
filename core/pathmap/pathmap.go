@@ -125,6 +125,18 @@ func (pm *PathMapper) IsNoop() bool {
 	return len(pm.mappings) == 0
 }
 
+// Mappings 返回映射关系的副本，按配置顺序。
+//
+// 给需要「按容器根逐个判断」的调用方用（例如 agent 工作区浏览）：
+// ToHost 在匹配不上时会把原样路径返回，那个语义适合拼接，不适合做边界判断。
+func (pm *PathMapper) Mappings() []PathMapping {
+	out := make([]PathMapping, 0, len(pm.mappings))
+	for _, m := range pm.mappings {
+		out = append(out, PathMapping{Host: m.host, Container: m.container})
+	}
+	return out
+}
+
 // 将指定文件移动到目标文件夹中，保持文件名不变
 // 返回值：(新文件路径, error)
 func moveFileToDir(srcFile, dstDir string) (string, error) {

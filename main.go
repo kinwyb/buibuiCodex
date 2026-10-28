@@ -158,7 +158,9 @@ func main() {
 			Canceller: manager,
 			Agents:    manager,
 			Turns:     dataStorage.Session(),
-			Logger:    slog.Default(),
+			// agent 工作区浏览（配置 websocket.agent_files 才生效）
+			AgentFiles: manager,
+			Logger:     slog.Default(),
 		})
 		if err = wsServer.Start(ctx); err != nil {
 			slog.Error("start websocket server failed", "error", err)

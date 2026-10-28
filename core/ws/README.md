@@ -37,7 +37,8 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
   "channel": "ws",
   "file_dir": "./tmp/ws",
   "max_upload_size": 52428800,
-  "file_ttl": 86400
+  "file_ttl": 86400,
+  "agent_files": false
 }
 ```
 
@@ -61,6 +62,7 @@ ws 不直接调用 agent，也不经过 `channel` 层：上行把消息投入 `M
 | `file_dir` | `./tmp/ws` | 上传文件落盘目录 |
 | `max_upload_size` | 50MB | 单文件字节上限 |
 | `file_ttl` | 86400 | 文件保留时长（秒） |
+| `agent_files` | false | 是否开放 agent 工作区文件接口，见 3.9 |
 | `page_router` | 无 | 前置界面路由（决策模型替用户打开页面），见 3.7 |
 
 ### 1.2 启动
@@ -135,6 +137,7 @@ core/ws/
 └── server/          HTTP 升级、鉴权、Origin、生命周期、组装
     ├── server.go         服务主体
     ├── files.go          文件端点 + send_file 回流
+    ├── agentfiles.go     agent 工作区端点（浏览/上传/删除）
     └── ui.go / preflow.go 界面反向 RPC 与前置路由
 ```
 
@@ -454,6 +457,70 @@ server.handleSyncRequest    登记文件 → 推一帧 kind=agent / type=tool_co
 - fileID 是 16 字节随机串，按连接身份校验归属：拿到别人的 fileID 也读不到内容。
 - 文件按 `file_ttl` 过期，服务每小时回收一次；进程重启后索引丢失，
   磁盘目录靠 mtime + ttl 兜底清理。
+
+### 3.9 agent 工作区（HTTP，默认关闭）
+
+3.8 传的是「待发送 / 已发送」的临时文件，按 fileID 索引；
+本节是 agent 自己工作区的**真实目录**，按容器路径寻址，改动会直接影响 agent。
+两者互不相干：上传到工作区不会产生 fileID，`send_file` 也不会把文件塞进工作区。
+
+配置 `websocket.agent_files: true` 才会注册这些端点：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/ws/agents` | 可用 agent 及其可浏览的根，根的 `exists=false` 表示容器还没启动过 |
+| `GET` | `/ws/agents/{agent}/files?path=/workspace` | 列目录，`path` 省略时用第一个根 |
+| `GET` | `/ws/agents/{agent}/file?path=/workspace/a.md` | 读文件，支持 `download=1` / `meta=1` |
+| `PUT` | `/ws/agents/{agent}/file?path=/workspace/a.md` | 请求体即文件内容，覆盖写 |
+| `POST` | `/ws/agents/{agent}/file?path=/workspace` | multipart 上传，文件名取自表单 |
+| `DELETE` | `/ws/agents/{agent}/file?path=/workspace/a.md` | 删除文件；目录要加 `recursive=1` |
+| `POST` | `/ws/agents/{agent}/dir?path=/workspace/docs` | 建目录（含父目录） |
+
+```bash
+# 有哪些 agent、各自能看哪些根
+curl "http://127.0.0.1:8765/ws/agents?token=alice"
+# {"agents":[{"name":"codex","roots":[{"container":"/workspace","exists":true},
+#                                     {"container":"/tmp","exists":true}]}]}
+
+# 列目录
+curl "http://127.0.0.1:8765/ws/agents/codex/files?token=alice&path=/workspace"
+# {"agent":"codex","path":"/workspace","parent":"","items":[
+#   {"name":"report.md","path":"/workspace/report.md","isDir":false,"size":1024,...}]}
+
+# 保存前端编辑的内容
+curl -X PUT --data-binary @report.md \
+  "http://127.0.0.1:8765/ws/agents/codex/file?token=alice&path=/workspace/report.md"
+```
+
+**路径语义**：前端只用容器路径，不用关心宿主机目录。每个 agent 的映射来自
+`core/manager.go`：
+
+```
+<WorkSpace>/workspace  <->  /workspace     agent 的工作区，模型读写的就是这里
+<WorkSpace>/tmp        <->  /tmp           临时文件
+```
+
+服务端把这个 agent 的映射交给 `core/agentfs`，由它做三层校验：
+
+1. 容器路径必须是绝对路径，`Clean` 后命中某个映射根（含根本身）；
+2. 拼出的宿主机路径 `Clean` 后仍在对应宿主根内；
+3. 解析软链接后仍在宿主根内——工作区里一个指向 `/etc` 的链接不能成为跳板。
+
+**不能直接复用 `pathmap.ToHost`**：它匹配不上时原样返回，那个语义适合拼接路径，
+不适合做安全边界。另外删除映射根本身是明确禁止的（`root_protected`）。
+
+其它约定：
+
+- 上传文件不会自动建父目录，父目录不存在返回 404。要建目录请显式调 `dir`，
+  否则一个拼错的路径会在工作区里悄悄长出一串空目录。
+- 覆盖写走「临时文件 + rename」，中途失败不会把原文件截断成半截。
+- 目录删除必须显式 `recursive=1`，默认只删文件。
+- 读目录走 `files`，读文件走 `file`，用错会得到 `is_directory` / `not_directory`。
+
+> **风险提示**：这些端点会把 agent 的工作区完整摊开给调用方，而且 agent 工作区
+> 是所有会话共享的——拿到 token 的人能读、能改、能删别人正在用的文件。
+> 它面向的是受信前端（管理台 / 单租户内网），因此默认关闭。多租户场景不要开，
+> 或在外层再加一道按用户隔离的网关。
 
 ---
 
@@ -796,6 +863,9 @@ r.Register(protocol.TypeSessionPin, r.sessionPin)
     它会移动文件并换成 `/tmp/...`。提前转换会得到一个容器里不存在、宿主机上也找不到的路径。
 15. **上传文件的落盘名带 fileID 前缀**。附件随后被移到 agent 工作区的 `tmp`，那里按文件名铺平，
     不带前缀会在同名文件之间互相覆盖（用户连着传两个「报告.xlsx」就中招）。展示名用 `Item.Name`，别用路径末段。
+16. **`pathmap.ToHost` 不能当安全边界**。它匹配不上时原样返回，用来拼路径没问题，
+    用来判「路径是否在工作区内」会直接放行 `/etc/passwd`。agent 工作区访问统一走
+    `core/agentfs`（三层校验：命中映射根、宿主路径前缀、软链接解析后仍在内），不要自己拼一遍。
 
 ---
 
@@ -820,6 +890,8 @@ go test -race ./core/db/ ./core/ws/...
 | `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、token 即身份、自定义 Authenticator、非法 userID 拒绝 |
 | `filestore` | 落盘与取回、恰好等于上限、超限清理半成品、跨平台文件名清洗与超长截断、归属校验、Adopt 不动原文件、文件被移走后视为不存在、过期回收、按用户列表 |
 | `server` · 文件 | multipart / PUT 上传、超限 413、缺字段 400、下载内容与 Content-Disposition、`download=1` 强制另存、`meta=1`、他人文件 403、无 token 401、删除 204、chat.send 的 fileIDs 还原为本地绝对路径、他人 fileID 拒绝、send_file 推帧并能从下载端点取回、同步处理器注册幂等 |
+| `agentfs` | 根列表与存在性、列目录/Stat、越界与 `..` 逃逸、相对路径拒绝、软链接逃逸拒绝、读写覆盖、超限清理临时文件、父目录不存在拒绝、删目录需递归、删根拒绝、无映射时为空 |
+| `server` · agent 工作区 | 根列表、列目录与 parent、越界 403 / 相对路径 400 / 不存在 404、PUT 读写删、multipart 上传拼路径、非递归删目录 400、删根 403、未知 agent 404、无 token 401、开关关闭时端点不注册 |
 | `server` · `core` | 界面操作反向 RPC：`ui.request` 往返、无宿主立即失败、会话不一致拒绝、端到端（工具 → 桥 → ws → 浏览器 → 回执 → 工具文本）、工具入参校验与失败文本化 |
 
 ---
@@ -842,6 +914,7 @@ go test -race ./core/db/ ./core/ws/...
 - **不支持审批回传**：`approval` 事件能下发，但客户端无法回应，审批闭环待 P2。
 - **媒体原样透传**：`AgentData.media` 里的 `types.Media` 直接下发；内联 `base64` 仍可传，但受 1MB 单帧限制，稍大的文件请走 3.8 的上传端点。
 - **文件只在单机**：`filestore` 落在本地磁盘、索引在内存，多实例部署时上传与下载必须落到同一进程（或共享同一 `file_dir` 并接受索引不共享），也没有对象存储与 CDN 加速。
+- **agent 工作区不按用户隔离**：工作区是 agent 级别的，所有会话共享；3.9 的文件接口只校验「路径在不在工作区内」，不区分是谁的文件。它面向受信前端，默认关闭。
 - **附件不进历史**：`send_file` 推的是实时帧，不落 `turn_events`；回放时看不到当时发过的附件（文件多半也过期了）。
 - **默认不做真实鉴权**：`DefaultAuthenticator` 把任何 token 都折成同一个固定用户，既不校验有效性，也让文件归属校验形同虚设（TODO）。上线前务必替换成查库或 JWT 校验。
 - **无用户管理**：没有用户增删改、token 轮换，也没有 per-user 连接数/速率限制（`max_clients` 是全局的）。

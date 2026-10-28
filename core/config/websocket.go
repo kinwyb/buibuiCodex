@@ -38,6 +38,12 @@ type WebSocketConfig struct {
 	FileDir       string `json:"file_dir"`
 	MaxUploadSize int64  `json:"max_upload_size"` // 单文件字节上限
 	FileTTL       int    `json:"file_ttl"`        // 文件保留时长（秒）
+	// AgentFiles 是否开放 agent 工作区的文件接口（浏览、读、上传、删除）。
+	//
+	// 默认关闭：这个接口能把 agent 的整个工作区摊开给页面，属于受信前端能力。
+	// 开启后前端可用容器路径访问该 agent 的 /workspace 与 /tmp，
+	// 越界与软链接逃逸由 core/agentfs 拦截。
+	AgentFiles bool `json:"agent_files"`
 	// PageRouter 前置界面路由：消息进 agent 之前，先用决策模型判断要不要替用户打开页面 / 点开入口。
 	// 为空或未启用时完全不影响现有流程。
 	PageRouter *PageRouterConfig `json:"page_router"`

@@ -20,8 +20,11 @@
 //	                        ^
 //	                        └── send_file 回流：agent 产出文件 -> 登记 -> 推一帧带下载地址的附件
 //
+//	浏览器 <--HTTP--> server（/ws/agents/{agent}/...） --> core/agentfs --> agent 工作区
+//	                        ^ 前端传容器路径（/workspace、/tmp），越界与软链接逃逸在 agentfs 里拦
+//
 // 文件字节走 HTTP、ws 只传 fileID：单帧 1MB 装不下附件，也不能断点续传。
-// 详见 server/files.go 与 README 3.8。
+// 详见 server/files.go、server/agentfiles.go 与 README 3.8 / 3.9。
 //
 // 流式文本的渲染约定（增量追加 / 全量覆盖）见 protocol.AgentData 的文档。
 // 历史与实时共用同一套 agent 信封，前端只有一条渲染管线。

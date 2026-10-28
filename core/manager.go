@@ -14,6 +14,7 @@ import (
 	"uuid"
 
 	"github.com/kinwyb/buibuiCodex/codex/cdm"
+	"github.com/kinwyb/buibuiCodex/core/agentfs"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
 	"github.com/kinwyb/buibuiCodex/core/cron"
@@ -221,6 +222,24 @@ func (m *Manager) ListAgents() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// AgentFS 返回某个 agent 工作区的文件视图，供 Web 前端浏览、上传、删除。
+//
+// 视图按该 agent 的路径映射构造：容器里的 /workspace、/tmp 各自对应
+// 宿主机的 <WorkSpace>/workspace、<WorkSpace>/tmp。前端只用容器路径表达，
+// 越界与软链接逃逸的判定都在 agentfs 里做。
+//
+// agent 不存在、或没有配置路径映射时返回 false——宁可什么都不给，
+// 也不要退化成放开整个文件系统。
+func (m *Manager) AgentFS(agentName string) (*agentfs.FS, bool) {
+	m.mu.RLock()
+	mapper, ok := m.pathMapper[agentName]
+	m.mu.RUnlock()
+	if !ok || mapper.IsNoop() {
+		return nil, false
+	}
+	return agentfs.New(mapper.Mappings()), true
 }
 
 // Start 启动消息处理器

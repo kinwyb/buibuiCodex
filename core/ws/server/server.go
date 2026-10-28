@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/kinwyb/buibuiCodex/core/agentfs"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
 	"github.com/kinwyb/buibuiCodex/core/ws/bridge"
@@ -67,6 +68,17 @@ type Options struct {
 	// Files 文件存储。为空时按 cfg.FileDir / cfg.FileTTL 自建，
 	// 注入的场景是测试，或多个 Server 实例共享同一目录。
 	Files *filestore.Store
+	// AgentFiles 提供 agent 工作区访问能力，正常传 *core.Manager。
+	// 只有 cfg.AgentFiles 为 true 时才会注册对应端点；为空表示没接。
+	AgentFiles AgentFileSource
+}
+
+// AgentFileSource 提供 agent 工作区访问能力，由 core.Manager 实现。
+//
+// 返回的文件视图以容器路径寻址（/workspace、/tmp），与 agent 自己看到的一致；
+// 越界与软链接逃逸的校验在 core/agentfs 内完成，server 只做 HTTP 层。
+type AgentFileSource interface {
+	AgentFS(agent string) (*agentfs.FS, bool)
 }
 
 // Server WebSocket 服务
@@ -191,6 +203,14 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc(s.cfg.Path, s.handleWebSocket)
 	// 文件端点挂在同一个端口上：字节走 HTTP，ws 只传 fileID（见 files.go）
 	s.registerFileRoutes(mux)
+	// agent 工作区浏览：默认关闭，配置 agent_files 才注册（见 agentfiles.go）
+	if s.cfg.AgentFiles {
+		if s.opts.AgentFiles == nil {
+			s.log.Warn("websocket agent_files 已开启，但没有注入 AgentFileSource，端点不生效")
+		} else {
+			s.registerAgentFileRoutes(mux)
+		}
+	}
 
 	s.mu.Lock()
 	if s.running {
