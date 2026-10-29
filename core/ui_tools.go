@@ -38,14 +38,17 @@ const (
 // 所以「patch 是什么、该怎么用」只能靠工具描述告诉模型，
 // 否则模型看到只有 patch 的回执会以为页面没返回数据。
 //
-// 前端的默认回执就是 patch（见 bodaWay 的 protocol/ui.ts 里 UIAction.returns）：
-// 这段描述要说清「patch 不带目录类内容」与「三种回执各自怎么处理」，
-// 否则模型会因为一份补丁里找不到列目录而多跑一次 ui_observe。
-const patchHint = "回执按命令性质分三档：纯读命令只回 result（页面状态与 rev 都没变）；" +
-	"写命令默认只回 patch（对上一份快照的增量），把它合进手里那份快照当最新页面 —— " +
-	"没出现的段表示没变，列目录 data.columns、guide、actions[].params 不会重复下发，别当成缺失数据、也别为此多跑 ui_observe；" +
-	"只有视野真的换掉（打开表单弹窗、切页、切模式）才回完整 snapshot，那时整份替换手里那份。" +
-	"失败回 error + patch。rev 在每次回执里给，下一条命令直接用它。"
+// v4 起档位由前端的桥比对新旧快照自己定（见 bodaWay 的 ui-bridge/handler.ts decideReceipt），
+// 并用结构指纹 fp / basedOn 让模型自查手里的快照还作不作数。
+// 这段描述要说清「三档各怎么处理」与「指纹对不上就重新观察」，
+// 否则模型会因为补丁里没有列目录而多跑 ui_observe，或把补丁合进一份过期快照。
+const patchHint = "回执分三档，由前端桥比对新旧页面状态后自动定档：" +
+	"结构变了（切页、打开或关闭表单弹窗、命令表换了一套）回完整 snapshot —— 整份替换手里那份；" +
+	"取值变了回 patch —— 对上一份快照的增量，合进手里那份，没出现的段表示没变，" +
+	"列目录 data.columns、guide、actions[].params 不会重复下发，别当成缺失数据；" +
+	"执行完没有可见变化就只回 result。" +
+	"完整快照带结构指纹 fp、补丁带 basedOn：两者对不上（或手里没有快照）就说明那份已过期，先 ui_observe 再动手。" +
+	"失败回 error + patch；rev 在每次回执里给，下一条命令直接用它。"
 
 // UITransport 把「服务端 → 浏览器」的反向请求能力注入给界面工具。
 //
