@@ -43,10 +43,11 @@ const (
 // 这段描述要说清「三档各怎么处理」与「指纹对不上就重新观察」，
 // 否则模型会因为补丁里没有列目录而多跑 ui_observe，或把补丁合进一份过期快照。
 const patchHint = "回执分三档，由前端桥比对新旧页面状态后自动定档：" +
-	"结构变了（切页、打开或关闭表单弹窗、命令表换了一套）回完整 snapshot —— 整份替换手里那份；" +
-	"取值变了回 patch —— 对上一份快照的增量，合进手里那份，没出现的段表示没变，" +
-	"段内也是逐条增量（form.fields 与 filters 按 id、表格段按键），没列出的项保持原值，不是被清空；" +
-	"列目录 data.columns、guide、actions[].params 不会重复下发，别当成缺失数据；" +
+	"结构变了（切页、打开或关闭表单弹窗、命令表换了一套、表的列目录变了）回完整 snapshot —— 整份替换手里那份；" +
+	"取值变了回 patch —— 对上一份快照的增量，合进手里那份，没出现的段表示没变；" +
+	"段内也按条给（form.fields 按字段 id、tables 按 name），但表里的 filters 与 selection 是**整段覆盖**" +
+	"（filters: [] 就是现在一个条件都没筛，selection.count: 0 就是没有选中），没列出的项才保持原值；" +
+	"列目录 tables[].columns、guide、actions[].params 不会重复下发，别当成缺失数据；" +
 	"执行完没有可见变化就只回 result。" +
 	"完整快照带结构指纹 fp、补丁带 basedOn：两者对不上（或手里没有快照）就说明那份已过期，先 ui_observe 再动手。" +
 	"失败回 error + patch；rev 在每次回执里给，下一条命令直接用它。"
@@ -119,11 +120,13 @@ type UIObserveTool struct {
 func (t *UIObserveTool) Name() string { return "ui_observe" }
 
 func (t *UIObserveTool) Description() string {
-	return "获取用户当前所见页面的快照：页面标识、可执行命令（actions）、筛选条件、选中状态、" +
-		"数据摘要与当前打开的表单。快照是用户此刻的视野，不是完整数据集，数据可能被截断。" +
+	return "获取用户当前所见页面的快照：页面标识、可执行命令（actions）、数据查询条件（query）、" +
+		"页面上的表格（tables：列目录、行数与排序、表内筛选 filters、选中 selection）与当前打开的表单。" +
+		"快照是用户此刻的视野，不是完整数据集：表段只有目录，要行数据用 <表名>.page 现取。" +
 		"任何界面操作前都应先调用本工具，以取得最新的 rev 与确实可用的命令 id。" +
-		"注意：filters / selection / data 只是「当前是什么」，不能直接改；" +
-		"要改变它们必须执行 actions 里对应的命令（例如「设置筛选条件」那条）。" +
+		"注意：query / tables[].filters / tables[].selection 只是「当前是什么」，不能直接改；" +
+		"要改变它们必须执行 actions 里对应的命令（如 query.set、<表名>.filter、<表名>.select）。" +
+		"能不能按某列筛看 columns[].filter；枚举列的候选值不随快照下发，需要时用 <表名>.filter.options 现取。" +
 		"commands 之外不存在任何操作入口。" +
 		"guide 是这一页的操作说明（顺序、前置条件、业务术语）；" +
 		"用户停在主页、没打开任何业务页面时，快照会带 navigation 列出可打开的页面，用 ui_navigate 打开。" +
