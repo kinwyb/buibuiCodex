@@ -14,6 +14,7 @@ import (
 type CodexConfig struct {
 	OpenAIBaseURL  string                     `toml:"openai_base_url,omitempty"`
 	SandboxMode    string                     `toml:"sandbox_mode,omitempty"`
+	ModelProvider  string                     `toml:"model_provider,omitempty"`
 	ModelProviders map[string]ModelProvider   `toml:"model_providers,omitempty"`
 	MCPServers     map[string]MCPServerConfig `toml:"mcp_servers,omitempty"`
 	Features       *Features                  `toml:"features,omitempty"`

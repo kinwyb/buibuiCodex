@@ -30,6 +30,7 @@ type StartParam struct {
 	APIBaseURL     string                     `description:"模型请求地址"`
 	APIKey         string                     `description:"模型APIKey"`
 	Env            []string                   `description:"环境变量"`
+	ModelProvider  string                     `description:"模型供应商"`
 	ModelProviders map[string]ModelProvider   `description:"模型供应商"`
 	MCP            map[string]MCPServerConfig `description:"MCP配置"`
 	Memories       bool                       `description:"是否启用记忆"`
@@ -39,6 +40,7 @@ func (s *StartParam) ToCodexConfig() CodexConfig {
 	codexConfig := CodexConfig{
 		OpenAIBaseURL:  s.APIBaseURL,
 		SandboxMode:    "workspace-write",
+		ModelProvider:  s.ModelProvider,
 		ModelProviders: s.ModelProviders,
 		MCPServers:     s.MCP,
 		Memories: &Memories{

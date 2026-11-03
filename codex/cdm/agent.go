@@ -97,6 +97,7 @@ func (a *Agent) initProcess() error {
 		CodexHome:     filepath.Join(a.cfg.WorkSpace, "root"),
 		APIBaseURL:    a.cfg.Provider.APIBaseURL,
 		SkillDir:      a.cfg.SkillDir,
+		ModelProvider: a.cfg.ProviderName,
 		//APIKey:        a.cfg.Provider.APIKey,
 		Env: []string{
 			"OPENAI_API_KEY_" + a.cfg.ProviderName + "=" + a.cfg.Provider.APIKey,
@@ -204,8 +205,16 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *Command) (
 	if waitResume {
 		err := thread.Resume(ctx, turn.threadID)
 		if err != nil {
-			slog.Error(err.Error())
-			return nil, historyContent, err
+			if strings.HasPrefix(err.Error(), "no rollout found for thread id") {
+				nTurn, err := a.newThread(ctx, thread, sessionID)
+				if err != nil {
+					return nil, historyContent, err
+				}
+				turn = nTurn
+			} else {
+				slog.Error(err.Error())
+				return nil, historyContent, err
+			}
 		}
 		turn.thread = thread
 		turn.lastUpdateTime = time.Now().Unix()
