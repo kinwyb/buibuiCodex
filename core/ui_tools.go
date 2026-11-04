@@ -34,23 +34,21 @@ const (
 
 // patchHint 界面回执里增量补丁的读法。
 //
-// 页面对后端是黑盒：快照与补丁的内容都由前端定义，服务端只透传。
-// 所以「patch 是什么、该怎么用」只能靠工具描述告诉模型，
-// 否则模型看到只有 patch 的回执会以为页面没返回数据。
+// 回执采用 ui-snap-c 紧凑文本格式（非 JSON），第一行是元数据，后续行是编码内容。
+// 格式规范见 skills/ui-operation/SKILL.md 的「回执格式」段。
 //
 // v4 起档位由前端的桥比对新旧快照自己定（见 bodaWay 的 ui-bridge/handler.ts decideReceipt），
 // 并用结构指纹 fp / basedOn 让模型自查手里的快照还作不作数。
-// 这段描述要说清「三档各怎么处理」与「指纹对不上就重新观察」，
-// 否则模型会因为补丁里没有列目录而多跑 ui_observe，或把补丁合进一份过期快照。
 const patchHint = "回执分三档，由前端桥比对新旧页面状态后自动定档：" +
 	"结构变了（切页、打开或关闭表单弹窗、命令表换了一套、表的列目录变了）回完整 snapshot —— 整份替换手里那份；" +
 	"取值变了回 patch —— 对上一份快照的增量，合进手里那份，没出现的段表示没变；" +
 	"段内也按条给（form.fields 按字段 id、tables 按 name），但表里的 filters 与 selection 是**整段覆盖**" +
-	"（filters: [] 就是现在一个条件都没筛，selection.count: 0 就是没有选中），没列出的项才保持原值；" +
-	"列目录 tables[].columns、guide、actions[].params 不会重复下发，别当成缺失数据；" +
+	"（flt 为空就是现在一个条件都没筛，sel:0 就是没有选中），没列出的项才保持原值；" +
+	"列目录（f/t/y/fi/h 的 TSV）、guide、param-hints 不会重复下发，别当成缺失数据；" +
 	"执行完没有可见变化就只回 result。" +
-	"完整快照带结构指纹 fp、补丁带 basedOn：两者对不上（或手里没有快照）就说明那份已过期，先 ui_observe 再动手。" +
-	"失败回 error + patch；rev 在每次回执里给，下一条命令直接用它。"
+	"完整快照头行带 fp、补丁头行带 basedOn：两者对不上（或手里没有快照）就说明那份已过期，先 ui_observe 再动手。" +
+	"失败回 err 行 + patch；rev 在每次回执头行里给，下一条命令直接用它。" +
+	"回执第一行是元数据（ok/err、rev、result），后续行是 ui-snap-c 编码的快照或补丁文本，不是 JSON。"
 
 // UITransport 把「服务端 → 浏览器」的反向请求能力注入给界面工具。
 //
@@ -282,42 +280,72 @@ func sessionIDOf(state *types.State) string {
 
 // uiResponseMessage 把浏览器回执转成模型可读的文本。
 //
-// 失败时给出明确原因而不是空结果：模型据此判断是该重新观察、重试，还是放弃。
+// 前端的 snapshot / patch 都是 ui-snap-c 编码文本（JSON string，由 bodaWay 的 encoder.ts 生产）。
+// 这里原样输出文本，不再套 JSON —— 二次转义会吃掉压缩收益，也增加模型解析成本。
+//
+// 输出格式：
+//
+//	第一行：元数据（ok/err、rev、result）
+//	后续行：ui-snap-c 编码的快照或补丁
 func uiResponseMessage(resp *protocol.UIResponseData) *types.InputMessage {
 	if resp == nil {
-		return &types.InputMessage{Content: `{"ok":false,"error":"界面没有返回任何结果"}`}
+		return &types.InputMessage{Content: "err\n界面没有返回任何结果"}
 	}
+
+	snapStr := rawText(resp.Snapshot)
+	patchStr := rawText(resp.Patch)
+
+	// 失败回执：err 头 + 可选的补丁
 	if !resp.OK {
 		reason := resp.Error
 		if reason == "" {
 			reason = "界面操作失败，且未返回原因"
 		}
-		// 失败也带上前端给的增量变化：很多错误只存在于页面状态里（表单红格、明细校验），
-		// 丢掉它模型就只能再 observe 一次才知道「到底哪里不对」。
-		return &types.InputMessage{Content: encodeJSON(struct {
-			OK    bool            `json:"ok"`
-			Error string          `json:"error"`
-			Rev   int64           `json:"rev,omitempty"`
-			Patch json.RawMessage `json:"patch,omitempty"`
-		}{OK: false, Error: reason, Rev: resp.Rev, Patch: resp.Patch})}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "err rev=%d reason=%s", resp.Rev, quoteVal(reason))
+		if patchStr != "" {
+			sb.WriteString("\n")
+			sb.WriteString(patchStr)
+		}
+		return &types.InputMessage{Content: sb.String()}
 	}
-	out := struct {
-		OK       bool            `json:"ok"`
-		Rev      int64           `json:"rev,omitempty"`
-		Snapshot json.RawMessage `json:"snapshot,omitempty"`
-		Result   json.RawMessage `json:"result,omitempty"`
-		Patch    json.RawMessage `json:"patch,omitempty"`
-	}{OK: true, Rev: resp.Rev, Snapshot: resp.Snapshot, Result: resp.Result, Patch: resp.Patch}
-	return &types.InputMessage{Content: encodeJSON(out)}
+
+	// 成功回执：ok 头 + 可选的快照或补丁
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "ok rev=%d", resp.Rev)
+	if len(resp.Result) > 0 {
+		fmt.Fprintf(&sb, " result=%s", string(resp.Result))
+	}
+	if snapStr != "" {
+		sb.WriteString("\n")
+		sb.WriteString(snapStr)
+	} else if patchStr != "" {
+		sb.WriteString("\n")
+		sb.WriteString(patchStr)
+	}
+	return &types.InputMessage{Content: sb.String()}
 }
 
-// encodeJSON 序列化为文本，失败时退化成一条可读的错误 JSON
-func encodeJSON(v any) string {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Sprintf(`{"ok":false,"error":%q}`, err.Error())
+// rawText 取出回执里的编码文本。
+// 正常情况下 raw 是 JSON 字符串（ui-snap-c 文本）；万一不是，原样返回原始字节，绝不丢数据。
+func rawText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
 	}
 	return string(raw)
+}
+
+// quoteVal 给含空格或特殊字符的值加双引号
+func quoteVal(s string) string {
+	if strings.ContainsAny(s, " \t\n\"|=") {
+		r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\t", `\t`)
+		return `"` + r.Replace(s) + `"`
+	}
+	return s
 }
 
 // int64Param 兼容模型传入的数字形态（JSON 解析后通常是 float64）

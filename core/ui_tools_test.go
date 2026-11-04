@@ -39,11 +39,11 @@ func testState(sessionID string) *types.State {
 }
 
 func TestUIObserveReturnsSnapshot(t *testing.T) {
-	snapshot := `{"view":"V0189_V0279_V0280","rev":3}`
+	encoded := "!v=7 rev=3 view=V0189_V0279_V0280 t=\"预订单管理\"\n\n## actions\na|refresh|刷新"
 	transport := &fakeUITransport{resp: &protocol.UIResponseData{
 		OK:       true,
 		Rev:      3,
-		Snapshot: json.RawMessage(snapshot),
+		Snapshot: json.RawMessage(mustJSONString(encoded)),
 	}}
 	tool := &UIObserveTool{bridge: testUIBridge(transport)}
 
@@ -58,19 +58,11 @@ func TestUIObserveReturnsSnapshot(t *testing.T) {
 		t.Fatalf("应下发 observe 请求，实际 %+v", transport.req)
 	}
 
-	var out struct {
-		OK       bool            `json:"ok"`
-		Rev      int64           `json:"rev"`
-		Snapshot json.RawMessage `json:"snapshot"`
+	if !strings.HasPrefix(msg.Content, "ok rev=3\n") {
+		t.Fatalf("首行应是元数据头，实际 %s", msg.Content)
 	}
-	if err := json.Unmarshal([]byte(msg.Content), &out); err != nil {
-		t.Fatalf("返回内容应是 JSON: %v (%s)", err, msg.Content)
-	}
-	if !out.OK || out.Rev != 3 {
-		t.Fatalf("应回传 ok 与 rev，实际 %+v", out)
-	}
-	if string(out.Snapshot) != snapshot {
-		t.Fatalf("快照应原样交给模型，实际 %s", out.Snapshot)
+	if !strings.Contains(msg.Content, encoded) {
+		t.Fatalf("快照应原样交给模型，实际 %s", msg.Content)
 	}
 }
 
@@ -126,9 +118,41 @@ func TestUIActFailureIsReturnedAsContent(t *testing.T) {
 	if !strings.Contains(msg.Content, "请重新 ui_observe") {
 		t.Fatalf("应把失败原因交给模型，实际 %s", msg.Content)
 	}
-	if !strings.Contains(msg.Content, `"ok":false`) {
-		t.Fatalf("失败回执应带 ok=false，实际 %s", msg.Content)
+	if !strings.HasPrefix(msg.Content, "err") {
+		t.Fatalf("失败回执应以 err 头开始，实际 %s", msg.Content)
 	}
+}
+
+func TestUIResponseEncodedSnapshotIsForwardedVerbatim(t *testing.T) {
+	// 前端发送 ui-snap-c 编码文本（JSON string）：后端应原样交给模型，
+	// 只加一行元数据头，不做 JSON 二次转义。
+	encoded := "!v=7 rev=3 view=V0189_V0279_V0280 t=\"预订单管理\"\n\n## actions\na|refresh|刷新"
+	transport := &fakeUITransport{resp: &protocol.UIResponseData{
+		OK:       true,
+		Rev:      3,
+		Snapshot: json.RawMessage(mustJSONString(encoded)),
+	}}
+	tool := &UIObserveTool{bridge: testUIBridge(transport)}
+
+	msg, err := tool.Execute(context.Background(), testState("ws_u1_c1"), nil)
+	if err != nil {
+		t.Fatalf("取快照应成功，实际失败: %v", err)
+	}
+	// 元数据头在首行，编码文本逐字原文保留（含换行与引号，不被转义）
+	if !strings.HasPrefix(msg.Content, "ok rev=3\n") {
+		t.Fatalf("首行应是元数据头，实际 %s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, encoded) {
+		t.Fatalf("编码文本应原样保留，实际 %s", msg.Content)
+	}
+}
+
+func mustJSONString(s string) string {
+	raw, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }
 
 func TestUIRequiresSessionAndCommand(t *testing.T) {
@@ -184,12 +208,12 @@ func TestUINavigatePassesViewAndQuery(t *testing.T) {
 func TestUIResponseForwardsPatchToModel(t *testing.T) {
 	// 小调整时前端只回 patch 不回完整快照：补丁必须原样进工具结果，
 	// 否则模型看到「执行成功但什么界面信息都没有」，只能重新 observe。
-	patch := `[{"op":"replace","path":"/filters/workPlace","value":"越南"}]`
+	patchText := "patch|view=V0189_V0279_V0280|basedOn=abc\nq|workPlace|val=越南"
 	transport := &fakeUITransport{resp: &protocol.UIResponseData{
 		OK:     true,
 		Rev:    5,
 		Result: json.RawMessage(`"筛选条件已更新"`),
-		Patch:  json.RawMessage(patch),
+		Patch:  json.RawMessage(mustJSONString(patchText)),
 	}}
 	tool := &UIActTool{bridge: testUIBridge(transport)}
 
@@ -197,19 +221,13 @@ func TestUIResponseForwardsPatchToModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("执行命令应成功，实际失败: %v", err)
 	}
-	var out struct {
-		OK       bool            `json:"ok"`
-		Rev      int64           `json:"rev"`
-		Snapshot json.RawMessage `json:"snapshot"`
-		Patch    json.RawMessage `json:"patch"`
+	if !strings.HasPrefix(msg.Content, "ok rev=5") {
+		t.Fatalf("首行应是元数据头，实际 %s", msg.Content)
 	}
-	if err := json.Unmarshal([]byte(msg.Content), &out); err != nil {
-		t.Fatalf("返回内容应是 JSON: %v (%s)", err, msg.Content)
+	if !strings.Contains(msg.Content, patchText) {
+		t.Fatalf("补丁应原样交给模型，实际 %s", msg.Content)
 	}
-	if string(out.Patch) != patch {
-		t.Fatalf("补丁应原样交给模型，实际 %s", out.Patch)
-	}
-	if out.Snapshot != nil {
-		t.Fatalf("前端没回快照时不该凭空造一个，实际 %s", out.Snapshot)
+	if strings.Contains(msg.Content, "!v=") {
+		t.Fatalf("前端没回快照时不该凭空造一个，实际 %s", msg.Content)
 	}
 }

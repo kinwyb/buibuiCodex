@@ -76,19 +76,23 @@ func TestUIBridgeEndToEnd(t *testing.T) {
 	state := &types.State{SessionID: sessionID}
 
 	// 1) ui_observe：agent 要快照
-	snapshot := `{"view":"V0189_V0279_V0280","rev":5,"actions":[{"id":"refresh","label":"刷新"}]}`
+	snapshotText := "!v=7 rev=5 view=V0189_V0279_V0280 t=\"预订单管理\"\n\n## actions\na|refresh|刷新"
+	snapshotJSON, err := json.Marshal(snapshotText)
+	if err != nil {
+		t.Fatalf("编码快照失败: %v", err)
+	}
 	observe := callTool(pickTool(t, "ui_observe"), state, nil)
 	answerUIRequest(t, conn, &protocol.UIResponseData{
 		OK:       true,
 		Rev:      5,
-		Snapshot: json.RawMessage(snapshot),
+		Snapshot: json.RawMessage(snapshotJSON),
 	})
 
 	got := <-observe
 	if got.err != nil {
 		t.Fatalf("ui_observe 失败: %v", got.err)
 	}
-	if got.msg == nil || !strings.Contains(got.msg.Content, snapshot) {
+	if got.msg == nil || !strings.Contains(got.msg.Content, snapshotText) {
 		t.Fatalf("模型应拿到快照原文，实际 %+v", got.msg)
 	}
 
@@ -108,7 +112,7 @@ func TestUIBridgeEndToEnd(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("ui_act 失败: %v", got.err)
 	}
-	if got.msg == nil || !strings.Contains(got.msg.Content, "已刷新") || !strings.Contains(got.msg.Content, `"rev":6`) {
+	if got.msg == nil || !strings.Contains(got.msg.Content, "已刷新") || !strings.Contains(got.msg.Content, "rev=6") {
 		t.Fatalf("模型应拿到执行结果与新版本，实际 %+v", got.msg)
 	}
 }
