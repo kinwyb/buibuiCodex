@@ -89,6 +89,11 @@ func (s *Server) Request(ctx context.Context, sessionID string, req *protocol.UI
 	}
 }
 
+// RequestChannel ws消息来源channel
+func (s *Server) RequestChannel() string {
+	return s.opts.Channel
+}
+
 // handleUIResponse 实现上行命令协议.TypeUIResponse：认领等待中的请求。
 //
 // 校验顺序：replyTo 存在 -> 载荷可解析 -> 请求仍在等待 -> 会话一致 -> 连接归属一致。

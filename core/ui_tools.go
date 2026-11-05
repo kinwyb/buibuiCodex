@@ -55,6 +55,7 @@ const patchHint = "回执分三档，由前端桥比对新旧页面状态后自�
 // 由 *ws.Server 实现（见 core/ws/server/ui.go 的 Request）。
 // 这里只声明接口而不直接依赖 ws 包，是为了保持包依赖单向：core 不反向依赖 ws。
 type UITransport interface {
+	RequestChannel() string
 	Request(ctx context.Context, sessionID string, req *protocol.UIRequestData) (*protocol.UIResponseData, error)
 }
 
@@ -81,7 +82,7 @@ func (b *UIBridge) SetTransport(t UITransport) {
 }
 
 // request 发起一次界面请求，统一处理「通道未就绪」与「无会话上下文」
-func (b *UIBridge) request(ctx context.Context, sessionID string, req *protocol.UIRequestData) (*protocol.UIResponseData, error) {
+func (b *UIBridge) request(ctx context.Context, channel string, sessionID string, req *protocol.UIRequestData) (*protocol.UIResponseData, error) {
 	b.mu.RLock()
 	transport := b.transport
 	b.mu.RUnlock()
@@ -90,6 +91,9 @@ func (b *UIBridge) request(ctx context.Context, sessionID string, req *protocol.
 	}
 	if sessionID == "" {
 		return nil, errors.New("界面工具缺少会话上下文：仅能在具体的 Web 会话里调用")
+	}
+	if transport.RequestChannel() != "" && transport.RequestChannel() != channel {
+		return nil, errors.New("界面工具不支持：仅能在 Web 会话来源消息中调用")
 	}
 	return transport.Request(ctx, sessionID, req)
 }
@@ -139,7 +143,7 @@ func (t *UIObserveTool) Parameters() types.ToolParams {
 }
 
 func (t *UIObserveTool) Execute(ctx context.Context, state *types.State, _ map[string]any) (*types.InputMessage, error) {
-	resp, err := t.bridge.request(ctx, sessionIDOf(state), &protocol.UIRequestData{Op: uiOpObserve})
+	resp, err := t.bridge.request(ctx, channelOf(state), sessionIDOf(state), &protocol.UIRequestData{Op: uiOpObserve})
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +206,7 @@ func (t *UIActTool) Execute(ctx context.Context, state *types.State, params map[
 		req.Rev = rev
 	}
 
-	resp, err := t.bridge.request(ctx, sessionIDOf(state), req)
+	resp, err := t.bridge.request(ctx, channelOf(state), sessionIDOf(state), req)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +267,7 @@ func (t *UINavigateTool) Execute(ctx context.Context, state *types.State, params
 		req.Params = encoded
 	}
 
-	resp, err := t.bridge.request(ctx, sessionIDOf(state), req)
+	resp, err := t.bridge.request(ctx, channelOf(state), sessionIDOf(state), req)
 	if err != nil {
 		return nil, err
 	}
@@ -276,6 +280,13 @@ func sessionIDOf(state *types.State) string {
 		return ""
 	}
 	return state.SessionID
+}
+
+func channelOf(state *types.State) string {
+	if state == nil || state.Input == nil {
+		return ""
+	}
+	return state.Input.Channel
 }
 
 // uiResponseMessage 把浏览器回执转成模型可读的文本。
