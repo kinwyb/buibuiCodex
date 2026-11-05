@@ -27,6 +27,7 @@ type SessionThread struct {
 	CreateTime time.Time  `json:"create_time" gorm:"index;not null"` //创建时间
 	LastUpdate time.Time  `json:"last_update" gorm:"index;not null"` //最后更新时间
 	TokenUsage TokenUsage `json:"total" gorm:"embedded"`             // 当前 Thread 累计用量
+	IsDel      bool       `json:"isdel" gorm:"column:isdel;index;not null;default:false"`
 }
 
 type SessionTurn struct {
@@ -209,6 +210,8 @@ type ISession interface {
 	ThreadQueryByID(ctx context.Context, sessionID string) *SessionThread
 	// ThreadSave session codex thread 保存
 	ThreadSave(ctx context.Context, thread *SessionThread) error
+	// ThreadDelete 软删除指定会话下的线程，只标记 isdel，不物理删除历史数据
+	ThreadDelete(ctx context.Context, sessionID string, threadID string) error
 	// LastThread 查询session对应的最后thread
 	LastThread(ctx context.Context, sessionID string, agent string) *SessionThread
 	// RequestSave 请求保存
@@ -259,6 +262,10 @@ func (s *sessionDefautStorage) SessionSave(ctx context.Context, session *Session
 }
 
 func (s *sessionDefautStorage) ThreadSave(ctx context.Context, thread *SessionThread) error {
+	return nil
+}
+
+func (s *sessionDefautStorage) ThreadDelete(ctx context.Context, sessionID string, threadID string) error {
 	return nil
 }
 
@@ -344,7 +351,7 @@ func (s *sessionStorage) SessionQueryByID(ctx context.Context, sessionID string)
 
 func (s *sessionStorage) ThreadQueryByID(ctx context.Context, threadID string) *SessionThread {
 	var ret SessionThread
-	s.db.WithContext(ctx).Where("thread_id = ?", threadID).First(&ret)
+	s.db.WithContext(ctx).Where("thread_id = ? AND isdel = ?", threadID, false).First(&ret)
 	if ret.ThreadID == "" {
 		return nil
 	}
@@ -365,11 +372,20 @@ func (s *sessionStorage) ThreadSave(ctx context.Context, thread *SessionThread) 
 	}).Create(&thread).Error
 }
 
+func (s *sessionStorage) ThreadDelete(ctx context.Context, sessionID string, threadID string) error {
+	if sessionID == "" || threadID == "" {
+		return errors.New("session_id and thread_id are required")
+	}
+	return s.db.WithContext(ctx).Model(&SessionThread{}).
+		Where("session_id = ? AND thread_id = ?", sessionID, threadID).
+		Update("isdel", true).Error
+}
+
 func (s *sessionStorage) LastThread(ctx context.Context, sessionID string, agent string) *SessionThread {
 	var thread = &SessionThread{}
 	// 查询最近1小时内的thread
 	err := s.db.WithContext(ctx).Model(thread).
-		Where(" session_id = ? AND agent = ? ", sessionID, agent).
+		Where(" session_id = ? AND agent = ? AND isdel = ? ", sessionID, agent, false).
 		Order("last_update desc").First(thread).Error
 	if err != nil {
 		return nil
@@ -405,7 +421,7 @@ func (s *sessionStorage) TurnQueryByID(ctx context.Context, turnID string) *Sess
 func (s *sessionStorage) ThreadList(ctx context.Context, sessionID string) ([]SessionThread, error) {
 	var list []SessionThread
 	err := s.db.WithContext(ctx).
-		Where("session_id = ?", sessionID).
+		Where("session_id = ? AND isdel = ?", sessionID, false).
 		Order("create_time asc").
 		Find(&list).Error
 	if err != nil {
@@ -420,7 +436,9 @@ func (s *sessionStorage) ThreadList(ctx context.Context, sessionID string) ([]Se
 // 会话键形如 ws_<userID>_<chatID>，其中的下划线在 LIKE 里是单字符通配符，
 // 前缀匹配会误命中别的用户（ws_alice 与 wsXalice）。
 func (s *sessionStorage) ThreadPage(ctx context.Context, query ThreadQuery) ([]SessionThread, error) {
-	tx := s.db.WithContext(ctx).Model(&SessionThread{}).Select("session_threads.*")
+	tx := s.db.WithContext(ctx).Model(&SessionThread{}).
+		Select("session_threads.*").
+		Where("session_threads.isdel = ?", false)
 
 	if query.SessionID != "" {
 		tx = tx.Where("session_threads.session_id = ?", query.SessionID)
@@ -550,6 +568,11 @@ func (s *sessionStorage) TurnList(ctx context.Context, query TurnQuery) ([]Sessi
 	if !query.Since.IsZero() {
 		tx = tx.Where("created_at >= ?", query.Since)
 	}
+	threads := s.tableName("SessionThread")
+	tx = tx.Where(
+		fmt.Sprintf("NOT EXISTS (SELECT 1 FROM %s st WHERE st.thread_id = session_turns.thread_id AND st.isdel = ?)", threads),
+		true,
+	)
 
 	var list []SessionTurn
 	if err := tx.Order("seq desc").Limit(query.NormalizeLimit()).Find(&list).Error; err != nil {
@@ -588,6 +611,11 @@ func (s *sessionStorage) TurnEventList(ctx context.Context, query TurnEventQuery
 	if query.AfterSeq > 0 {
 		tx = tx.Where("seq > ?", query.AfterSeq)
 	}
+	threads := s.tableName("SessionThread")
+	tx = tx.Where(
+		fmt.Sprintf("NOT EXISTS (SELECT 1 FROM %s st WHERE st.thread_id = turn_events.thread_id AND st.isdel = ?)", threads),
+		true,
+	)
 
 	var list []TurnEvent
 	if err := tx.Order("seq asc").Limit(query.NormalizeLimit()).Find(&list).Error; err != nil {

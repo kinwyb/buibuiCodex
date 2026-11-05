@@ -64,6 +64,7 @@ const (
 	TypeAgentList      = "agent.list"          // 拉取可用 agent
 	TypeSessionList    = "session.list"        // 拉取对话列表（响应使用同名的 system 类型）
 	TypeSessionHistory = "session.history"     // 拉取历史消息（响应使用同名的 system 类型）
+	TypeSessionDelete  = "session.delete"      // 软删除一个对话线程（响应使用同名的 system 类型）
 	TypeTurnReplay     = "session.turn.replay" // 回放单轮的完整执行过程（响应使用同名的 system 类型）
 )
 

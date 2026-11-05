@@ -261,6 +261,18 @@ type SessionHistoryData struct {
 	IncludeFrames bool `json:"includeFrames,omitempty"`
 }
 
+// SessionDeleteData 上行：软删除一个对话线程。
+// threadID 已能唯一确定所属会话，服务端会从线程记录反查 sessionID 并校验归属。
+type SessionDeleteData struct {
+	ThreadID string `json:"threadID"`
+}
+
+// SessionDeleteResult 软删除响应。
+type SessionDeleteResult struct {
+	ThreadID string `json:"threadID"`
+	Deleted  bool   `json:"deleted"`
+}
+
 // HistoryTurn 历史轮次，Seq 可直接作为下一次翻页的 beforeSeq。
 //
 // Question / Answer 是轮次摘要，便于列表页直接渲染；

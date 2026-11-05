@@ -91,19 +91,23 @@ func (r *Registry) loadHistory(ctx context.Context, sessionID string, data proto
 		if err != nil {
 			return nil, err
 		}
-		item := protocol.HistoryThread{
-			ThreadID: query.ThreadID,
-			Turns:    toHistoryTurns(turns),
-			HasMore:  len(turns) >= limit,
-		}
 		// 线程级累计用量只在 thread 记录里，单独补一次查询
-		if meta := r.deps.Turns.ThreadQueryByID(ctx, query.ThreadID); meta != nil {
-			item.Agent = meta.Agent
-			item.CreatedAt = millis(meta.CreateTime)
-			item.LastUpdate = millis(meta.LastUpdate)
-			item.Usage = threadUsageOf(*meta)
+		meta := r.deps.Turns.ThreadQueryByID(ctx, query.ThreadID)
+		// 已软删除的线程既没有 meta，轮次也会被存储层过滤掉；不返回空线程项。
+		if meta != nil || len(turns) > 0 {
+			item := protocol.HistoryThread{
+				ThreadID: query.ThreadID,
+				Turns:    toHistoryTurns(turns),
+				HasMore:  len(turns) >= limit,
+			}
+			if meta != nil {
+				item.Agent = meta.Agent
+				item.CreatedAt = millis(meta.CreateTime)
+				item.LastUpdate = millis(meta.LastUpdate)
+				item.Usage = threadUsageOf(*meta)
+			}
+			result.Threads = append(result.Threads, item)
 		}
-		result.Threads = append(result.Threads, item)
 	default:
 		// 未指定线程：session -> thread -> turn
 		threads, err := r.deps.Turns.ThreadList(ctx, sessionID)

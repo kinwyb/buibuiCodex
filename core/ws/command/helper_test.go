@@ -41,19 +41,25 @@ func newTestClientAs(hub *conn.Hub, userID string) *conn.Client {
 }
 
 type fakeTurnReader struct {
-	threads      []db.SessionThread
-	turns        map[string][]db.SessionTurn
-	queries      []db.TurnQuery
-	turnEvents   map[string][]db.TurnEvent
-	eventQueries []db.TurnEventQuery
-	pageThreads  []db.SessionThread
-	pageQueries  []db.ThreadQuery
-	summaries    map[string]db.ThreadSummary
+	threads           []db.SessionThread
+	turns             map[string][]db.SessionTurn
+	queries           []db.TurnQuery
+	turnEvents        map[string][]db.TurnEvent
+	eventQueries      []db.TurnEventQuery
+	pageThreads       []db.SessionThread
+	pageQueries       []db.ThreadQuery
+	summaries         map[string]db.ThreadSummary
+	threadDeleteCalls []threadDeleteCall
+}
+
+type threadDeleteCall struct {
+	SessionID string
+	ThreadID  string
 }
 
 func (f *fakeTurnReader) ThreadPage(_ context.Context, q db.ThreadQuery) ([]db.SessionThread, error) {
 	f.pageQueries = append(f.pageQueries, q)
-	return f.pageThreads, nil
+	return filterActiveThreads(f.pageThreads), nil
 }
 
 func (f *fakeTurnReader) ThreadSummaries(_ context.Context, _ []string) (map[string]db.ThreadSummary, error) {
@@ -61,13 +67,23 @@ func (f *fakeTurnReader) ThreadSummaries(_ context.Context, _ []string) (map[str
 }
 
 func (f *fakeTurnReader) ThreadList(_ context.Context, _ string) ([]db.SessionThread, error) {
-	return f.threads, nil
+	return filterActiveThreads(f.threads), nil
 }
 
 func (f *fakeTurnReader) ThreadQueryByID(_ context.Context, threadID string) *db.SessionThread {
 	for i := range f.threads {
-		if f.threads[i].ThreadID == threadID {
+		if f.threads[i].ThreadID == threadID && !f.threads[i].IsDel {
 			return &f.threads[i]
+		}
+	}
+	return nil
+}
+
+func (f *fakeTurnReader) ThreadDelete(_ context.Context, sessionID string, threadID string) error {
+	f.threadDeleteCalls = append(f.threadDeleteCalls, threadDeleteCall{SessionID: sessionID, ThreadID: threadID})
+	for i := range f.threads {
+		if f.threads[i].SessionID == sessionID && f.threads[i].ThreadID == threadID {
+			f.threads[i].IsDel = true
 		}
 	}
 	return nil
@@ -75,6 +91,9 @@ func (f *fakeTurnReader) ThreadQueryByID(_ context.Context, threadID string) *db
 
 func (f *fakeTurnReader) TurnList(_ context.Context, q db.TurnQuery) ([]db.SessionTurn, error) {
 	f.queries = append(f.queries, q)
+	if q.ThreadID != "" && f.isThreadDeleted(q.ThreadID) {
+		return nil, nil
+	}
 	return f.turns[q.ThreadID], nil
 }
 
@@ -96,4 +115,23 @@ func (f *fakeTurnReader) TurnEventList(_ context.Context, q db.TurnEventQuery) (
 		out = append(out, f.turnEvents[id]...)
 	}
 	return out, nil
+}
+
+func filterActiveThreads(list []db.SessionThread) []db.SessionThread {
+	out := make([]db.SessionThread, 0, len(list))
+	for _, thread := range list {
+		if !thread.IsDel {
+			out = append(out, thread)
+		}
+	}
+	return out
+}
+
+func (f *fakeTurnReader) isThreadDeleted(threadID string) bool {
+	for _, thread := range f.threads {
+		if thread.ThreadID == threadID {
+			return thread.IsDel
+		}
+	}
+	return false
 }

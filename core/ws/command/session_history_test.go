@@ -109,6 +109,27 @@ func TestSessionHistoryWithThreadAndCursor(t *testing.T) {
 	}
 }
 
+func TestSessionHistorySkipsDeletedThread(t *testing.T) {
+	reader := &fakeTurnReader{
+		threads: []db.SessionThread{{ThreadID: "t1", SessionID: "ws_web_s1", IsDel: true}},
+		turns: map[string][]db.SessionTurn{
+			"t1": {{ReqID: "r1", ThreadID: "t1"}},
+		},
+	}
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{
+		SessionID: "ws_web_s1",
+		ThreadID:  "t1",
+	})
+	var result protocol.SessionHistoryResult
+	_ = resp.DecodeData(&result)
+	if len(result.Threads) != 0 {
+		t.Fatalf("已删除线程不应出现在历史结果中: %+v", result.Threads)
+	}
+}
+
 func TestSessionHistorySinceAndChatID(t *testing.T) {
 	reader := &fakeTurnReader{
 		turns: map[string][]db.SessionTurn{"": {{ReqID: "r1"}}},

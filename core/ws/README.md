@@ -132,6 +132,7 @@ core/ws/
 │   ├── agent_list.go     agent.list
 │   ├── session_list.go   session.list
 │   ├── session_history.go session.history（含执行过程帧）
+│   ├── session_delete.go session.delete（thread 软删除）
 │   ├── turn_replay.go    session.turn.replay
 │   └── helper.go         命令间共用的小工具
 └── server/          HTTP 升级、鉴权、Origin、生命周期、组装
@@ -198,6 +199,7 @@ server ──> command ──> replay ──> protocol
 | `agent.list` | 收到同名上行命令 | `agents`、`defaultAgent` |
 | `session.list` | 收到同名上行命令 | `items[]`、`hasMore`、下一页游标（见 5.1） |
 | `session.history` | 收到同名上行命令 | `sessionID`、`threads[]`、（可选）`frames[]`（见 5.2） |
+| `session.delete` | 收到同名上行命令 | `threadID`、`deleted` |
 | `session.turn.replay` | 收到同名上行命令 | `sessionID`、`turnID`、`frames[]`（见 5.2） |
 | `shutdown` | 服务停止前 | `reason` |
 
@@ -285,6 +287,7 @@ delta == false   全量快照，整体覆盖当前消息
 | `agent.list` | — | 拉取可用 agent |
 | `session.list` | `limit?`、`beforeLastUpdate?`、`beforeThreadID?` | 拉取对话列表，见 5.1 |
 | `session.history` | `sessionID?`、`chatID?`、`threadID?`、`beforeSeq?`、`since?`、`limit?`、`includeFrames?` | 拉取历史消息，见 5.2 |
+| `session.delete` | `threadID` | 软删除一个对话线程，见 5.1 |
 | `session.turn.replay` | `sessionID?`、`chatID?`、`turnID`、`afterSeq?`、`limit?` | 回放单轮完整过程，见 5.2 |
 
 `chat.send` 可以不传 `chatID` 与 `sessionID`：服务端会沿用连接当前的对话（即 `hello` 下发的 `chatID`），前端只需持有登录 token。传 `chatID` 表示切换到该对话，连接上下文随之更新；`ack` 会返回本次使用的 `chatID` 与 `sessionID`（`ws_<userID>_<chatID>`）。
@@ -632,12 +635,27 @@ curl -X PUT --data-binary @report.md \
 - `preview` 取末轮回答（80 字符）
 - `turns` 是轮次数量，不需要再拉详情就能显示「共 N 轮」
 - `completed=false` 表示末轮没有正常结束（被中断或仍在跑）
+- `isdel=1` 的 thread 不进入列表、历史轮次与回放事件查询
 - `usage.total` 是该对话的累计 token 用量；从未产生过用量时整个 `usage` 字段省略，前端不要显示「0 tokens」
 - 只返回当前用户自己的对话：归属过滤在 SQL 里通过 `sessions` 表关联完成，不能靠 `session_id` 前缀匹配——会话键里的下划线在 `LIKE` 里是通配符，`ws_alice_` 会误命中 `ws-alice_`
 
 翻页：把 `nextBeforeLastUpdate` + `nextBeforeThreadID` 原样回传即可。用复合游标而非单一时间戳，是因为多个对话的 `last_update` 可能落在同一毫秒，只比时间会漏项。
 
 `limit`：0 用默认 50，负数取全量（上限 200）。`hasMore` 是保守判断（本页条数触顶即为 true），以返回空列表为准。
+
+删除对话：
+
+```json
+{"kind":"client","type":"session.delete","data":{"threadID":"th-2"}}
+```
+
+服务端从 thread 记录反查 sessionID 并校验当前用户归属，成功后只把 `session_threads.isdel` 置为 1，不物理删除 turn/event。响应为同名 system 帧：
+
+```json
+{"kind":"system","type":"session.delete","data":{"threadID":"th-2","deleted":true}}
+```
+
+删除后 `session.list`、`session.history` 与 `session.turn.replay` 都不再加载该 thread 的数据。
 
 ### 5.2 历史消息
 

@@ -152,6 +152,72 @@ func TestThreadList(t *testing.T) {
 	}
 }
 
+func TestThreadDeleteHidesThreadAndTurns(t *testing.T) {
+	s := newTestSessionStorage(t)
+	seedTurns(t, s)
+	ctx := context.Background()
+	if err := s.TurnEventSave(ctx, &TurnEvent{
+		ID: "e1", ThreadID: "t1", TurnID: "u1", Method: "item/completed", CreateTime: time.Now(),
+	}); err != nil {
+		t.Fatalf("写入轮次事件失败: %v", err)
+	}
+
+	if err := s.ThreadDelete(ctx, "s1", "t1"); err != nil {
+		t.Fatalf("软删除线程失败: %v", err)
+	}
+	if thread := s.ThreadQueryByID(ctx, "t1"); thread != nil {
+		t.Fatalf("已删除线程不应再被元信息查询命中: %+v", thread)
+	}
+
+	threads, err := s.ThreadList(ctx, "s1")
+	if err != nil {
+		t.Fatalf("查询线程失败: %v", err)
+	}
+	if len(threads) != 1 || threads[0].ThreadID != "t2" {
+		t.Fatalf("会话线程列表应排除 isdel=1，实际 %+v", threads)
+	}
+
+	turns, err := s.TurnList(ctx, TurnQuery{SessionID: "s1", Limit: -1})
+	if err != nil {
+		t.Fatalf("查询会话轮次失败: %v", err)
+	}
+	if got := reqIDs(turns); !equalStrings(got, []string{"r3"}) {
+		t.Fatalf("会话历史应排除已删除线程的轮次，实际 %v", got)
+	}
+
+	turns, err = s.TurnList(ctx, TurnQuery{ThreadID: "t1", Limit: -1})
+	if err != nil {
+		t.Fatalf("查询已删除线程轮次失败: %v", err)
+	}
+	if len(turns) != 0 {
+		t.Fatalf("已删除线程不应再加载轮次，实际 %v", reqIDs(turns))
+	}
+
+	events, err := s.TurnEventList(ctx, TurnEventQuery{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("查询已删除线程事件失败: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("已删除线程不应再加载回放事件，实际 %+v", events)
+	}
+	if thread := s.LastThread(ctx, "s1", "codex"); thread != nil {
+		t.Fatalf("后续续聊不应复用已删除线程: %+v", thread)
+	}
+}
+
+func TestThreadDeleteScopesSession(t *testing.T) {
+	s := newTestSessionStorage(t)
+	seedTurns(t, s)
+	ctx := context.Background()
+
+	if err := s.ThreadDelete(ctx, "s2", "t1"); err != nil {
+		t.Fatalf("按错误会话删除不应报错: %v", err)
+	}
+	if thread := s.ThreadQueryByID(ctx, "t1"); thread == nil {
+		t.Fatal("不同会话的删除条件不应命中其他会话的线程")
+	}
+}
+
 func TestRequestSaveKeepsSessionID(t *testing.T) {
 	s := newTestSessionStorage(t)
 	if err := s.RequestSave(context.Background(), "s9", "r9", "问题", "codex"); err != nil {
@@ -419,6 +485,17 @@ func TestThreadPageFiltersByAccount(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].ThreadID != "t1" {
 		t.Fatalf("应只返回 alice 自己的线程，实际 %+v", list)
+	}
+
+	if err := s.ThreadDelete(ctx, "ws_alice_c1", "t1"); err != nil {
+		t.Fatalf("软删除线程失败: %v", err)
+	}
+	list, err = s.ThreadPage(ctx, ThreadQuery{Channel: "ws", AccountID: "alice"})
+	if err != nil {
+		t.Fatalf("删除后查询对话列表失败: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("对话列表应排除 isdel=1 的线程，实际 %+v", list)
 	}
 }
 

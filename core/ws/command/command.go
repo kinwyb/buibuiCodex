@@ -36,6 +36,8 @@ type TurnReader interface {
 	ThreadPage(ctx context.Context, query db.ThreadQuery) ([]db.SessionThread, error)
 	// ThreadQueryByID 按 threadID 查单个线程，历史接口据此补线程级累计用量
 	ThreadQueryByID(ctx context.Context, threadID string) *db.SessionThread
+	// ThreadDelete 软删除线程，只标记 isdel，保留历史数据
+	ThreadDelete(ctx context.Context, sessionID string, threadID string) error
 	ThreadSummaries(ctx context.Context, threadIDs []string) (map[string]db.ThreadSummary, error)
 	TurnList(ctx context.Context, query db.TurnQuery) ([]db.SessionTurn, error)
 	TurnQueryByID(ctx context.Context, turnID string) *db.SessionTurn
@@ -87,6 +89,7 @@ type Registry struct {
 //	agent_list.go       agent.list
 //	session_list.go     session.list
 //	session_history.go  session.history
+//	session_delete.go   session.delete
 //	turn_replay.go      session.turn.replay
 func NewRegistry(deps Deps) *Registry {
 	r := &Registry{deps: deps, handlers: make(map[string]Handler)}
@@ -100,6 +103,7 @@ func NewRegistry(deps Deps) *Registry {
 	r.Register(protocol.TypeAgentList, r.agentList)
 	r.Register(protocol.TypeSessionList, r.sessionList)
 	r.Register(protocol.TypeSessionHistory, r.sessionHistory)
+	r.Register(protocol.TypeSessionDelete, r.sessionDelete)
 	r.Register(protocol.TypeTurnReplay, r.turnReplay)
 	return r
 }
