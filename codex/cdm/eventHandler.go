@@ -348,7 +348,27 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 		eType = types.EventToolStart
 	case jsonRpc.UserMessage:
 		msg.Content = notification.RawData.String()
-		eType = types.EventUserMessageStart
+		if batch, userText, ok := types.ParseUIEventContent(item.Text); ok {
+			msg.Role = types.RoleTool
+			extra := map[string]any{
+				"uiEvent":    true,
+				"eventCount": len(batch.Events),
+			}
+			if userText != "" {
+				extra["userText"] = userText
+			}
+			msg.ToolCalls = []types.ToolCall{{
+				ID:     item.ID,
+				Type:   types.ToolTypeFunction,
+				Name:   "ui_event",
+				Params: types.UIEventToolParams(batch),
+				Extra:  extra,
+			}}
+			event.Metadata["ui_event"] = true
+			eType = types.EventToolStart
+		} else {
+			eType = types.EventUserMessageStart
+		}
 	default:
 		slog.Warn(fmt.Sprintf("⚠️ life item [%s %s] => %s \n", notification.Method, item.Type, notification.RawData.String()))
 		fmt.Printf("⚠️ [%s %s] => %s \n", notification.Method, item.Type, notification.RawData.String())

@@ -220,6 +220,15 @@ data 结构见 `protocol.AgentData`：`event`、`agent`、`role`、`delta`、`co
 
 `truncated` 只在历史回放里可能出现，标记该条内容因为体积上限被截断；实时事件不会置位。
 
+页面主动上报的界面变化仍作为普通 `userMessage` 投递给 Codex，正文开头使用稳定标记：
+
+```text
+<ui_events>{"v":1,"events":[{"ts":1762320000000,"view":"V1","event":"selection.change","payload":{}}]}</ui_events>
+```
+
+服务端只在 WS 转换层把这种 `userMessage` 还原为 `tool_start/tool_completed`（工具名 `ui_event`），
+模型实际看到的仍是用户输入。历史回放复用同一转换，Web 因此不会显示成用户气泡。
+
 #### 流式渲染语义（重要）
 
 前端只需要看 `delta` 一个字段：

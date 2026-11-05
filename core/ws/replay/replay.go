@@ -177,9 +177,29 @@ func itemStep(ev db.TurnEvent, bodyLimit int) (*protocol.AgentData, string) {
 		data.Content, data.Truncated = clip(item.Text, bodyLimit)
 
 	case jsonRpc.UserMessage:
-		data.Event = eventOf(done, types.EventUserMessageCompleted, types.EventUserMessageStart)
-		data.Role = string(types.RoleUser)
-		data.Content, data.Truncated = clip(item.Text, bodyLimit)
+		if batch, userText, ok := types.ParseUIEventContent(item.Text); ok {
+			data.Event = eventOf(done, types.EventToolCompleted, types.EventToolStart)
+			data.Role = string(types.RoleTool)
+			extra := map[string]any{
+				"uiEvent":    true,
+				"eventCount": len(batch.Events),
+			}
+			if userText != "" {
+				extra["userText"] = userText
+			}
+			data.ToolCalls = []types.ToolCall{{
+				ID:     item.ID,
+				Type:   types.ToolTypeFunction,
+				Name:   "ui_event",
+				Params: types.UIEventToolParams(batch),
+				Extra:  extra,
+			}}
+			data.Meta["ui_event"] = true
+		} else {
+			data.Event = eventOf(done, types.EventUserMessageCompleted, types.EventUserMessageStart)
+			data.Role = string(types.RoleUser)
+			data.Content, data.Truncated = clip(item.Text, bodyLimit)
+		}
 
 	case jsonRpc.CommandExecution:
 		data.Event = eventOf(done, types.EventToolCompleted, types.EventToolStart)

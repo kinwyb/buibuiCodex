@@ -631,6 +631,30 @@ func (m *Manager) agentSteer(ctx context.Context, state *types.State) {
 	}
 }
 
+// agentUIEventSteer 把页面事件作为普通 user input 注入当前正在运行的 turn。
+//
+// 这里不单独保存 SessionTurn：事件会随当前 Codex turn 的 userMessage item 落库，
+// 历史回放再把它还原成界面事件工具步骤。
+func (m *Manager) agentUIEventSteer(ctx context.Context, state *types.State) bool {
+	agent := m.defaultAgent
+	m.sessionAgentMux.Lock()
+	agentName := m.sessionAgent[state.SessionID]
+	m.sessionAgentMux.Unlock()
+	if agentName != "" {
+		if ag, exists := m.agents[agentName]; exists {
+			agent = ag
+		}
+	}
+	if agent == nil {
+		return false
+	}
+	if err := agent.Steer(ctx, state); err != nil {
+		slog.Warn("UI event steer failed; queued as next turn", "sessionKey", state.SessionID, "error", err)
+		return false
+	}
+	return true
+}
+
 // handleAgentEvent 处理 Agent 事件，转发到消息总线
 // 使用 firstStart 标记确保每个请求只发送一次 start 状态
 func (m *Manager) handleAgentEvent(ctx context.Context, event *types.Event, seq int, agentName string) {

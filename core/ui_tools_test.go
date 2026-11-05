@@ -21,6 +21,8 @@ type fakeUITransport struct {
 	err       error
 }
 
+func (f *fakeUITransport) RequestChannel() string { return "" }
+
 func (f *fakeUITransport) Request(_ context.Context, sessionID string, req *protocol.UIRequestData) (*protocol.UIResponseData, error) {
 	f.sessionID = sessionID
 	f.req = req

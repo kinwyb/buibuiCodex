@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kinwyb/buibuiCodex/core/db"
+	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
 )
@@ -97,6 +98,12 @@ func (r *Registry) sessionList(ctx context.Context, c *conn.Client, env *protoco
 // 纯媒体轮次的 question 存的是 media JSON，没有展示价值，直接留空由前端兜底。
 func listTitle(question string) string {
 	q := strings.TrimSpace(question)
+	if _, userText, ok := types.ParseUIEventContent(q); ok {
+		if userText == "" {
+			return "界面事件"
+		}
+		return truncateRunes(userText, listTitleRunes)
+	}
 	if q == "" || strings.HasPrefix(q, "[") || strings.HasPrefix(q, "{") {
 		return ""
 	}

@@ -15,6 +15,7 @@ type sessionHandler interface {
 	messageHandler(ctx context.Context, state *types.State)
 	busyNotification(ctx context.Context, msg *types.InputMessage, isStore bool)
 	agentSteer(ctx context.Context, state *types.State)
+	agentUIEventSteer(ctx context.Context, state *types.State) bool
 	log(ctx context.Context, level, source, message string)
 }
 
@@ -61,6 +62,10 @@ func (s *sessionSequence) log(ctx context.Context, level, source, message string
 
 func (s *sessionSequence) agentSteer(ctx context.Context, state *types.State) {
 	slog.Debug("[sessionSequence] message agent steer")
+}
+
+func (s *sessionSequence) agentUIEventSteer(context.Context, *types.State) bool {
+	return false
 }
 
 func newSessionSequence(ctx context.Context, inputSub *bus.InboundSubscription) *sessionSequence {
@@ -149,16 +154,27 @@ func (s *sessionSequence) Stop() error {
 func (s *sessionSequence) handleInboundMessage(state *types.State) {
 	msg := state.Input
 	sessionKey := state.SessionID + msg.SenderID
+	isUIEvent := types.HasUIEventContent(msg.Content)
 
 	// 首次：检查 session 是否正在运行 + 获取 semaphore
 	s.runningMu.Lock()
 	if _, running := s.runningSessions[sessionKey]; running {
 		s.runningMu.Unlock()
+		/*
+		 * 页面事件要立刻进入当前轮：steer 仍是普通 user input，不改模型角色。
+		 * steer 失败才排队，避免把事件丢掉；这种情况下不显示“请求繁忙”，否则
+		 * 用户点一个确认按钮反而会看到一条无关错误。
+		 */
+		if isUIEvent && s.handler.agentUIEventSteer(s.ctx, state) {
+			return
+		}
 		inSq := s.enqueuePending(sessionKey, state)
 		if !inSq {
 			slog.Warn("pending queue full, dropping message", "sessionKey", sessionKey, "msgID", msg.ID, "reason", "session running")
 		}
-		s.handler.busyNotification(s.ctx, msg, inSq)
+		if !inSq || !isUIEvent {
+			s.handler.busyNotification(s.ctx, msg, inSq)
+		}
 		return
 	}
 	select {
@@ -171,7 +187,9 @@ func (s *sessionSequence) handleInboundMessage(state *types.State) {
 		if !inSq {
 			slog.Warn("pending queue full, dropping message", "sessionKey", sessionKey, "msgID", msg.ID, "reason", "semaphore saturated")
 		}
-		s.handler.busyNotification(s.ctx, msg, inSq)
+		if !inSq || !isUIEvent {
+			s.handler.busyNotification(s.ctx, msg, inSq)
+		}
 		return
 	}
 

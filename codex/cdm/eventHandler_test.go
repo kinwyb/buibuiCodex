@@ -214,3 +214,28 @@ func Test_lifeEventParse_startedResultNotLiteralNull(t *testing.T) {
 		t.Fatalf("空入参应为空串，实际 %q", params)
 	}
 }
+
+func Test_lifeEventParse_uiEventBatchAsToolStep(t *testing.T) {
+	raw := `{"item":{"id":"ui_1","type":"userMessage","text":"<ui_events>{\"v\":1,\"events\":[{\"ts\":1,\"view\":\"V1\",\"event\":\"selection.change\"}]}</ui_events>\n请分析"}}`
+	a := &Agent{}
+	state := types.NewState(&types.InputMessage{ID: "req_ui", Session: "ws_user_chat", Channel: "ws"})
+	var got *types.Event
+	state.EventHandler = func(event *types.Event) { got = event }
+
+	a.codexEventParse(state, &codex.Event{
+		Type:    codex.EventTypeNotification,
+		Method:  string(codex.ItemCompleted),
+		RawData: []byte(raw),
+	})
+
+	if got == nil || got.Type != types.EventToolCompleted {
+		t.Fatalf("UI 事件批次应映射成 tool_completed: %+v", got)
+	}
+	if len(got.Message.ToolCalls) != 1 {
+		t.Fatalf("应带一个工具步骤: %+v", got.Message)
+	}
+	call := got.Message.ToolCalls[0]
+	if call.Name != "ui_event" || call.Extra["uiEvent"] != true || call.Extra["userText"] != "请分析" {
+		t.Fatalf("UI 事件工具步骤内容不符: %+v", call)
+	}
+}

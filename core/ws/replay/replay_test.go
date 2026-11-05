@@ -161,6 +161,28 @@ func TestBuildKeepsStartedAndCompleted(t *testing.T) {
 	}
 }
 
+func TestBuildMapsUIEventsToToolSteps(t *testing.T) {
+	content := `<ui_events>{"v":1,"events":[{"ts":1,"view":"V1","event":"selection.change","payload":{"rowId":"9"}}]}</ui_events>
+请分析`
+	raw, _ := json.Marshal(map[string]any{
+		"item": map[string]any{"id": "u1", "type": "userMessage", "text": content},
+	})
+	frames, _ := build(t, []db.TurnEvent{ev(1, "item/completed", string(raw))}, Options{})
+	if len(frames) != 1 {
+		t.Fatalf("应生成一个事件工具帧，实际 %d", len(frames))
+	}
+	data := decodeFrame(t, frames[0])
+	if data.Event != string(types.EventToolCompleted) || data.Role != string(types.RoleTool) {
+		t.Fatalf("事件批次应映射成工具完成帧: %+v", data)
+	}
+	if len(data.ToolCalls) != 1 || data.ToolCalls[0].Name != "ui_event" {
+		t.Fatalf("工具调用内容不符合预期: %+v", data.ToolCalls)
+	}
+	if data.ToolCalls[0].Extra["uiEvent"] != true || data.ToolCalls[0].Extra["userText"] != "请分析" {
+		t.Fatalf("事件元数据不符合预期: %+v", data.ToolCalls[0].Extra)
+	}
+}
+
 // 超长输出按上限截断，并打上有损标记
 func TestBuildTruncatesLongBody(t *testing.T) {
 	output := strings.Repeat("日志行\n", 300)

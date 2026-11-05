@@ -161,6 +161,18 @@ func TestSessionListSkipsMediaTitle(t *testing.T) {
 	}
 }
 
+func TestSessionListTitleIgnoresUIEventMarker(t *testing.T) {
+	content := `<ui_events>{"v":1,"events":[{"ts":1,"view":"V1","event":"selection.change"}]}</ui_events>
+分析当前选中的订单`
+	if got := listTitle(content); got != "分析当前选中的订单" {
+		t.Fatalf("标题应只使用用户正文，实际 %q", got)
+	}
+	pure := `<ui_events>{"v":1,"events":[{"ts":1,"view":"V1","event":"selection.change"}]}</ui_events>`
+	if got := listTitle(pure); got != "界面事件" {
+		t.Fatalf("纯事件标题应兜底为“界面事件”，实际 %q", got)
+	}
+}
+
 func TestSessionListWithoutReader(t *testing.T) {
 	reg, hub := newTestRegistryWithTurns(nil, nil, nil)
 	c := newTestClient(hub)
