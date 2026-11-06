@@ -23,6 +23,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/ws/filestore"
 	"github.com/kinwyb/buibuiCodex/core/ws/preflow"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
+	"github.com/kinwyb/buibuiCodex/mcp/edp"
 )
 
 // defaultUploadLimit 兜底的单文件上限，与 config.DefaultMaxUploadSize 保持一致
@@ -38,14 +39,14 @@ const defaultUploadLimit int64 = 50 << 20
 // userID 会拼进会话键 ws_<userID>_<chatID>，必须是合法标识（见 validUserID）。
 type Authenticator func(token string) (userID string, chatID string, ok bool)
 
-// DefaultAuthenticator 默认实现：token 即用户标识，对话由服务端生成。
-// TODO 接入真实鉴权（查库/缓存/JWT）时替换本函数，可同时返回该用户当前的对话 ID。
+// DefaultAuthenticator 默认实现：调用 EDP /login/userInfo 校验 token，
+// 并以员工工号 EmpID 作为用户标识，对话由服务端生成。
 func DefaultAuthenticator(token string) (string, string, bool) {
-	//if !validUserID(token) {
-	//	return "", "", false
-	//}
-	//return token, "", true
-	return "aibAnLYMK4TgdOkkhCCYZabAtOGE64ouXFV", "007928", true
+	user, err := edp.GetUserInfo(token)
+	if err != nil || !validUserID(user.EmpID) {
+		return "", "", false
+	}
+	return user.EmpID, "", true
 }
 
 // Options 服务启动参数

@@ -46,8 +46,7 @@ func newFileTestEnv(t *testing.T) *fileTestEnv {
 		},
 		Bus:    msgBus,
 		Agents: fakeAgents{"codex"},
-		// 默认鉴权把任何 token 都折成同一个固定用户，归属校验就测不出来了。
-		// 这里让 token 直接充当 userID，和后端接入真实鉴权后的形态一致。
+		// 测试直接让 token 充当 userID，避免依赖 EDP 用户信息接口。
 		Authenticator: func(token string) (string, string, bool) {
 			if token == "" {
 				return "", "", false

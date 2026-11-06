@@ -16,7 +16,7 @@ import (
 )
 
 // uiTestServer 起一个身份固定的服务：token 只用于握手，身份由 Authenticator 决定，
-// 这样测试不依赖 DefaultAuthenticator 的本地调试实现。
+// 这样测试不依赖 EDP 用户信息接口。
 func uiTestServer(t *testing.T, timeout time.Duration) (*Server, *websocket.Conn) {
 	t.Helper()
 	msgBus := bus.NewMessageBus(8)

@@ -11,11 +11,19 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
+	"github.com/kinwyb/buibuiCodex/mcp/edp"
 )
 
 type fakeAgents []string
 
 func (f fakeAgents) ListAgents() []string { return []string(f) }
+
+func tokenAuthenticator(token string) (string, string, bool) {
+	if !validUserID(token) {
+		return "", "", false
+	}
+	return token, "", true
+}
 
 func dial(t *testing.T, s *Server, query string) *websocket.Conn {
 	t.Helper()
@@ -52,9 +60,10 @@ func TestHandshakeAndPing(t *testing.T) {
 	defer msgBus.Close()
 
 	s := New(Options{
-		Config: &config.WebSocketConfig{Enabled: true, SendBuffer: 8},
-		Bus:    msgBus,
-		Agents: fakeAgents{"codex"},
+		Config:        &config.WebSocketConfig{Enabled: true, SendBuffer: 8},
+		Bus:           msgBus,
+		Agents:        fakeAgents{"codex"},
+		Authenticator: tokenAuthenticator,
 	})
 	conn := dial(t, s, "?token=tk")
 
@@ -70,7 +79,7 @@ func TestHandshakeAndPing(t *testing.T) {
 		t.Fatalf("hello 载荷不符合预期: %+v", hd)
 	}
 	if hd.UserID != "tk" {
-		t.Fatalf("token 应直接作为 userID，实际 %s", hd.UserID)
+		t.Fatalf("应使用自定义鉴权返回的 userID，实际 %s", hd.UserID)
 	}
 	if hd.ChatID == "" {
 		t.Fatal("hello 应下发当前对话标识")
@@ -102,9 +111,10 @@ func TestAgentList(t *testing.T) {
 	defer msgBus.Close()
 
 	s := New(Options{
-		Config: &config.WebSocketConfig{Enabled: true, SendBuffer: 8, DefaultAgent: "codex"},
-		Bus:    msgBus,
-		Agents: fakeAgents{"codex", "coder"},
+		Config:        &config.WebSocketConfig{Enabled: true, SendBuffer: 8, DefaultAgent: "codex"},
+		Bus:           msgBus,
+		Agents:        fakeAgents{"codex", "coder"},
+		Authenticator: tokenAuthenticator,
 	})
 	conn := dial(t, s, "?token=tester")
 	_ = readEnvelope(t, conn) // hello
@@ -143,7 +153,23 @@ func TestRejectsUnauthorized(t *testing.T) {
 	}
 }
 
-func TestTokenAsUserID(t *testing.T) {
+func TestDefaultAuthenticatorUsesEDPUserInfo(t *testing.T) {
+	userInfoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/login/userInfo" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		switch r.Header.Get("token") {
+		case "token-1":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"EmpID":"007928","EmpName":"张三","RequestSucc":true,"Token":"token-1","UserID":"u-1"}}`))
+		case "bad-empid":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"EmpID":"bad_user","RequestSucc":true,"Token":"bad-empid","UserID":"u-2"}}`))
+		default:
+			_, _ = w.Write([]byte(`{"code":10001,"errmsg":"用户未登入"}`))
+		}
+	}))
+	defer userInfoServer.Close()
+	edp.NewAPIClient(userInfoServer.URL)
+
 	msgBus := bus.NewMessageBus(4)
 	defer msgBus.Close()
 
@@ -152,35 +178,24 @@ func TestTokenAsUserID(t *testing.T) {
 		Bus:    msgBus,
 	})
 
-	helloOf := func(token string) protocol.HelloData {
-		conn := dial(t, s, "?token="+token)
-		env := readEnvelope(t, conn)
-		var hd protocol.HelloData
-		if err := env.DecodeData(&hd); err != nil {
-			t.Fatalf("解析 hello 失败: %v", err)
-		}
-		return hd
+	conn := dial(t, s, "?token=token-1")
+	env := readEnvelope(t, conn)
+	var hd protocol.HelloData
+	if err := env.DecodeData(&hd); err != nil {
+		t.Fatalf("解析 hello 失败: %v", err)
+	}
+	if hd.UserID != "007928" {
+		t.Fatalf("应将 EmpID 作为 userID，实际 %s", hd.UserID)
+	}
+	if hd.ChatID == "" {
+		t.Fatal("hello 应下发服务端生成的 chatID")
 	}
 
-	if got := helloOf("alice").UserID; got != "alice" {
-		t.Fatalf("token 应直接作为 userID，实际 %s", got)
+	if _, _, ok := DefaultAuthenticator("bad-empid"); ok {
+		t.Fatal("EmpID 不合法时应拒绝")
 	}
-	if got := helloOf("bob-2").UserID; got != "bob-2" {
-		t.Fatalf("含短横线的 token 应可用，实际 %s", got)
-	}
-
-	// userID 会拼进会话键，含下划线等字符的 token 直接拒绝
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", s.handleWebSocket)
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?token=bad_user"
-	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err == nil {
-		t.Fatal("非法 userID 应握手失败")
-	}
-	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("期望 401，实际 %+v", resp)
+	if _, _, ok := DefaultAuthenticator("invalid-token"); ok {
+		t.Fatal("用户信息查询失败时应拒绝")
 	}
 }
 
@@ -232,8 +247,9 @@ func TestRejectsTooManyClients(t *testing.T) {
 	defer msgBus.Close()
 
 	s := New(Options{
-		Config: &config.WebSocketConfig{Enabled: true, SendBuffer: 8, MaxClients: 1},
-		Bus:    msgBus,
+		Config:        &config.WebSocketConfig{Enabled: true, SendBuffer: 8, MaxClients: 1},
+		Bus:           msgBus,
+		Authenticator: tokenAuthenticator,
 	})
 	_ = dial(t, s, "?token=tester")
 	time.Sleep(50 * time.Millisecond)

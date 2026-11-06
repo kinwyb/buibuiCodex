@@ -80,6 +80,8 @@ func NewMcp(cfg *Config, sess db.ISession) *Mcp {
 		}
 	}
 	cfg.applyOAuthDefaults()
+	// EDP 客户端同时被 MCP 工具与 WebSocket 默认鉴权使用，必须在服务启动前就绪。
+	edp.NewAPIClient(cfg.BaseURL)
 	return &Mcp{
 		cfg:  cfg,
 		sess: sess,
@@ -101,7 +103,6 @@ func (m *Mcp) Start(ctx context.Context) error {
 		return err
 	}
 	m.tokenCache = cache
-	edp.NewAPIClient(m.cfg.BaseURL)
 	serv.UserQueryFun = m.codexThreadParseUser
 	// 初始化 MCP 服务
 	s := server.NewMCPServer(m.cfg.Name, m.cfg.Version, server.WithToolCapabilities(true),

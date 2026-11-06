@@ -12,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/kinwyb/buibuiCodex/mcp/models"
 )
 
 var tokenCache *TokenCache
@@ -109,14 +107,12 @@ func (tc *TokenCache) GetToken(userID string) (string, error) {
 
 // validateToken 调用 /login/userInfo 验证 token 是否有效。
 func (tc *TokenCache) validateToken(token string) bool {
-
-	req := NewRequest(http.MethodGet, "/login/userInfo", WithToken(token))
-	result, err := DoClient[models.UserInfo](req)
+	result, err := GetUserInfo(token)
 	if err != nil {
 		return false
 	}
 
-	return result.Data.Token != "" && result.Data.UserID != ""
+	return result.Token != "" && result.UserID != ""
 }
 
 // login 调用 /login 接口获取新 token。

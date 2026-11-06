@@ -83,8 +83,8 @@ defer wsServer.Stop(shutdownCtx) // 建议带 5s 超时的 context
 ### 1.3 联调
 
 ```bash
-wscat -c "ws://127.0.0.1:8765/ws?token=alice"
-# token 即当前连接的身份（默认实现），会话键会是 ws_alice_<chatID>
+wscat -c "ws://127.0.0.1:8765/ws?token=<登录 token>"
+# 默认实现用 token 查询 EDP /login/userInfo，会话键是 ws_<EmpID>_<chatID>
 # 连上后先收到 hello，里面带 userID 与 chatID，之后发消息不必再传对话信息
 {"v":1,"id":"c1","kind":"client","type":"chat.send","data":{"content":"你好"}}
 ```
@@ -776,7 +776,9 @@ type Authenticator func(token string) (userID string, chatID string, ok bool)
 - `chatID` 为空 → 服务端生成 uuid，通过 `hello` 下发
 - `chatID` 非空 → 直接作为当前对话，适合「一个 token 固定一个对话」或从库里恢复最近会话
 
-默认实现 `DefaultAuthenticator`：token 即 userID，`chatID` 留空，只校验 token 格式（字母、数字、短横线，长度 ≤ 64）。
+默认实现 `DefaultAuthenticator`：把 token 放入请求头调用 EDP `/login/userInfo`，以返回的 `EmpID`（员工工号）作为 userID，`chatID` 留空由服务端生成。token 无效、`RequestSucc=false` 或 `EmpID` 不是合法 userID 时拒绝握手。
+
+EDP 的 base URL 来自 `mcp_server.baseURL`，`mcp.NewMcp` 在返回前同步初始化客户端，因此 WebSocket 握手不会受 MCP HTTP 服务异步启动影响。
 
 接入真实鉴权时通过 `Options.Authenticator` 注入：
 
@@ -948,7 +950,7 @@ go test -race ./core/db/ ./core/ws/...
 | `bridge` | 渠道过滤、完成/错误/审批/增量转换、completed 的 delta=false 断言 |
 | `bridge` · `delta_coalescer` | 窗口内拼成一条增量、关键帧前先落地积压且顺序正确、多片段互不混用、累积全文切成真正增量与重复帧丢弃、攒够字节立刻落地、带媒体的帧直发、未 Start / 关掉时逐帧直发、定时器到点只发一次、Close 落地积压、不改写上游共享事件指针 |
 | `replay` | 事件→agent 帧的完整映射、delta 与用量事件被跳过、思考拼接、命令/搜索/工具解析、未知类型降级、截断与 UTF-8 边界、审批与失败帧、帧数与 seq 回填 |
-| `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、token 即身份、自定义 Authenticator、非法 userID 拒绝 |
+| `server` | 真实握手 + hello、agent.list、ping/pong、401 鉴权、503 连接上限、EDP token→EmpID、自定义 Authenticator、非法 userID 拒绝 |
 | `filestore` | 落盘与取回、恰好等于上限、超限清理半成品、跨平台文件名清洗与超长截断、归属校验、Adopt 不动原文件、文件被移走后视为不存在、过期回收、按用户列表 |
 | `server` · 文件 | multipart / PUT 上传、超限 413、缺字段 400、下载内容与 Content-Disposition、`download=1` 强制另存、`meta=1`、他人文件 403、无 token 401、删除 204、chat.send 的 fileIDs 还原为本地绝对路径、他人 fileID 拒绝、send_file 推帧并能从下载端点取回、同步处理器注册幂等 |
 | `agentfs` | 根列表与存在性、列目录/Stat、越界与 `..` 逃逸、相对路径拒绝、软链接逃逸拒绝、读写覆盖、超限清理临时文件、父目录不存在拒绝、删目录需递归、删根拒绝、无映射时为空 |
@@ -977,7 +979,7 @@ go test -race ./core/db/ ./core/ws/...
 - **文件只在单机**：`filestore` 落在本地磁盘、索引在内存，多实例部署时上传与下载必须落到同一进程（或共享同一 `file_dir` 并接受索引不共享），也没有对象存储与 CDN 加速。
 - **agent 工作区不按用户隔离**：工作区是 agent 级别的，所有会话共享；3.9 的文件接口只校验「路径在不在工作区内」，不区分是谁的文件。它面向受信前端，默认关闭。
 - **附件不进历史**：`send_file` 推的是实时帧，不落 `turn_events`；回放时看不到当时发过的附件（文件多半也过期了）。
-- **默认不做真实鉴权**：`DefaultAuthenticator` 把任何 token 都折成同一个固定用户，既不校验有效性，也让文件归属校验形同虚设（TODO）。上线前务必替换成查库或 JWT 校验。
+- **默认鉴权依赖 EDP**：`DefaultAuthenticator` 每次握手（以及文件 HTTP 请求）都会调用 `/login/userInfo` 校验 token，EDP 不可用时握手会失败；高并发场景可按 token 增加短时缓存。
 - **无用户管理**：没有用户增删改、token 轮换，也没有 per-user 连接数/速率限制（`max_clients` 是全局的）。
 - **无定向推送**：`Broadcast` 面向所有连接。
 - **delta 合并在 bridge，不在 `conn.writePump`**：到 `conn` 那一层载荷已经序列化好了，
