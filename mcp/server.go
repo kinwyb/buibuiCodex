@@ -15,11 +15,14 @@ import (
 	"github.com/kinwyb/buibuiCodex/mcp/edp"
 	"github.com/kinwyb/buibuiCodex/mcp/serv"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/finance"
-	_ "github.com/kinwyb/buibuiCodex/mcp/serv/generated"
+	"github.com/kinwyb/buibuiCodex/mcp/serv/nc"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/order"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// 免费开放的工具集
+var pubToolPrefix = []string{"nc"}
 
 type Config struct {
 	Name      string            `description:"mcp名称"`
@@ -106,6 +109,7 @@ func (m *Mcp) Start(ctx context.Context) error {
 	// 注册工具
 	order.InitTool()
 	finance.InitTool()
+	nc.InitTool()
 	tools := serv.McpTools()
 	if len(tools) > 0 {
 		s.AddTools(tools...)
@@ -269,7 +273,7 @@ func (m *Mcp) toolFilter(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
 	if !ok || roleString == "" {
 		return tools
 	}
-	roles := strings.Split(roleString, ",")
+	roles := append(pubToolPrefix, strings.Split(roleString, ",")...)
 	var activeTools []mcp.Tool
 	for _, tool := range tools {
 		namePrefix, _, found := strings.Cut(tool.GetName(), "_")

@@ -23,9 +23,12 @@ import (
 )
 
 func main() {
-	//cfgPath, err := getConfigPath()
 	cfgPath := "/Users/wangyingbin/Developer/go/src/bgAgent/buibuiCodex/buibui.json"
-	var err error
+	_, err := os.Stat(cfgPath)
+	isDev := err == nil
+	if !isDev {
+		cfgPath, err = getConfigPath()
+	}
 	if err != nil {
 		slog.Error("config path err", "error", err)
 		return
@@ -98,51 +101,9 @@ func main() {
 	}, dataStorage.Session())
 	go ms.Start(ctx)
 	defer ms.Stop(ctx)
-	go func() {
-		echan, err := msgBus.SubscribeEvent()
-		if err != nil {
-			slog.Error("msgBus.SubscribeEvent failed", "error", err)
-			return
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				event, ok := echan.Consume(ctx)
-				if ok {
-					switch event.Type {
-					case types.EventUserMessageStart:
-						fmt.Println("\n⌛️ 用户提问: [" + event.EventID + "]")
-					case types.EventUserMessageCompleted:
-						fmt.Println("\n☑️ 提问接受: [" + event.Message.Content + "]")
-					case types.EventReasoningStart:
-						fmt.Println("\n🤔思考中...[" + event.EventID + "]")
-					case types.EventReasoningDelta:
-						//fmt.Print(event.Message.ReasoningContent)
-					case types.EventReasoningCompleted:
-						fmt.Println("\n😊思考完成：[" + event.EventID + "] \n" + event.Message.ReasoningContent)
-					case types.EventToolStart:
-						for _, tool := range event.Message.ToolCalls {
-							fmt.Printf("🔧工具调用: [%s]%s\n", tool.Type, tool.Params)
-						}
-					case types.EventToolCompleted:
-						for _, tool := range event.Message.ToolCalls {
-							fmt.Printf("🔧工具调用结束: [%s]%s => %s\n", tool.Type, tool.Params, tool.Result)
-						}
-					case types.EventError:
-						slog.Error("🙅 error: " + event.Message.Content)
-					case types.EventMessageStart:
-						fmt.Println("\n↩️ 回复开始: [" + event.EventID + "]")
-					case types.EventMessageDelta:
-						//fmt.Print(event.Message.Content)
-					case types.EventMessageCompleted:
-						fmt.Println("\n✅ 完整回复: [" + event.EventID + "]\n" + event.Message.Content)
-					}
-				}
-			}
-		}
-	}()
+	if isDev {
+		go devLog(ctx, msgBus)
+	}
 	err = manager.Start(ctx)
 	if err != nil {
 		slog.Error("manager.Start failed", "error", err)
@@ -231,5 +192,51 @@ func initLog(cfg *config.LogConfig) {
 		// 设置为默认 Logger
 		logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 		slog.SetDefault(logger)
+	}
+}
+
+func devLog(ctx context.Context, msgBus *bus.MessageBus) {
+	echan, err := msgBus.SubscribeEvent()
+	if err != nil {
+		slog.Error("msgBus.SubscribeEvent failed", "error", err)
+		return
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			event, ok := echan.Consume(ctx)
+			if ok {
+				switch event.Type {
+				case types.EventUserMessageStart:
+					fmt.Println("\n⌛️ 用户提问: [" + event.EventID + "]")
+				case types.EventUserMessageCompleted:
+					fmt.Println("\n☑️ 提问接受: [" + event.Message.Content + "]")
+				case types.EventReasoningStart:
+					fmt.Println("\n🤔思考中...[" + event.EventID + "]")
+				case types.EventReasoningDelta:
+					//fmt.Print(event.Message.ReasoningContent)
+				case types.EventReasoningCompleted:
+					fmt.Println("\n😊思考完成：[" + event.EventID + "] \n" + event.Message.ReasoningContent)
+				case types.EventToolStart:
+					for _, tool := range event.Message.ToolCalls {
+						fmt.Printf("🔧工具调用: [%s]%s\n", tool.Type, tool.Params)
+					}
+				case types.EventToolCompleted:
+					for _, tool := range event.Message.ToolCalls {
+						fmt.Printf("🔧工具调用结束: [%s]%s => %s\n", tool.Type, tool.Params, tool.Result)
+					}
+				case types.EventError:
+					slog.Error("🙅 error: " + event.Message.Content)
+				case types.EventMessageStart:
+					fmt.Println("\n↩️ 回复开始: [" + event.EventID + "]")
+				case types.EventMessageDelta:
+					//fmt.Print(event.Message.Content)
+				case types.EventMessageCompleted:
+					fmt.Println("\n✅ 完整回复: [" + event.EventID + "]\n" + event.Message.Content)
+				}
+			}
+		}
 	}
 }
