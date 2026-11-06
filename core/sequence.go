@@ -220,6 +220,26 @@ func (s *sessionSequence) handleInboundMessage(state *types.State) {
 	}
 }
 
+// SessionStatus 返回会话当前运行与排队状态。
+//
+// Running 从消息被序列接受开始，到对应的 messageHandler 返回为止；
+// Pending 是同一 sessionKey 仍在等待调度的消息数。
+func (s *sessionSequence) SessionStatus(sessionKey string) types.SessionStatus {
+	status := types.SessionStatus{SessionKey: sessionKey}
+	if s == nil || sessionKey == "" {
+		return status
+	}
+
+	s.runningMu.RLock()
+	status.ReqID, status.Running = s.runningSessions[sessionKey]
+	s.runningMu.RUnlock()
+
+	s.pendingMu.Lock()
+	status.Pending = len(s.pendingMessages[sessionKey])
+	s.pendingMu.Unlock()
+	return status
+}
+
 // enqueuePending 将消息加入等待队列。返回 false 表示队列已满（单 session 32 / 全局 1024）。
 func (s *sessionSequence) enqueuePending(sessionKey string, state *types.State) bool {
 	s.pendingMu.Lock()

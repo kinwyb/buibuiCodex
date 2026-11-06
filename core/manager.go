@@ -224,6 +224,27 @@ func (m *Manager) ListAgents() []string {
 	return ids
 }
 
+// SessionStatus 返回指定 sessionKey 当前的运行与排队状态。
+//
+// Running 反映消息是否正在 Manager/Agent 链路中处理；即使 Agent 尚未完成
+// resolveAgent，只要消息已被序列接受，也会返回 true。Pending 是同一 sessionKey
+// 仍在等待调度的消息数。
+func (m *Manager) SessionStatus(sessionKey string) types.SessionStatus {
+	status := types.SessionStatus{SessionKey: sessionKey}
+	if m == nil || sessionKey == "" {
+		return status
+	}
+	if m.sequence != nil {
+		status = m.sequence.SessionStatus(sessionKey)
+	}
+	return status
+}
+
+// IsSessionRunning 返回指定 sessionKey 当前是否正在执行。
+func (m *Manager) IsSessionRunning(sessionKey string) bool {
+	return m.SessionStatus(sessionKey).Running
+}
+
 // AgentFS 返回某个 agent 工作区的文件视图，供 Web 前端浏览、上传、删除。
 //
 // 视图按该 agent 的路径映射构造：容器里的 /workspace、/tmp 各自对应
