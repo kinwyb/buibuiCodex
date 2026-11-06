@@ -38,11 +38,11 @@ type sessionSequence struct {
 	wg              sync.WaitGroup
 	inBoundSub      *bus.InboundSubscription //输入消息订阅
 	runningMu       sync.RWMutex
-	runningSessions map[string]string // sessionKey -> reqID
+	runningSessions map[string]string // sessionID -> reqID
 	// 并发控制
 	semaphore       chan struct{}             // 限制最大并发 session 数（控制 agent.Prompt 实际执行）
 	spawnLimit      chan struct{}             // 限制 RouteInbound goroutine 总数，避免洪流尖刺
-	pendingMessages map[string][]*types.State // sessionKey -> 等待消息队列
+	pendingMessages map[string][]*types.State // sessionID -> 等待消息队列
 	pendingTotal    int                       // pendingMessages 总数（受 pendingMu 保护）
 	pendingMu       sync.Mutex
 	handler         sessionHandler //session消息处理器
@@ -153,12 +153,12 @@ func (s *sessionSequence) Stop() error {
 
 func (s *sessionSequence) handleInboundMessage(state *types.State) {
 	msg := state.Input
-	sessionKey := state.SessionID + msg.SenderID
+	sessionID := state.SessionID
 	isUIEvent := types.HasUIEventContent(msg.Content)
 
 	// 首次：检查 session 是否正在运行 + 获取 semaphore
 	s.runningMu.Lock()
-	if _, running := s.runningSessions[sessionKey]; running {
+	if _, running := s.runningSessions[sessionID]; running {
 		s.runningMu.Unlock()
 		/*
 		 * 页面事件要立刻进入当前轮：steer 仍是普通 user input，不改模型角色。
@@ -168,9 +168,9 @@ func (s *sessionSequence) handleInboundMessage(state *types.State) {
 		if isUIEvent && s.handler.agentUIEventSteer(s.ctx, state) {
 			return
 		}
-		inSq := s.enqueuePending(sessionKey, state)
+		inSq := s.enqueuePending(sessionID, state)
 		if !inSq {
-			slog.Warn("pending queue full, dropping message", "sessionKey", sessionKey, "msgID", msg.ID, "reason", "session running")
+			slog.Warn("pending queue full, dropping message", "sessionID", sessionID, "msgID", msg.ID, "reason", "session running")
 		}
 		if !inSq || !isUIEvent {
 			s.handler.busyNotification(s.ctx, msg, inSq)
@@ -179,13 +179,13 @@ func (s *sessionSequence) handleInboundMessage(state *types.State) {
 	}
 	select {
 	case s.semaphore <- struct{}{}:
-		s.runningSessions[sessionKey] = state.ReqID
+		s.runningSessions[sessionID] = state.ReqID
 		s.runningMu.Unlock()
 	default:
 		s.runningMu.Unlock()
-		inSq := s.enqueuePending(sessionKey, state)
+		inSq := s.enqueuePending(sessionID, state)
 		if !inSq {
-			slog.Warn("pending queue full, dropping message", "sessionKey", sessionKey, "msgID", msg.ID, "reason", "semaphore saturated")
+			slog.Warn("pending queue full, dropping message", "sessionID", sessionID, "msgID", msg.ID, "reason", "semaphore saturated")
 		}
 		if !inSq || !isUIEvent {
 			s.handler.busyNotification(s.ctx, msg, inSq)
@@ -199,11 +199,11 @@ func (s *sessionSequence) handleInboundMessage(state *types.State) {
 
 		// 释放当前 session，尝试获取下一条不同 session 的 pending
 		s.runningMu.Lock()
-		delete(s.runningSessions, sessionKey)
+		delete(s.runningSessions, sessionID)
 		s.runningMu.Unlock()
 
 		// 尝试获取下一个不同 session 的 pending 消息（跳过 runningSessions 中已有的）
-		next, nextSk := s.popNextPending(sessionKey)
+		next, nextSk := s.popNextPending(sessionID)
 		if next == nil {
 			// 没有可复用的 pending 消息，释放 semaphore
 			<-s.semaphore
@@ -216,41 +216,41 @@ func (s *sessionSequence) handleInboundMessage(state *types.State) {
 		s.runningMu.Unlock()
 
 		state = next
-		sessionKey = nextSk
+		sessionID = nextSk
 	}
 }
 
 // SessionStatus 返回会话当前运行与排队状态。
 //
 // Running 从消息被序列接受开始，到对应的 messageHandler 返回为止；
-// Pending 是同一 sessionKey 仍在等待调度的消息数。
-func (s *sessionSequence) SessionStatus(sessionKey string) types.SessionStatus {
-	status := types.SessionStatus{SessionKey: sessionKey}
-	if s == nil || sessionKey == "" {
+// Pending 是同一 sessionID 仍在等待调度的消息数。
+func (s *sessionSequence) SessionStatus(sessionID string) types.SessionStatus {
+	status := types.SessionStatus{SessionID: sessionID}
+	if s == nil || sessionID == "" {
 		return status
 	}
 
 	s.runningMu.RLock()
-	status.ReqID, status.Running = s.runningSessions[sessionKey]
+	status.ReqID, status.Running = s.runningSessions[sessionID]
 	s.runningMu.RUnlock()
 
 	s.pendingMu.Lock()
-	status.Pending = len(s.pendingMessages[sessionKey])
+	status.Pending = len(s.pendingMessages[sessionID])
 	s.pendingMu.Unlock()
 	return status
 }
 
 // enqueuePending 将消息加入等待队列。返回 false 表示队列已满（单 session 32 / 全局 1024）。
-func (s *sessionSequence) enqueuePending(sessionKey string, state *types.State) bool {
+func (s *sessionSequence) enqueuePending(sessionID string, state *types.State) bool {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	if s.pendingTotal >= maxPendingTotal {
 		return false
 	}
-	if len(s.pendingMessages[sessionKey]) >= maxPendingPerSession {
+	if len(s.pendingMessages[sessionID]) >= maxPendingPerSession {
 		return false
 	}
-	s.pendingMessages[sessionKey] = append(s.pendingMessages[sessionKey], state)
+	s.pendingMessages[sessionID] = append(s.pendingMessages[sessionID], state)
 	s.pendingTotal++
 	return true
 }

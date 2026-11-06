@@ -21,10 +21,10 @@ type State struct {
 // Running 表示当前有消息正在 Manager/Agent 链路中处理；
 // Pending 表示同一会话仍在等待调度的消息数。
 type SessionStatus struct {
-	SessionKey string `json:"sessionKey"`
-	Running    bool   `json:"running"`
-	ReqID      string `json:"reqID,omitempty"`
-	Pending    int    `json:"pending"`
+	SessionID string `json:"sessionID"`
+	Running   bool   `json:"running"`
+	ReqID     string `json:"reqID,omitempty"`
+	Pending   int    `json:"pending"`
 }
 
 // Busy 表示会话正在运行或仍有待处理消息。

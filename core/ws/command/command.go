@@ -21,7 +21,7 @@ import (
 
 // Canceller 会话取消能力，由 core.Manager 实现
 type Canceller interface {
-	Cancel(sessionKey string)
+	Cancel(sessionID string)
 }
 
 // AgentSource agent 列表来源，由 core.Manager 实现

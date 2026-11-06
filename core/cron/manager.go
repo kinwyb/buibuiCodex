@@ -130,6 +130,7 @@ func (m *Manager) executeRealLogic(task *db.Task) {
 	}
 	inbound := &types.InputMessage{
 		ID:        fmt.Sprintf("task_%s", uuid.NewV4().String()),
+		Session:   fullTaskInfo.Session.SessionID,
 		Channel:   fullTaskInfo.Session.Channel,
 		AccountID: fullTaskInfo.Session.AccountID,
 		SenderID:  fullTaskInfo.Session.UserID,

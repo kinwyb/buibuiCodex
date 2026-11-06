@@ -103,14 +103,22 @@ type InputMessage struct {
 	Timestamp time.Time      `json:"timestamp"`
 }
 
+// SessionID 返回逻辑会话标识。
+//
+// 未显式指定 Session 时，由 channel/account/chat 和 SenderID 组成，
+// 确保同一群聊中的不同发送者拥有独立会话。私聊的 ChatID 已经等于
+// SenderID，此时不再重复拼接，以兼容旧的私聊会话数据。
 func (input *InputMessage) SessionID() string {
 	if input.Session == "" {
-		sessionKey := fmt.Sprintf("%s_%s_%s", input.Channel, input.AccountID, input.ChatID)
-		sessionKey = strings.Trim(strings.TrimSpace(sessionKey), "_")
-		if sessionKey == "" {
-			sessionKey = uuid.NewV4().String()
+		sessionID := fmt.Sprintf("%s_%s_%s", input.Channel, input.AccountID, input.ChatID)
+		if input.SenderID != "" && input.SenderID != input.ChatID {
+			sessionID += "_" + input.SenderID
 		}
-		input.Session = sessionKey
+		sessionID = strings.Trim(strings.TrimSpace(sessionID), "_")
+		if sessionID == "" {
+			sessionID = uuid.NewV4().String()
+		}
+		input.Session = sessionID
 	}
 	return input.Session
 }

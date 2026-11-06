@@ -41,7 +41,7 @@ func TestUIEventSteersRunningTurn(t *testing.T) {
 	seq := &sessionSequence{
 		ctx:             context.Background(),
 		handler:         handler,
-		runningSessions: map[string]string{"ws_u1_c1u1": "req-1"},
+		runningSessions: map[string]string{"ws_u1_c1": "req-1"},
 		pendingMessages: make(map[string][]*types.State),
 	}
 	seq.handleInboundMessage(newUIEventState())
@@ -55,11 +55,11 @@ func TestUIEventSteerFailureQueuesWithoutBusyNotice(t *testing.T) {
 	seq := &sessionSequence{
 		ctx:             context.Background(),
 		handler:         handler,
-		runningSessions: map[string]string{"ws_u1_c1u1": "req-1"},
+		runningSessions: map[string]string{"ws_u1_c1": "req-1"},
 		pendingMessages: make(map[string][]*types.State),
 	}
 	seq.handleInboundMessage(newUIEventState())
-	if len(seq.pendingMessages["ws_u1_c1u1"]) != 1 {
+	if len(seq.pendingMessages["ws_u1_c1"]) != 1 {
 		t.Fatalf("steer 失败后事件应排队: %+v", seq.pendingMessages)
 	}
 	if handler.busy != 0 {

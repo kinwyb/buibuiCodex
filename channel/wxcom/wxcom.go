@@ -195,9 +195,9 @@ func (c *Channel) handleMessage(frame *WsFrame) {
 
 	// 检测停止命令
 	if isStopCommand(inbound.Content) {
-		sessionKey := inbound.SessionID() + inbound.SenderID
+		sessionID := inbound.SessionID()
 		if c.canceler != nil {
-			c.canceler.Cancel(sessionKey)
+			c.canceler.Cancel(sessionID)
 		}
 		c.SendMessage(context.Background(), inbound.ChatID, "已停止当前处理")
 		return

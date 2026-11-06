@@ -28,5 +28,5 @@ type CommonParams struct {
 
 // Canceller 用于外部调用 agent session 取消
 type Canceller interface {
-	Cancel(sessionKey string)
+	Cancel(sessionID string)
 }

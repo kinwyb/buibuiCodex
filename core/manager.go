@@ -30,7 +30,7 @@ type Manager struct {
 	bus             *bus.MessageBus
 	workspace       string // 工作区根目录
 	mu              sync.RWMutex
-	cancelCh        chan string // sessionKey 取消信号 channel
+	cancelCh        chan string // sessionID 取消信号 channel
 	ctx             context.Context
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
@@ -224,25 +224,25 @@ func (m *Manager) ListAgents() []string {
 	return ids
 }
 
-// SessionStatus 返回指定 sessionKey 当前的运行与排队状态。
+// SessionStatus 返回指定 sessionID 当前的运行与排队状态。
 //
 // Running 反映消息是否正在 Manager/Agent 链路中处理；即使 Agent 尚未完成
-// resolveAgent，只要消息已被序列接受，也会返回 true。Pending 是同一 sessionKey
+// resolveAgent，只要消息已被序列接受，也会返回 true。Pending 是同一 sessionID
 // 仍在等待调度的消息数。
-func (m *Manager) SessionStatus(sessionKey string) types.SessionStatus {
-	status := types.SessionStatus{SessionKey: sessionKey}
-	if m == nil || sessionKey == "" {
+func (m *Manager) SessionStatus(sessionID string) types.SessionStatus {
+	status := types.SessionStatus{SessionID: sessionID}
+	if m == nil || sessionID == "" {
 		return status
 	}
 	if m.sequence != nil {
-		status = m.sequence.SessionStatus(sessionKey)
+		status = m.sequence.SessionStatus(sessionID)
 	}
 	return status
 }
 
-// IsSessionRunning 返回指定 sessionKey 当前是否正在执行。
-func (m *Manager) IsSessionRunning(sessionKey string) bool {
-	return m.SessionStatus(sessionKey).Running
+// IsSessionRunning 返回指定 sessionID 当前是否正在执行。
+func (m *Manager) IsSessionRunning(sessionID string) bool {
+	return m.SessionStatus(sessionID).Running
 }
 
 // AgentFS 返回某个 agent 工作区的文件视图，供 Web 前端浏览、上传、删除。
@@ -330,29 +330,29 @@ func (m *Manager) processCancel() {
 		select {
 		case <-m.ctx.Done():
 			return
-		case sessionKey := <-m.cancelCh:
-			m.CancelSession(sessionKey)
+		case sessionID := <-m.cancelCh:
+			m.CancelSession(sessionID)
 		}
 	}
 }
 
 // Cancel 向取消 channel 发送取消信号，非阻塞
 // 供 channel 等外部调用，所有来源的停止请求都走这个入口
-func (m *Manager) Cancel(sessionKey string) {
+func (m *Manager) Cancel(sessionID string) {
 	select {
-	case m.cancelCh <- sessionKey:
+	case m.cancelCh <- sessionID:
 	default:
-		slog.Warn("cancel channel full, dropping cancel request", "sessionKey", sessionKey)
+		slog.Warn("cancel channel full, dropping cancel request", "sessionID", sessionID)
 	}
 }
 
-// CancelSession 取消指定 sessionKey 对应的运行中 agent 会话
-func (m *Manager) CancelSession(sessionKey string) bool {
+// CancelSession 取消指定 sessionID 对应的运行中 agent 会话
+func (m *Manager) CancelSession(sessionID string) bool {
 	// 要从sequence中获取到运行的状态，进行取消
-	slog.Info("取消 agent 会话", "sessionKey", sessionKey)
+	slog.Info("取消 agent 会话", "sessionID", sessionID)
 	agent := m.defaultAgent
 	m.sessionAgentMux.Lock()
-	agentName := m.sessionAgent[sessionKey]
+	agentName := m.sessionAgent[sessionID]
 	m.sessionAgentMux.Unlock()
 	if agentName != "" {
 		if ag, exists := m.agents[agentName]; exists {
@@ -360,7 +360,7 @@ func (m *Manager) CancelSession(sessionKey string) bool {
 		}
 	}
 	if agent != nil {
-		agent.Cancel(m.ctx, sessionKey)
+		agent.Cancel(m.ctx, sessionID)
 	}
 	return true
 }
@@ -499,7 +499,7 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 	for _, h := range m.agHandler {
 		skip, reply, err := h.BeforeAgent(ctx, state)
 		if err != nil {
-			slog.Error("Failed to before agent handler", "sessionKey", state.SessionID, "error", err)
+			slog.Error("Failed to before agent handler", "sessionID", state.SessionID, "error", err)
 			return err
 		}
 		if skip {
@@ -561,7 +561,7 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 	for _, h := range m.agHandler {
 		isContinue := h.AfterAgent(ctx, state, err)
 		if !isContinue {
-			slog.Warn("stop continue to execute agent handler", "sessionKey", state.SessionID, "error", err)
+			slog.Warn("stop continue to execute agent handler", "sessionID", state.SessionID, "error", err)
 			return err
 		}
 	}
@@ -670,7 +670,7 @@ func (m *Manager) agentUIEventSteer(ctx context.Context, state *types.State) boo
 		return false
 	}
 	if err := agent.Steer(ctx, state); err != nil {
-		slog.Warn("UI event steer failed; queued as next turn", "sessionKey", state.SessionID, "error", err)
+		slog.Warn("UI event steer failed; queued as next turn", "sessionID", state.SessionID, "error", err)
 		return false
 	}
 	return true
