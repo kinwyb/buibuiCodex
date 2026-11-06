@@ -41,6 +41,12 @@ type IMcpTool interface {
 	Execute(info *UserInfo, params Param) (string, error)
 }
 
+// IRawParametersTool 使用原始 JSON Schema 定义工具参数。
+// 用于承载 Swagger 生成工具中的对象、数组等复杂参数结构。
+type IRawParametersTool interface {
+	RawParameters() json.RawMessage
+}
+
 // RegisterTool 注册工具
 func RegisterTool(tool IMcpTool) {
 	tools = append(tools, tool)
@@ -56,13 +62,26 @@ func McpTools() []server.ServerTool {
 }
 
 func buildMcpTool(tool IMcpTool) server.ServerTool {
-	params := tool.Parameters()
-	if params == nil {
-		params = &types.ToolParams{
-			Type: "object",
-		}
+	var schema json.RawMessage
+	if rawTool, ok := tool.(IRawParametersTool); ok {
+		schema = rawTool.RawParameters()
 	}
-	schema, _ := json.Marshal(params)
+	if len(schema) == 0 {
+		params := tool.Parameters()
+		if params == nil {
+			params = &types.ToolParams{
+				Type: "object",
+			}
+		}
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			panic(fmt.Sprintf("工具 %s 参数 schema 序列化失败: %v", tool.Name(), err))
+		}
+		schema = encoded
+	}
+	if !json.Valid(schema) {
+		panic(fmt.Sprintf("工具 %s 参数 schema 不是合法 JSON", tool.Name()))
+	}
 	t := mcp.NewToolWithRawSchema(tool.Name(), tool.Description(), schema)
 	return server.ServerTool{
 		Tool: t,

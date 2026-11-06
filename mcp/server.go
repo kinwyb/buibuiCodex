@@ -15,6 +15,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/mcp/edp"
 	"github.com/kinwyb/buibuiCodex/mcp/serv"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/finance"
+	_ "github.com/kinwyb/buibuiCodex/mcp/serv/generated"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/order"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"

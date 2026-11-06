@@ -120,10 +120,11 @@ func NewRequest(method string, path string, options ...RequestOption) *Request {
 
 // Response 统一响应结构，Data 根据接口不同使用泛型指定类型。
 type Response[T any] struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Err     string `json:"errmsg"`
-	Data    T      `json:"data"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Err     string          `json:"errmsg"`
+	Data    T               `json:"data"`
+	Page    json.RawMessage `json:"page"`
 }
 
 // DoClient 执行HTTP请求，返回泛型响应。
