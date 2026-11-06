@@ -111,6 +111,8 @@ func (s *sessionSequence) Start(handler sessionHandler) error {
 				msg.Content = cmd.Msg
 				state := types.NewState(msg)
 				s.handler.agentSteer(s.ctx, state)
+				// /steer 只注入当前轮，不能继续走普通消息调度，否则会再次排队并产生 busy 提示。
+				continue
 			}
 		}
 		select {
