@@ -174,16 +174,30 @@ func (a *Agent) initProcess() error {
 	return nil
 }
 
-// getThread 获取线程，返回：线程,历史消息,错误
-func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *Command) (*codex.Thread, string, error) {
+// getThread 获取线程，返回：线程,历史消息,错误。
+// requestedThreadID 非空时优先恢复该历史线程；显式 /new 仍然创建新线程。
+func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *Command, requestedThreadID string) (*codex.Thread, string, error) {
 	a.epMu.Lock()
 	defer a.epMu.Unlock()
 	historyContent := ""
 	thread := a.client.Thread()
 	thread.SubUnknowTurnEvent(a.unknowThreadEventHandler)
 	waitResume := true
+	requestedThreadID = strings.TrimSpace(requestedThreadID)
+	if cmd.NewThread {
+		// /new 是用户显式要求新开线程，优先于历史选择
+		requestedThreadID = ""
+	}
 	turn, ok := a.eps[sessionID]
-	if cmd.NewThread || !ok {
+	if requestedThreadID != "" {
+		if !ok || turn.threadID != requestedThreadID {
+			turn = &codexTurn{
+				threadID:       requestedThreadID,
+				startTime:      time.Now().Unix(),
+				lastUpdateTime: time.Now().Unix(),
+			}
+		}
+	} else if cmd.NewThread || !ok {
 		// 查询数据库中使用过的thread
 		dbThread := a.cfg.SessionDB.LastThread(ctx, sessionID, a.AgentID())
 		if dbThread != nil && time.Now().Sub(dbThread.LastUpdate) > 1*time.Hour {
@@ -213,6 +227,10 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *Command) (
 		err := thread.Resume(ctx, turn.threadID)
 		if err != nil {
 			if strings.HasPrefix(err.Error(), "no rollout found for thread id") {
+				if requestedThreadID != "" {
+					// 指定线程无法恢复时不能悄悄换新线程，否则历史回复会落到错误上下文。
+					return nil, historyContent, fmt.Errorf("恢复指定 thread %s 失败: %w", requestedThreadID, err)
+				}
 				nTurn, err := a.newThread(ctx, thread, sessionID)
 				if err != nil {
 					return nil, historyContent, err
@@ -226,6 +244,7 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *Command) (
 		turn.thread = thread
 		turn.lastUpdateTime = time.Now().Unix()
 	}
+	a.eps[sessionID] = turn
 
 	// 数据库保存新建成功的thread
 	dbErr := a.cfg.SessionDB.ThreadSave(ctx, &db.SessionThread{
@@ -303,7 +322,7 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	}
 	cmd := CommandParse(state.Input.Content)
 	state.Input.Content = cmd.Msg
-	thread, hisotryContent, err := a.getThread(ctx, state.SessionID, cmd)
+	thread, hisotryContent, err := a.getThread(ctx, state.SessionID, cmd, state.Input.ThreadID())
 	if err != nil {
 		return err
 	}
@@ -323,8 +342,8 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	}), codex.TurnStartWithApprovalPolicy(jsonRpc.Never))
 	var inputs []jsonRpc.InputItem
 	// 指定不需要历史记录，那就忽略历史记录
-	if state.Input != nil && state.Input.Metadata != nil && state.Input.Metadata["no_history"] != nil {
-		noHistory := conv.ToBool(state.Input.Metadata["no_history"])
+	if state.Input != nil && state.Input.Metadata != nil && state.Input.Metadata[types.MetadataNoHistory] != nil {
+		noHistory := conv.ToBool(state.Input.Metadata[types.MetadataNoHistory])
 		if noHistory {
 			hisotryContent = ""
 		}

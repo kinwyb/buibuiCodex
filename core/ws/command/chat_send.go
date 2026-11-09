@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kinwyb/buibuiCodex/core/db"
 	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
@@ -27,14 +28,25 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "content、media 与 fileIDs 不能同时为空"})
 		return
 	}
-	if data.Agent != "" && r.deps.Agents != nil {
-		if !slices.Contains(r.deps.Agents.ListAgents(), data.Agent) {
-			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeAgentNotFound, Message: "指定的 agent 不存在", Detail: data.Agent})
+
+	userID := c.UserID()
+	threadID := strings.TrimSpace(data.ThreadID)
+	var thread *db.SessionThread
+	if threadID != "" {
+		if r.deps.Turns == nil {
+			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "服务未启用历史消息"})
+			return
+		}
+		thread = r.deps.Turns.ThreadQueryByID(ctx, threadID)
+		if thread == nil {
+			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "对话不存在或已删除", Detail: threadID})
+			return
+		}
+		if !r.ownsSession(userID, thread.SessionID) {
+			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeForbidden, Message: "无权访问该会话"})
 			return
 		}
 	}
-
-	userID := c.UserID()
 
 	// 把已上传文件的 fileID 还原成 media：只带本地路径，文件内容不出现在帧里。
 	// 容器路径转换不在这里做 —— 此刻还不知道最终由哪个 agent 处理，
@@ -56,6 +68,24 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 	}
 
 	chatID := strings.TrimSpace(data.ChatID)
+	if sessionID == "" && chatID != "" {
+		sessionID = r.SessionKey(userID, chatID)
+	}
+	if thread != nil {
+		if sessionID != "" && sessionID != thread.SessionID {
+			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "threadID 不属于该会话"})
+			return
+		}
+		sessionID = thread.SessionID
+		threadChatID := strings.TrimPrefix(thread.SessionID, r.deps.Channel+"_"+userID+"_")
+		if chatID != "" && threadChatID != "" && chatID != threadChatID {
+			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "threadID 不属于该对话"})
+			return
+		}
+		if threadChatID != "" {
+			chatID = threadChatID
+		}
+	}
 	if chatID == "" && sessionID != "" {
 		// 从会话键反推 chatID，保证连接上下文与本次会话一致
 		chatID = strings.TrimPrefix(sessionID, r.deps.Channel+"_"+userID+"_")
@@ -72,12 +102,40 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 	}
 	c.SetChatID(chatID)
 
+	agentName := strings.TrimSpace(data.Agent)
+	if thread != nil && thread.Agent != "" {
+		if agentName != "" && agentName != thread.Agent {
+			c.ReplyError(env, &protocol.ErrorBody{
+				Code:    protocol.CodeBadRequest,
+				Message: "指定的 agent 与 threadID 不匹配",
+				Detail:  threadID,
+			})
+			return
+		}
+		agentName = thread.Agent
+	}
+	if agentName != "" && r.deps.Agents != nil && !slices.Contains(r.deps.Agents.ListAgents(), agentName) {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeAgentNotFound, Message: "指定的 agent 不存在", Detail: agentName})
+		return
+	}
+
 	// 先订阅再发送，避免 agent 首帧早于订阅导致丢失；界面请求也依赖这条订阅
 	if r.deps.Hub != nil {
 		r.deps.Hub.Subscribe(c, sessionID)
 	}
 
 	reqID := uuid.NewString()
+	metadata := data.Metadata
+	if metadata == nil {
+		// web 过来的默认不注入历史摘要
+		metadata = map[string]any{types.MetadataNoHistory: true}
+	}
+	// threadID 只能走顶层的可校验字段，避免客户端用 metadata 绕过归属检查。
+	delete(metadata, types.MetadataThreadID)
+	delete(metadata, "threadID")
+	if threadID != "" {
+		metadata[types.MetadataThreadID] = threadID
+	}
 	msg := &types.InputMessage{
 		ID:        reqID,
 		Session:   sessionID,
@@ -87,14 +145,9 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		ChatID:    chatID,
 		Content:   data.Content,
 		Media:     media,
-		Metadata:  data.Metadata,
-		AgentName: data.Agent,
+		Metadata:  metadata,
+		AgentName: agentName,
 		Timestamp: time.Now(),
-	}
-	// web过来的不需要历史记录
-	if msg.Metadata == nil {
-		msg.Metadata = make(map[string]any)
-		msg.Metadata["no_history"] = true
 	}
 
 	// 界面前置路由要发 ui.request 并等浏览器回执，而回执恰好要从这条连接的读循环里读进来：

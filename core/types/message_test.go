@@ -57,3 +57,22 @@ func TestInputMessageSessionIDKeepsExplicitSession(t *testing.T) {
 		t.Fatalf("显式 Session 不应被重写: %s", got)
 	}
 }
+
+func TestInputMessageThreadIDFromMetadata(t *testing.T) {
+	msg := &InputMessage{
+		Metadata: map[string]any{MetadataThreadID: " t-1 "},
+	}
+	if got := msg.ThreadID(); got != "t-1" {
+		t.Fatalf("应读取并清理 metadata 中的 threadID，实际 %q", got)
+	}
+
+	msg.Metadata = map[string]any{"threadID": "t-2"}
+	if got := msg.ThreadID(); got != "t-2" {
+		t.Fatalf("应兼容协议风格键名，实际 %q", got)
+	}
+
+	var nilMsg *InputMessage
+	if got := nilMsg.ThreadID(); got != "" {
+		t.Fatalf("nil 消息应返回空 threadID，实际 %q", got)
+	}
+}

@@ -108,6 +108,31 @@ type InputMessage struct {
 	Timestamp time.Time      `json:"timestamp"`
 }
 
+const (
+	// MetadataThreadID 指定要恢复的历史 thread。
+	// 仅作为内部的投递提示，agent 读取后会直接在对应 thread 下开始新 turn。
+	MetadataThreadID = "thread_id"
+	// MetadataNoHistory 为 true 时不向新 thread 注入历史摘要
+	MetadataNoHistory = "no_history"
+)
+
+// ThreadID 返回消息指定的历史 thread。
+//
+// 同时兼容下划线与协议字段命名，避免调用方写错元数据键时静默开新线程。
+func (input *InputMessage) ThreadID() string {
+	if input == nil {
+		return ""
+	}
+	for _, key := range []string{MetadataThreadID, "threadID"} {
+		if value, ok := input.Metadata[key].(string); ok {
+			if threadID := strings.TrimSpace(value); threadID != "" {
+				return threadID
+			}
+		}
+	}
+	return ""
+}
+
 // SessionID 返回逻辑会话标识。
 //
 // 未显式指定 Session 时，由 channel/account/chat 和 SenderID 组成，

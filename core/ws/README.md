@@ -286,7 +286,7 @@ delta == false   全量快照，整体覆盖当前消息
 
 | type | data | 说明 |
 | --- | --- | --- |
-| `chat.send` | `sessionID?`、`chatID?`、`agent?`、`content`、`media`、`fileIDs?`、`metadata` | 发送提问 |
+| `chat.send` | `sessionID?`、`chatID?`、`threadID?`、`agent?`、`content`、`media`、`fileIDs?`、`metadata` | 发送提问；带 `threadID` 时继续指定历史对话 |
 | `chat.cancel` | `sessionID?`、`chatID?` | 中断当前会话 |
 | `ping` | `ts` | 应用层心跳，测 RTT |
 | `agent.list` | — | 拉取可用 agent |
@@ -296,6 +296,8 @@ delta == false   全量快照，整体覆盖当前消息
 | `session.turn.replay` | `sessionID?`、`chatID?`、`turnID`、`afterSeq?`、`limit?` | 回放单轮完整过程，见 5.2 |
 
 `chat.send` 可以不传 `chatID` 与 `sessionID`：服务端会沿用连接当前的对话（即 `hello` 下发的 `chatID`），前端只需持有登录 token。传 `chatID` 表示切换到该对话，连接上下文随之更新；`ack` 会返回本次使用的 `chatID` 与 `sessionID`（`ws_<userID>_<chatID>`）。
+
+从历史列表继续某个对话时，额外传 `threadID`。服务端会校验该 thread 属于当前用户，并与此前传入的 `sessionID` / `chatID` 一致；校验通过后，这条消息会直接在该历史 thread 下开始新轮次。只传 `threadID` 也可以，服务端会从 thread 记录反推 `sessionID`、`chatID` 与所用 agent。不传 `threadID` 时仍走原来的“当前会话”逻辑，企微等不会指定 `threadID` 的渠道完全不受影响。
 
 ### 3.5 错误码
 
@@ -635,7 +637,7 @@ curl -X PUT --data-binary @report.md \
 
 字段约定：
 
-- `threadID` + `sessionID` 拿去就能用：`session.history` 带 `threadID`，`chat.send` 带 `sessionID`
+- `threadID` + `sessionID` 拿去就能用：`session.history` 带 `threadID`，`chat.send` 同时带 `sessionID` 与 `threadID` 即可在该历史对话下继续
 - `title` 取首轮提问（按 40 字符截断）；该轮只有媒体时为空，前端用「图片消息」之类的兜底文案
 - `preview` 取末轮回答（80 字符）
 - `turns` 是轮次数量，不需要再拉详情就能显示「共 N 轮」

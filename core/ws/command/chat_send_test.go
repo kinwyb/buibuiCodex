@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/kinwyb/buibuiCodex/core/bus"
+	"github.com/kinwyb/buibuiCodex/core/db"
+	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
 )
 
@@ -225,5 +227,88 @@ func TestChatSendSwitchesChatID(t *testing.T) {
 	}
 	if c.ChatID() != "chat-b" {
 		t.Fatalf("连接上下文应更新为新对话，实际 %s", c.ChatID())
+	}
+}
+
+func TestChatSendRestoresSelectedThread(t *testing.T) {
+	msgBus := bus.NewMessageBus(10)
+	defer msgBus.Close()
+
+	sub, err := msgBus.SubscribeInput()
+	if err != nil {
+		t.Fatalf("订阅入站消息失败: %v", err)
+	}
+	defer sub.Close()
+
+	turns := &fakeTurnReader{threads: []db.SessionThread{
+		{ThreadID: "t-history", SessionID: "ws_web_c1", Agent: "coder"},
+	}}
+	reg, hub := newTestRegistryWithTurns(msgBus, fakeAgents{"codex", "coder"}, turns)
+	c := newTestClient(hub)
+
+	// 只传 threadID 时从线程记录反推会话与对话，并沿用该线程的 agent。
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{
+			ThreadID: "t-history",
+			Content:  "继续这个问题",
+			// metadata 里的 thread 标记不可信，必须以顶层校验后的 threadID 为准
+			Metadata: map[string]any{types.MetadataThreadID: "t-forged"},
+		})
+	reg.Dispatch(context.Background(), c, env)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	in, ok := sub.Consume(ctx)
+	if !ok || in == nil {
+		t.Fatal("未收到入站消息")
+	}
+	if in.Session != "ws_web_c1" || in.ChatID != "c1" {
+		t.Fatalf("应从 thread 反推会话: session=%s chat=%s", in.Session, in.ChatID)
+	}
+	if in.AgentName != "coder" {
+		t.Fatalf("应沿用 thread 的 agent，实际 %s", in.AgentName)
+	}
+	if got := in.ThreadID(); got != "t-history" {
+		t.Fatalf("metadata 应携带指定 thread，实际 %q: %+v", got, in.Metadata)
+	}
+}
+
+func TestChatSendRejectsThreadFromOtherSession(t *testing.T) {
+	turns := &fakeTurnReader{threads: []db.SessionThread{
+		{ThreadID: "t-history", SessionID: "ws_web_c2", Agent: "codex"},
+	}}
+	reg, hub := newTestRegistryWithTurns(nil, fakeAgents{"codex"}, turns)
+	c := newTestClient(hub)
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{SessionID: "ws_web_c1", ThreadID: "t-history", Content: "hi"})
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeBadRequest {
+		t.Fatalf("thread 与 session 不一致应被拒绝，错误码 %s", body.Code)
+	}
+}
+
+func TestChatSendRejectsForeignThread(t *testing.T) {
+	turns := &fakeTurnReader{threads: []db.SessionThread{
+		{ThreadID: "t-history", SessionID: "ws_bob_c1", Agent: "codex"},
+	}}
+	reg, hub := newTestRegistryWithTurns(nil, fakeAgents{"codex"}, turns)
+	c := newTestClientAs(hub, "alice")
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{ThreadID: "t-history", Content: "hi"})
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeForbidden {
+		t.Fatalf("跨用户 thread 应被拒绝，错误码 %s", body.Code)
 	}
 }

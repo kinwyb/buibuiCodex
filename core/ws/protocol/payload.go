@@ -164,6 +164,9 @@ type ChatSendData struct {
 	SessionID string `json:"sessionID,omitempty"`
 	// ChatID 可选，对话标识，为空则服务端生成
 	ChatID string `json:"chatID,omitempty"`
+	// ThreadID 可选，指定继续某个历史 thread。
+	// 服务端会校验该 thread 属于当前用户与 sessionID；不传时沿用原来的“当前会话”逻辑。
+	ThreadID string `json:"threadID,omitempty"`
 	// Agent 可选，指定处理该消息的 agent，为空使用默认
 	Agent string `json:"agent,omitempty"`
 	// Content 文本内容
