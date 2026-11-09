@@ -77,10 +77,10 @@ func (i itemlifecycle) ToolExtras() map[string]any {
 	if i.CallId != "" {
 		extra["callID"] = i.CallId
 	}
-	// mcpToolCall 没有 namespace，改带 MCP 服务名
+	// mcpToolCall 没有 namespace，改带 MCP 服务名。
+	// 「是不是 MCP」由 ToolCall.Type 区分，这里不重复表态。
 	if i.Server != "" {
 		extra["server"] = i.Server
-		extra["mcp"] = true
 	}
 	if i.Status != "" {
 		extra["status"] = i.Status

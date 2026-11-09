@@ -220,6 +220,11 @@ server ──> command ──> replay ──> protocol
 
 data 结构见 `protocol.AgentData`：`event`、`agent`、`role`、`delta`、`content`、`reasoning`、`toolCalls`、`media`、`approval`、`usage`、`error`、`meta`、`truncated`。
 
+`toolCalls[].type` 标明工具来源，前端据此区分渲染：`command`（Shell 命令）、`web_search`（联网搜索）、
+`function`（本服务执行的动态工具，工具组在 `extra.namespace`）、
+`mcp`（codex 直连 MCP 服务执行，服务名在 `extra.server`）。
+实时流与历史回放取值一致。
+
 `truncated` 只在历史回放里可能出现，标记该条内容因为体积上限被截断；实时事件不会置位。
 
 页面主动上报的界面变化仍作为普通 `userMessage` 投递给 Codex，正文开头使用稳定标记：

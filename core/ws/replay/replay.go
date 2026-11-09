@@ -258,9 +258,14 @@ func itemStep(ev db.TurnEvent, bodyLimit int) (*protocol.AgentData, string) {
 		if len(item.Arguments) > 0 {
 			params, _ = json.Marshal(item.Arguments)
 		}
+		// 类型即标记，与实时流一致：前端靠 toolCalls[].type 区分本地工具与 MCP 工具
+		toolType := types.ToolTypeFunction
+		if item.Type == jsonRpc.MCPToolCall {
+			toolType = types.ToolTypeMCP
+		}
 		call := types.ToolCall{
 			ID:   item.ID,
-			Type: types.ToolTypeFunction,
+			Type: toolType,
 			Name: name,
 		}
 		// 与实时流共用同一份 extra 汇总，前端才能用同一条渲染分支

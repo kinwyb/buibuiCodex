@@ -100,6 +100,9 @@ func TestBuildFullTurnAsAgentFrames(t *testing.T) {
 
 	// 动态工具：名字、参数、结果
 	tool := decodeFrame(t, frames[2])
+	if tool.ToolCalls[0].Type != types.ToolTypeFunction {
+		t.Fatalf("本地动态工具应保持 type=function: %+v", tool.ToolCalls[0])
+	}
 	if tool.ToolCalls[0].Name != "read_file" || tool.ToolCalls[0].Result != "package a" {
 		t.Fatalf("工具调用不符合预期: %+v", tool.ToolCalls[0])
 	}
@@ -365,13 +368,14 @@ func TestBuildMapsMCPToolCallToToolSteps(t *testing.T) {
 		t.Fatalf("MCP 工具调用不应走兜底分支: %+v", start.Meta)
 	}
 	startCall := start.ToolCalls[0]
-	if startCall.Name != "order_efficiency" || startCall.Type != types.ToolTypeFunction {
-		t.Fatalf("工具标识不符: %+v", startCall)
+	// type 就是前端区分 MCP 与本地工具的标记，回放要和实时流给同一个值
+	if startCall.Name != "order_efficiency" || startCall.Type != types.ToolTypeMCP {
+		t.Fatalf("MCP 工具应标记为 type=mcp: %+v", startCall)
 	}
 	if startCall.Params != `{"startDate":"2026-09-15"}` {
 		t.Fatalf("入参不符: %q", startCall.Params)
 	}
-	if startCall.Extra["server"] != "boda" || startCall.Extra["mcp"] != true {
+	if startCall.Extra["server"] != "boda" {
 		t.Fatalf("应带 MCP 服务名: %+v", startCall.Extra)
 	}
 	if _, ok := startCall.Extra["success"]; ok {

@@ -120,6 +120,9 @@ func Test_lifeEventParse_dynamicToolCall(t *testing.T) {
 			if call.Name != "read_file" || call.ID != "item_1" {
 				t.Fatalf("工具标识不符: %+v", call)
 			}
+			if call.Type != types.ToolTypeFunction {
+				t.Fatalf("本地动态工具应保持 type=function: %+v", call)
+			}
 			if call.Params != `{"path":"a.go"}` {
 				t.Fatalf("工具入参不符: %q", call.Params)
 			}
@@ -265,8 +268,9 @@ func Test_lifeEventParse_mcpToolCall(t *testing.T) {
 		t.Fatalf("开始帧应为 tool_start: %+v", startEvent)
 	}
 	startCall := startEvent.Message.ToolCalls[0]
-	if startCall.Name != "order_efficiency" || startCall.Type != types.ToolTypeFunction {
-		t.Fatalf("工具标识不符: %+v", startCall)
+	// type 就是前端区分 MCP 与本地工具的标记
+	if startCall.Name != "order_efficiency" || startCall.Type != types.ToolTypeMCP {
+		t.Fatalf("MCP 工具应标记为 type=mcp: %+v", startCall)
 	}
 	if startCall.Params != `{"endDate":"2026-09-15","startDate":"2026-09-15"}` {
 		t.Fatalf("工具入参不符: %q", startCall.Params)
@@ -274,7 +278,7 @@ func Test_lifeEventParse_mcpToolCall(t *testing.T) {
 	if startCall.Result != "" {
 		t.Fatalf("开始帧 result 为 null，不应渲染出内容: %q", startCall.Result)
 	}
-	if startCall.Extra["server"] != "boda" || startCall.Extra["mcp"] != true {
+	if startCall.Extra["server"] != "boda" {
 		t.Fatalf("开始帧应带 MCP 服务名: %+v", startCall.Extra)
 	}
 	if _, ok := startCall.Extra["success"]; ok {

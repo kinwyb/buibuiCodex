@@ -327,10 +327,16 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 	// 事件类型为空被 codexEventParse 丢弃，前端完全看不到 MCP 调用。
 	case jsonRpc.DynamicToolCall, jsonRpc.MCPToolCall:
 		msg.Role = types.RoleTool
+		// 类型即标记：前端靠 toolCalls[].type 区分本地工具与 MCP 工具，
+		// MCP 的服务名另外放在 extra.server 里。
+		toolType := types.ToolTypeFunction
+		if item.Type == jsonRpc.MCPToolCall {
+			toolType = types.ToolTypeMCP
+		}
 		// 报文里没有 callId，item.ID 本身就是 call_xxx，回给模型时用的就是它
 		msg.ToolCalls = append(msg.ToolCalls, types.ToolCall{
 			ID:     item.ID,
-			Type:   types.ToolTypeFunction,
+			Type:   toolType,
 			Name:   item.ToolCallItemDetail.Tool,
 			Params: toolParamsText(item.ToolCallItemDetail.Arguments),
 			Result: item.ToolCallItemDetail.ResultOrError(),

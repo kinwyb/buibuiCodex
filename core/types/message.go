@@ -47,12 +47,17 @@ type Message struct {
 	ApprovalID any `json:"approve_id,omitempty"`
 }
 
+// ToolType 工具类型，前端据此区分渲染样式
 type ToolType string
 
 const (
 	ToolTypeCommand   ToolType = "command"
 	ToolTypeWebSearch ToolType = "web_search"
-	ToolTypeFunction  ToolType = "function"
+	// ToolTypeFunction 本地动态工具（codex 的 dynamicToolCall），由本服务执行
+	ToolTypeFunction ToolType = "function"
+	// ToolTypeMCP MCP 工具（codex 的 mcpToolCall），由 codex 直连 MCP 服务执行，
+	// 服务名放在 ToolCall.Extra["server"]
+	ToolTypeMCP ToolType = "mcp"
 )
 
 // ToolCall 工具调用
