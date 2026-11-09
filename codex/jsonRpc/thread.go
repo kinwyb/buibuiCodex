@@ -1,5 +1,7 @@
 package jsonRpc
 
+import "encoding/json"
+
 // StartThreadParams 创建 Thread 请求参数
 type StartThreadParams struct {
 	Workspace     string        `json:"workspace"`
@@ -87,4 +89,35 @@ type StartThreadResult struct {
 type Thread struct {
 	ID        string `json:"id"`
 	SessionID string `json:"sessionId"`
+	Turns     []Turn `json:"turns,omitempty"`
 }
+
+// ThreadReadParams 读取已存储 thread 的参数。
+type ThreadReadParams struct {
+	ThreadID     string `json:"threadId"`
+	IncludeTurns bool   `json:"includeTurns,omitempty"`
+}
+
+// ThreadReadResult 读取 thread 的返回结果，includeTurns=true 时 Turns 包含完整历史。
+type ThreadReadResult struct {
+	Thread Thread `json:"thread"`
+}
+
+// ThreadTurnsListParams 分页读取已存储 thread 的 turn 历史。
+type ThreadTurnsListParams struct {
+	ThreadID      string `json:"threadId"`
+	Limit         int    `json:"limit,omitempty"`
+	SortDirection string `json:"sortDirection,omitempty"`
+	ItemsView     string `json:"itemsView,omitempty"`
+	Cursor        string `json:"cursor,omitempty"`
+}
+
+// ThreadTurnsPage 是 thread/turns/list 的一页结果。
+type ThreadTurnsPage struct {
+	Data            []Turn  `json:"data"`
+	NextCursor      *string `json:"nextCursor,omitempty"`
+	BackwardsCursor *string `json:"backwardsCursor,omitempty"`
+}
+
+// ThreadItem 的原始载荷保留 app-server 返回的完整字段，供事件补全时原样落库。
+type ThreadItem = json.RawMessage

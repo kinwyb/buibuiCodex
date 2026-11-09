@@ -91,6 +91,7 @@ const (
 	ThreadSectionUpdate                    ClientRequestMethod = "threadSection/update"
 	ThreadShellCommand                     ClientRequestMethod = "thread/shellCommand"
 	ThreadStart                            ClientRequestMethod = "thread/start"
+	ThreadTurnsList                        ClientRequestMethod = "thread/turns/list"
 	ThreadUnarchive                        ClientRequestMethod = "thread/unarchive"
 	ThreadUnsubscribe                      ClientRequestMethod = "thread/unsubscribe"
 	TurnInterrupt                          ClientRequestMethod = "turn/interrupt"

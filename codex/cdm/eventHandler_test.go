@@ -57,6 +57,38 @@ func TestClientEventClearsTurnDelta(t *testing.T) {
 	}
 }
 
+func TestClientEventLifecycleIsIdempotent(t *testing.T) {
+	storage, err := db.NewSQLiteStorage(filepath.Join(t.TempDir(), "cdm-idempotent.db"))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	data := db.NewData(storage)
+	defer data.Close()
+
+	sess := data.Session()
+	a := NewAgent(&config.AgentConfig{Name: "codex", SessionDB: sess}, 0)
+	event := &codex.Event{
+		Type:     codex.EventTypeNotification,
+		Method:   string(codex.ItemCompleted),
+		ThreadID: "t1",
+		TurnID:   "u1",
+		RawData:  []byte(`{"item":{"id":"i1","type":"commandExecution","status":"completed"}}`),
+	}
+	a.clientEvent(event)
+	a.clientEvent(event)
+
+	events, err := sess.TurnEventList(context.Background(), db.TurnEventQuery{
+		TurnIDs: []string{"u1"},
+		Methods: []string{"item/completed"},
+	})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("同一 item 的完成事件应幂等，实际 %d 条", len(events))
+	}
+}
+
 // Test_lifeEventParse_dynamicToolCall 覆盖回归场景：
 // dynamicToolCall 的 item/started、item/completed 必须产出 tool_start / tool_completed，
 // 且载荷里带上工具名与入参。曾经因为类型映射存在第二份表，该 item 的事件类型被清空，

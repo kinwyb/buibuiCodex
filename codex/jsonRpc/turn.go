@@ -22,12 +22,14 @@ type StartTurnResult struct {
 }
 
 type Turn struct {
-	TurnID      string      `json:"id"`
-	Status      string      `json:"status"`
-	StartedAt   int64       `json:"startedAt"`
-	CompletedAt int64       `json:"completedAt"`
-	DurationMs  int64       `json:"durationMs"`
-	Error       *CodexError `json:"error,omitempty"`
+	TurnID      string       `json:"id"`
+	Status      string       `json:"status"`
+	StartedAt   int64        `json:"startedAt"`
+	CompletedAt int64        `json:"completedAt"`
+	DurationMs  int64        `json:"durationMs"`
+	Error       *CodexError  `json:"error,omitempty"`
+	ItemsView   string       `json:"itemsView,omitempty"`
+	Items       []ThreadItem `json:"items,omitempty"`
 }
 
 type TurnEvent struct {

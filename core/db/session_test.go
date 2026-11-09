@@ -358,6 +358,66 @@ func TestTurnEventListAfterSeq(t *testing.T) {
 	}
 }
 
+func TestTurnEventUpsertIsIdempotent(t *testing.T) {
+	s := newTestSessionStorage(t)
+	ctx := context.Background()
+	base := time.Now()
+
+	event := &TurnEvent{
+		ID:         "stable-id",
+		ThreadID:   "t1",
+		TurnID:     "u1",
+		Method:     "item/completed",
+		RawData:    `{"item":{"id":"i1","status":"inProgress"}}`,
+		CreateTime: base,
+	}
+	if err := s.TurnEventUpsert(ctx, event); err != nil {
+		t.Fatalf("首次写入失败: %v", err)
+	}
+	event.RawData = `{"item":{"id":"i1","status":"completed"}}`
+	if err := s.TurnEventUpsert(ctx, event); err != nil {
+		t.Fatalf("幂等更新失败: %v", err)
+	}
+
+	list, err := s.TurnEventList(ctx, TurnEventQuery{TurnIDs: []string{"u1"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("稳定 ID 应更新而不是新增，实际 %d 条", len(list))
+	}
+	if list[0].RawData != event.RawData {
+		t.Fatalf("事件内容未更新: %s", list[0].RawData)
+	}
+}
+
+func TestTurnEventOpenTurns(t *testing.T) {
+	s := newTestSessionStorage(t)
+	ctx := context.Background()
+	base := time.Now()
+
+	events := []TurnEvent{
+		{ID: "a1", ThreadID: "t1", TurnID: "u1", Method: "item/started", RawData: `{"item":{"id":"i1"}}`, CreateTime: base},
+		{ID: "a2", ThreadID: "t1", TurnID: "u1", Method: "item/completed", RawData: `{"item":{"id":"other"}}`, CreateTime: base},
+		{ID: "a3", ThreadID: "t1", TurnID: "u2", Method: "item/started", RawData: `{"item":{"id":"i2"}}`, CreateTime: base},
+		{ID: "a4", ThreadID: "t1", TurnID: "u2", Method: "item/completed", RawData: `{"item":{"id":"i2"}}`, CreateTime: base},
+		{ID: "a5", ThreadID: "t1", TurnID: "u3", Method: "item/completed", RawData: `{"item":{"id":"i3"}}`, CreateTime: base},
+	}
+	for i := range events {
+		if err := s.TurnEventSave(ctx, &events[i]); err != nil {
+			t.Fatalf("写入事件失败: %v", err)
+		}
+	}
+
+	open, err := s.TurnEventOpenTurns(ctx, base.Add(-time.Minute), 10)
+	if err != nil {
+		t.Fatalf("扫描未完成轮次失败: %v", err)
+	}
+	if len(open) != 1 || open[0].ThreadID != "t1" || open[0].TurnID != "u1" {
+		t.Fatalf("应只返回 u1，实际 %+v", open)
+	}
+}
+
 func TestTurnEventDeleteByMethodsScopesTurn(t *testing.T) {
 	s := newTestSessionStorage(t)
 	ctx := context.Background()

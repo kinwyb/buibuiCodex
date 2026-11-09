@@ -41,6 +41,7 @@ type Agent struct {
 	initMu       sync.Mutex
 	tools        []*toolGroup
 	historyTurnN int
+	reconciler   *turnReconciler
 }
 
 func NewAgent(cfg *config.AgentConfig, historyTurnN int) *Agent {
@@ -49,6 +50,11 @@ func NewAgent(cfg *config.AgentConfig, historyTurnN int) *Agent {
 		eps:          make(map[string]*codexTurn),
 		historyTurnN: historyTurnN,
 	}
+	var sessionDB db.ISession
+	if cfg != nil {
+		sessionDB = cfg.SessionDB
+	}
+	ret.reconciler = newTurnReconciler(sessionDB, ret.readTurn)
 	return ret
 }
 
@@ -157,6 +163,7 @@ func (a *Agent) initProcess() error {
 	client.RegisterDefaultEventHandler(a.clientEvent)
 	a.client = client
 	a.isInit = true
+	a.reconciler.Start()
 	// 禁用默认的skill
 	// 默认的图片生成skill
 	skill := codex.NewSkill(client)
@@ -232,6 +239,16 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *Command) (
 		slog.Error("fail to save db thread ", "error", dbErr.Error())
 	}
 	return thread, historyContent, nil
+}
+
+func (a *Agent) readTurn(ctx context.Context, threadID, turnID string) (*jsonRpc.Turn, error) {
+	a.initMu.Lock()
+	client := a.client
+	a.initMu.Unlock()
+	if client == nil {
+		return nil, errors.New("codex client is not initialized")
+	}
+	return client.ReadTurn(ctx, threadID, turnID)
 }
 
 func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID string) (*codexTurn, error) {
@@ -429,6 +446,7 @@ func (a *Agent) Cancel(ctx context.Context, sessionID string) error {
 
 // todo: 这里要控制等待所有任务完成，在停止codex进程
 func (a *Agent) Stop() error {
+	a.reconciler.Stop()
 	a.initMu.Lock()
 	defer a.initMu.Unlock()
 	if a.client != nil {

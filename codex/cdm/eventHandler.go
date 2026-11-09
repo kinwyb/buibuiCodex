@@ -36,9 +36,16 @@ func (a *Agent) clientEvent(event *codex.Event) {
 	if a.cfg == nil || a.cfg.SessionDB == nil {
 		return
 	}
+	eventID := uuid.NewV4().String()
+	if codex.NotificationMethod(event.Method) == codex.ItemStarted ||
+		codex.NotificationMethod(event.Method) == codex.ItemCompleted {
+		if itemID := eventItemID(string(event.RawData)); itemID != "" {
+			eventID = stableLifecycleEventID(event.TurnID, itemID, event.Method)
+		}
+	}
 	// 将事件保存入数据库
-	dbErr := a.cfg.SessionDB.TurnEventSave(context.Background(), &db.TurnEvent{
-		ID:         uuid.NewV4().String(),
+	dbErr := a.cfg.SessionDB.TurnEventUpsert(context.Background(), &db.TurnEvent{
+		ID:         eventID,
 		ThreadID:   event.ThreadID,
 		TurnID:     event.TurnID,
 		Type:       string(event.Type),
@@ -56,6 +63,9 @@ func (a *Agent) clientEvent(event *codex.Event) {
 		if err := a.cfg.SessionDB.TurnEventDeleteByMethods(context.Background(), event.TurnID, deltaEventMethods); err != nil {
 			slog.Error("fail to delete turn delta events", "error", err.Error(), "turnID", event.TurnID)
 		}
+	}
+	if codex.NotificationMethod(event.Method) == codex.TurnCompleted {
+		a.reconciler.Enqueue(event.ThreadID, event.TurnID)
 	}
 }
 

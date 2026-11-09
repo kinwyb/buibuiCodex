@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -131,6 +132,12 @@ type TurnEventQuery struct {
 	Limit int
 }
 
+// TurnEventOpenTurn 表示仍有 item/started 缺少对应 item/completed 的轮次。
+type TurnEventOpenTurn struct {
+	ThreadID string
+	TurnID   string
+}
+
 // NormalizeLimit 归一化 limit，返回实际生效的条数
 func (q TurnEventQuery) NormalizeLimit() int {
 	switch {
@@ -230,8 +237,13 @@ type ISession interface {
 	TurnList(ctx context.Context, query TurnQuery) ([]SessionTurn, error)
 	// TurnEventSave 会话事件保存
 	TurnEventSave(ctx context.Context, turn *TurnEvent) error
+	// TurnEventUpsert 会话事件幂等保存。ID 已存在时更新内容而不是报唯一键冲突，
+	// 用于 item 生命周期事件和 reconciler 生成的补全事件共用稳定 ID。
+	TurnEventUpsert(ctx context.Context, turn *TurnEvent) error
 	// TurnEventList 按轮次/线程查询会话事件，结果按 seq 升序返回
 	TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error)
+	// TurnEventOpenTurns 找出时间窗口内存在 started 但缺少 completed 的轮次。
+	TurnEventOpenTurns(ctx context.Context, since time.Time, limit int) ([]TurnEventOpenTurn, error)
 	// TurnEventDeleteByMethods 删除某轮下指定 method 的事件。
 	// 用于在 item 结束后丢弃逐 token 的增量帧：完整内容已随 item/completed 落库，
 	// 这些碎片不再参与回放，留着只会让 turn_events 无限膨胀。
@@ -305,7 +317,15 @@ func (s *sessionDefautStorage) TurnEventSave(ctx context.Context, turn *TurnEven
 	return nil
 }
 
+func (s *sessionDefautStorage) TurnEventUpsert(ctx context.Context, turn *TurnEvent) error {
+	return nil
+}
+
 func (s *sessionDefautStorage) TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error) {
+	return nil, nil
+}
+
+func (s *sessionDefautStorage) TurnEventOpenTurns(ctx context.Context, since time.Time, limit int) ([]TurnEventOpenTurn, error) {
 	return nil, nil
 }
 
@@ -591,6 +611,18 @@ func (s *sessionStorage) TurnEventSave(ctx context.Context, turn *TurnEvent) err
 	return s.db.WithContext(ctx).Save(turn).Error
 }
 
+func (s *sessionStorage) TurnEventUpsert(ctx context.Context, turn *TurnEvent) error {
+	if turn.CreateTime.IsZero() {
+		turn.CreateTime = time.Now()
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"thread_id", "turn_id", "type", "method", "raw_data", "create_time",
+		}),
+	}).Create(turn).Error
+}
+
 // TurnEventList 按轮次/线程查询会话事件，按 seq 升序返回。
 // 升序是回放的硬要求：seq 是自增主键，同一轮内严格等于事件发生顺序。
 func (s *sessionStorage) TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error) {
@@ -632,6 +664,100 @@ func (s *sessionStorage) TurnEventDeleteByMethods(ctx context.Context, turnID st
 	return s.db.WithContext(ctx).
 		Where("turn_id = ? AND method IN ?", turnID, methods).
 		Delete(&TurnEvent{}).Error
+}
+
+// TurnEventOpenTurns 扫描最近的事件窗口，按 thread/turn 聚合 item 生命周期。
+// item id 在 raw_data 里，跨 MySQL/SQLite 做 JSON 判断不划算，因此拉少量候选行后在 Go 里聚合。
+func (s *sessionStorage) TurnEventOpenTurns(ctx context.Context, since time.Time, limit int) ([]TurnEventOpenTurn, error) {
+	if limit <= 0 {
+		limit = 200
+	} else if limit > MaxTurnLimit {
+		limit = MaxTurnLimit
+	}
+
+	tx := s.db.WithContext(ctx).Model(&TurnEvent{}).
+		Select("thread_id", "turn_id", "method", "raw_data", "seq").
+		Where("method IN ?", []string{"item/started", "item/completed"})
+	if !since.IsZero() {
+		tx = tx.Where("create_time >= ?", since)
+	}
+	threads := s.tableName("SessionThread")
+	tx = tx.Where(
+		fmt.Sprintf("NOT EXISTS (SELECT 1 FROM %s st WHERE st.thread_id = turn_events.thread_id AND st.isdel = ?)", threads),
+		true,
+	)
+
+	var events []TurnEvent
+	if err := tx.Order("seq asc").Limit(MaxTurnEventLimit).Find(&events).Error; err != nil {
+		return nil, err
+	}
+
+	type lifecycle struct {
+		threadID  string
+		turnID    string
+		started   map[string]struct{}
+		completed map[string]struct{}
+	}
+	items := make(map[string]*lifecycle)
+	order := make([]string, 0)
+	for _, event := range events {
+		itemID := turnEventItemID(event.RawData)
+		if itemID == "" {
+			continue
+		}
+		key := event.ThreadID + "\x00" + event.TurnID
+		entry := items[key]
+		if entry == nil {
+			entry = &lifecycle{
+				threadID:  event.ThreadID,
+				turnID:    event.TurnID,
+				started:   make(map[string]struct{}),
+				completed: make(map[string]struct{}),
+			}
+			items[key] = entry
+			order = append(order, key)
+		}
+		if event.Method == "item/started" {
+			entry.started[itemID] = struct{}{}
+		} else {
+			entry.completed[itemID] = struct{}{}
+		}
+	}
+
+	result := make([]TurnEventOpenTurn, 0)
+	for _, key := range order {
+		entry := items[key]
+		open := false
+		for itemID := range entry.started {
+			if _, ok := entry.completed[itemID]; !ok {
+				open = true
+				break
+			}
+		}
+		if !open {
+			continue
+		}
+		result = append(result, TurnEventOpenTurn{
+			ThreadID: entry.threadID,
+			TurnID:   entry.turnID,
+		})
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+func turnEventItemID(raw string) string {
+	var payload struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	if json.Unmarshal([]byte(raw), &payload) != nil {
+		return ""
+	}
+	return payload.Item.ID
 }
 
 func (s *sessionStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage, contextWindow int64) error {
