@@ -312,8 +312,14 @@ func (c *Client) ReadThread(ctx context.Context, threadID string) (*jsonRpc.Thre
 	return &result, nil
 }
 
-// ReadTurn 读取指定 turn。优先走分页接口并只取 full items，旧版本或分页失败时回退 thread/read。
-func (c *Client) ReadTurn(ctx context.Context, threadID, turnID string) (*jsonRpc.Turn, error) {
+// ReadTurns 批量读取指定 turn。优先走分页接口并只取 full items，旧版本或分页失败时回退 thread/read。
+func (c *Client) ReadTurns(ctx context.Context, threadID string, turnIDs []string) (map[string]*jsonRpc.Turn, error) {
+	wanted := make(map[string]struct{}, len(turnIDs))
+	for _, turnID := range turnIDs {
+		wanted[turnID] = struct{}{}
+	}
+	found := make(map[string]*jsonRpc.Turn, len(turnIDs))
+
 	var cursor string
 	var listErr error
 	for page := 0; page < 10; page++ {
@@ -330,12 +336,17 @@ func (c *Client) ReadTurn(ctx context.Context, threadID, turnID string) (*jsonRp
 			break
 		}
 		for i := range result.Data {
-			if result.Data[i].TurnID == turnID {
-				if result.Data[i].ItemsView != "" && result.Data[i].ItemsView != "full" {
-					continue
-				}
-				return &result.Data[i], nil
+			turnID := result.Data[i].TurnID
+			if _, ok := wanted[turnID]; !ok {
+				continue
 			}
+			if result.Data[i].ItemsView != "" && result.Data[i].ItemsView != "full" {
+				continue
+			}
+			found[turnID] = &result.Data[i]
+		}
+		if len(found) == len(wanted) {
+			return found, nil
 		}
 		if result.NextCursor == nil || *result.NextCursor == "" {
 			break
@@ -346,17 +357,40 @@ func (c *Client) ReadTurn(ctx context.Context, threadID, turnID string) (*jsonRp
 	read, readErr := c.ReadThread(ctx, threadID)
 	if readErr != nil {
 		if listErr != nil {
-			return nil, fmt.Errorf("thread/turns/list: %v; thread/read: %w", listErr, readErr)
+			return found, fmt.Errorf("thread/turns/list: %v; thread/read: %w", listErr, readErr)
+		}
+		if len(found) > 0 {
+			return found, nil
 		}
 		return nil, readErr
 	}
 	for i := range read.Thread.Turns {
-		if read.Thread.Turns[i].TurnID == turnID {
-			return &read.Thread.Turns[i], nil
+		turnID := read.Thread.Turns[i].TurnID
+		if _, ok := wanted[turnID]; !ok {
+			continue
 		}
+		if _, ok := found[turnID]; !ok {
+			found[turnID] = &read.Thread.Turns[i]
+		}
+	}
+	if len(found) > 0 {
+		return found, nil
 	}
 	if listErr != nil {
 		return nil, fmt.Errorf("turn not found after thread/turns/list: %v", listErr)
 	}
-	return nil, fmt.Errorf("turn %s not found in thread %s", turnID, threadID)
+	return nil, fmt.Errorf("turns %v not found in thread %s", turnIDs, threadID)
+}
+
+// ReadTurn 读取单个 turn。
+func (c *Client) ReadTurn(ctx context.Context, threadID, turnID string) (*jsonRpc.Turn, error) {
+	turns, err := c.ReadTurns(ctx, threadID, []string{turnID})
+	if err != nil {
+		return nil, err
+	}
+	turn := turns[turnID]
+	if turn == nil {
+		return nil, fmt.Errorf("turn %s not found in thread %s", turnID, threadID)
+	}
+	return turn, nil
 }

@@ -54,7 +54,7 @@ func NewAgent(cfg *config.AgentConfig, historyTurnN int) *Agent {
 	if cfg != nil {
 		sessionDB = cfg.SessionDB
 	}
-	ret.reconciler = newTurnReconciler(sessionDB, ret.readTurn)
+	ret.reconciler = newTurnReconciler(sessionDB, ret.readTurns)
 	return ret
 }
 
@@ -241,14 +241,14 @@ func (a *Agent) getThread(ctx context.Context, sessionID string, cmd *Command) (
 	return thread, historyContent, nil
 }
 
-func (a *Agent) readTurn(ctx context.Context, threadID, turnID string) (*jsonRpc.Turn, error) {
+func (a *Agent) readTurns(ctx context.Context, threadID string, turnIDs []string) (map[string]*jsonRpc.Turn, error) {
 	a.initMu.Lock()
 	client := a.client
 	a.initMu.Unlock()
 	if client == nil {
 		return nil, errors.New("codex client is not initialized")
 	}
-	return client.ReadTurn(ctx, threadID, turnID)
+	return client.ReadTurns(ctx, threadID, turnIDs)
 }
 
 func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID string) (*codexTurn, error) {

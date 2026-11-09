@@ -65,6 +65,7 @@ func (a *Agent) clientEvent(event *codex.Event) {
 		}
 	}
 	if codex.NotificationMethod(event.Method) == codex.TurnCompleted {
+		// 入队后由 reconciler 按 thread 合并读取，turn 只作为待补全的最小状态单位。
 		a.reconciler.Enqueue(event.ThreadID, event.TurnID)
 	}
 }

@@ -3,6 +3,7 @@ package cdm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -23,26 +24,34 @@ func newReconcileTestStore(t *testing.T) db.ISession {
 }
 
 func reconcileTurnResult(turnStatus string, items ...string) *jsonRpc.Turn {
+	return reconcileTurnResultFor("u1", turnStatus, items...)
+}
+
+func reconcileTurnResultFor(turnID, turnStatus string, items ...string) *jsonRpc.Turn {
 	rawItems := make([]jsonRpc.ThreadItem, 0, len(items))
 	for _, item := range items {
 		rawItems = append(rawItems, json.RawMessage(item))
 	}
 	return &jsonRpc.Turn{
-		TurnID: "u1",
+		TurnID: turnID,
 		Status: turnStatus,
 		Items:  rawItems,
 	}
 }
 
 func saveOpenCommand(t *testing.T, store db.ISession) {
+	saveOpenCommandFor(t, store, "u1", "i1", "started-i1")
+}
+
+func saveOpenCommandFor(t *testing.T, store db.ISession, turnID, itemID, eventID string) {
 	t.Helper()
 	err := store.TurnEventSave(context.Background(), &db.TurnEvent{
-		ID:         "started-i1",
+		ID:         eventID,
 		ThreadID:   "t1",
-		TurnID:     "u1",
+		TurnID:     turnID,
 		Type:       "notification",
 		Method:     "item/started",
-		RawData:    `{"item":{"id":"i1","type":"commandExecution","status":"inProgress","command":"curl"}}`,
+		RawData:    fmt.Sprintf(`{"item":{"id":%q,"type":"commandExecution","status":"inProgress","command":"curl"}}`, itemID),
 		CreateTime: time.Now(),
 	})
 	if err != nil {
@@ -53,10 +62,12 @@ func saveOpenCommand(t *testing.T, store db.ISession) {
 func TestReconcileTurnFillsCompletedCommand(t *testing.T) {
 	store := newReconcileTestStore(t)
 	saveOpenCommand(t, store)
-	reconciler := newTurnReconciler(store, func(context.Context, string, string) (*jsonRpc.Turn, error) {
-		return reconcileTurnResult("completed",
-			`{"id":"i1","type":"commandExecution","status":"completed","command":"curl","aggregatedOutput":"ok","exitCode":0}`,
-		), nil
+	reconciler := newTurnReconciler(store, func(context.Context, string, []string) (map[string]*jsonRpc.Turn, error) {
+		return map[string]*jsonRpc.Turn{
+			"u1": reconcileTurnResult("completed",
+				`{"id":"i1","type":"commandExecution","status":"completed","command":"curl","aggregatedOutput":"ok","exitCode":0}`,
+			),
+		}, nil
 	})
 
 	done, err := reconciler.reconcileTurn(context.Background(), "t1", "u1")
@@ -117,10 +128,12 @@ func TestReconcileTurnFillsCompletedCommand(t *testing.T) {
 func TestReconcileTurnWaitsForInProgressCommand(t *testing.T) {
 	store := newReconcileTestStore(t)
 	saveOpenCommand(t, store)
-	reconciler := newTurnReconciler(store, func(context.Context, string, string) (*jsonRpc.Turn, error) {
-		return reconcileTurnResult("completed",
-			`{"id":"i1","type":"commandExecution","status":"inProgress","command":"curl"}`,
-		), nil
+	reconciler := newTurnReconciler(store, func(context.Context, string, []string) (map[string]*jsonRpc.Turn, error) {
+		return map[string]*jsonRpc.Turn{
+			"u1": reconcileTurnResult("completed",
+				`{"id":"i1","type":"commandExecution","status":"inProgress","command":"curl"}`,
+			),
+		}, nil
 	})
 
 	done, err := reconciler.reconcileTurn(context.Background(), "t1", "u1")
@@ -146,10 +159,12 @@ func TestReconcileTurnWaitsForInProgressCommand(t *testing.T) {
 func TestReconcileTurnMarksInProgressFailedWhenTurnFailed(t *testing.T) {
 	store := newReconcileTestStore(t)
 	saveOpenCommand(t, store)
-	reconciler := newTurnReconciler(store, func(context.Context, string, string) (*jsonRpc.Turn, error) {
-		return reconcileTurnResult("failed",
-			`{"id":"i1","type":"commandExecution","status":"inProgress","command":"curl"}`,
-		), nil
+	reconciler := newTurnReconciler(store, func(context.Context, string, []string) (map[string]*jsonRpc.Turn, error) {
+		return map[string]*jsonRpc.Turn{
+			"u1": reconcileTurnResult("failed",
+				`{"id":"i1","type":"commandExecution","status":"inProgress","command":"curl"}`,
+			),
+		}, nil
 	})
 
 	done, err := reconciler.reconcileTurn(context.Background(), "t1", "u1")
@@ -180,5 +195,121 @@ func TestReconcileTurnMarksInProgressFailedWhenTurnFailed(t *testing.T) {
 	}
 	if payload.Item.Status != "failed" {
 		t.Fatalf("失败 turn 的 inProgress item 应标记 failed，实际 %s", payload.Item.Status)
+	}
+}
+
+func TestProcessThreadJobBatchesTurns(t *testing.T) {
+	store := newReconcileTestStore(t)
+	saveOpenCommandFor(t, store, "u1", "i1", "started-u1")
+	saveOpenCommandFor(t, store, "u2", "i2", "started-u2")
+
+	readCalls := 0
+	reconciler := newTurnReconciler(store, func(_ context.Context, threadID string, turnIDs []string) (map[string]*jsonRpc.Turn, error) {
+		readCalls++
+		if threadID != "t1" {
+			t.Fatalf("threadID 不符: %s", threadID)
+		}
+		if len(turnIDs) != 2 {
+			t.Fatalf("同一 thread 的两个 turn 应一次读取，实际 %v", turnIDs)
+		}
+		return map[string]*jsonRpc.Turn{
+			"u1": reconcileTurnResultFor("u1", "completed",
+				`{"id":"i1","type":"commandExecution","status":"completed","aggregatedOutput":"one"}`,
+			),
+			"u2": reconcileTurnResultFor("u2", "completed",
+				`{"id":"i2","type":"commandExecution","status":"completed","aggregatedOutput":"two"}`,
+			),
+		}, nil
+	})
+
+	outcomes := reconciler.processThreadJob(context.Background(), "t1", []string{"u1", "u2"})
+	if readCalls != 1 {
+		t.Fatalf("同一 thread 应只调用一次 app-server 读取，实际 %d 次", readCalls)
+	}
+	if !outcomes["u1"].done || !outcomes["u2"].done {
+		t.Fatalf("两个 turn 都应补全完成: %+v", outcomes)
+	}
+
+	events, err := store.TurnEventList(context.Background(), db.TurnEventQuery{
+		TurnIDs: []string{"u1", "u2"},
+		Methods: []string{"item/completed"},
+		Limit:   -1,
+	})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("两个 turn 应各补一条完成帧，实际 %d 条", len(events))
+	}
+}
+
+func TestEnqueueGroupsByThread(t *testing.T) {
+	store := newReconcileTestStore(t)
+	reconciler := newTurnReconciler(store, func(context.Context, string, []string) (map[string]*jsonRpc.Turn, error) {
+		return nil, nil
+	})
+	now := time.Now()
+	reconciler.now = func() time.Time { return now }
+	reconciler.running = true
+
+	reconciler.Enqueue("t1", "u1")
+	reconciler.Enqueue("t1", "u2")
+	reconciler.Enqueue("t2", "u3")
+
+	if len(reconciler.jobs) != 2 {
+		t.Fatalf("应按 thread 聚合为 2 个任务，实际 %d 个", len(reconciler.jobs))
+	}
+	job := reconciler.jobs["t1"]
+	if job == nil || len(job.turns) != 2 {
+		t.Fatalf("t1 任务应包含两个 turn: %+v", job)
+	}
+	if want := now.Add(reconciler.debounce); !job.next.Equal(want) {
+		t.Fatalf("首次检查应延迟 %s，实际 next=%s", reconciler.debounce, job.next)
+	}
+}
+
+func TestFinishThreadJobReschedulesPerTurn(t *testing.T) {
+	store := newReconcileTestStore(t)
+	reconciler := newTurnReconciler(store, func(context.Context, string, []string) (map[string]*jsonRpc.Turn, error) {
+		return nil, nil
+	})
+	now := time.Now()
+	reconciler.now = func() time.Time { return now }
+
+	job := &threadReconcileJob{
+		threadID: "t1",
+		turns: map[string]*turnReconcileState{
+			"u1": {
+				turnID:   "u1",
+				next:     now,
+				deadline: now.Add(time.Hour),
+			},
+		},
+		next: now,
+	}
+	reconciler.jobs["t1"] = job
+
+	reconciler.finishThreadJob(job, []string{"u1"}, map[string]turnOutcome{
+		"u1": {done: false},
+	})
+	state := job.turns["u1"]
+	if state == nil {
+		t.Fatal("未完成 turn 应保留在任务中")
+	}
+	if state.attempts != 1 {
+		t.Fatalf("重试次数应为 1，实际 %d", state.attempts)
+	}
+	if want := now.Add(reconcileBackoffAt(1)); !state.next.Equal(want) {
+		t.Fatalf("下次重试时间不符: want %s, got %s", want, state.next)
+	}
+	if !job.next.Equal(state.next) {
+		t.Fatalf("thread 任务应按最近 turn 重试时间调度: job=%s turn=%s", job.next, state.next)
+	}
+
+	reconciler.finishThreadJob(job, []string{"u1"}, map[string]turnOutcome{
+		"u1": {done: true},
+	})
+	if reconciler.jobs["t1"] != nil {
+		t.Fatal("所有 turn 完成后应删除 thread 任务")
 	}
 }
