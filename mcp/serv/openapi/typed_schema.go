@@ -188,3 +188,5 @@ func compactSchemaJSONSchema(schema CompactSchema) map[string]any {
 	}
 	return result
 }
+
+type EmptyRequest struct{}
