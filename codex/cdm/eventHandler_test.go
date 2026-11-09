@@ -239,3 +239,78 @@ func Test_lifeEventParse_uiEventBatchAsToolStep(t *testing.T) {
 		t.Fatalf("UI 事件工具步骤内容不符: %+v", call)
 	}
 }
+
+// Test_lifeEventParse_mcpToolCall 用线上真实报文覆盖 MCP 工具调用。
+// mcpToolCall 曾经没有映射分支，落到 default 只打日志，事件类型为空被丢弃，
+// 前端因此完全看不到 MCP 调用；这里锁住开始帧、成功帧、失败帧三种形态。
+func Test_lifeEventParse_mcpToolCall(t *testing.T) {
+	started := `{"item":{"type":"mcpToolCall","id":"call_eba67ffeb6db4ba28df91e32","server":"boda","tool":"order_efficiency","status":"inProgress","arguments":{"startDate":"2026-09-15","endDate":"2026-09-15"},"appContext":null,"pluginId":null,"readOnlyHint":null,"result":null,"error":null,"durationMs":null},"threadId":"th","turnId":"tu","startedAtMs":1789528357382}`
+	completed := `{"item":{"type":"mcpToolCall","id":"call_8be43da6f2b845edbcd438a6","server":"codex","tool":"list_mcp_resources","status":"completed","arguments":{},"result":{"content":[{"type":"text","text":"{\"resources\":[]}"}],"structuredContent":null,"_meta":null},"error":null,"durationMs":120},"threadId":"th","turnId":"tu","completedAtMs":1789528358000}`
+	failed := `{"item":{"type":"mcpToolCall","id":"call_5d509bb8a3084dfab40983a4","server":"boda","tool":"list_mcp_resources","status":"failed","arguments":{"server":"boda"},"result":null,"error":{"message":"resources/list failed: MCP startup failed"},"durationMs":0},"threadId":"th","turnId":"tu","completedAtMs":1789528359000}`
+
+	parse := func(method codex.NotificationMethod, raw string) *types.Event {
+		state := types.NewState(&types.InputMessage{ID: "req", Session: "ws_user_chat", Channel: "ws"})
+		var got *types.Event
+		state.EventHandler = func(event *types.Event) { got = event }
+		(&Agent{}).codexEventParse(state, &codex.Event{
+			Type:    codex.EventTypeNotification,
+			Method:  string(method),
+			RawData: []byte(raw),
+		})
+		return got
+	}
+
+	startEvent := parse(codex.ItemStarted, started)
+	if startEvent == nil || startEvent.Type != types.EventToolStart {
+		t.Fatalf("开始帧应为 tool_start: %+v", startEvent)
+	}
+	startCall := startEvent.Message.ToolCalls[0]
+	if startCall.Name != "order_efficiency" || startCall.Type != types.ToolTypeFunction {
+		t.Fatalf("工具标识不符: %+v", startCall)
+	}
+	if startCall.Params != `{"endDate":"2026-09-15","startDate":"2026-09-15"}` {
+		t.Fatalf("工具入参不符: %q", startCall.Params)
+	}
+	if startCall.Result != "" {
+		t.Fatalf("开始帧 result 为 null，不应渲染出内容: %q", startCall.Result)
+	}
+	if startCall.Extra["server"] != "boda" || startCall.Extra["mcp"] != true {
+		t.Fatalf("开始帧应带 MCP 服务名: %+v", startCall.Extra)
+	}
+	if _, ok := startCall.Extra["success"]; ok {
+		t.Fatalf("inProgress 阶段不应表态 success: %+v", startCall.Extra)
+	}
+
+	doneEvent := parse(codex.ItemCompleted, completed)
+	if doneEvent == nil || doneEvent.Type != types.EventToolCompleted {
+		t.Fatalf("完成帧应为 tool_completed: %+v", doneEvent)
+	}
+	doneCall := doneEvent.Message.ToolCalls[0]
+	if doneCall.Result != `{"resources":[]}` {
+		t.Fatalf("结果应展开 result.content[].text，实际 %q", doneCall.Result)
+	}
+	if doneCall.Params != "" {
+		t.Fatalf("空入参应为空串，实际 %q", doneCall.Params)
+	}
+	if doneCall.Extra["success"] != true || doneCall.Extra["server"] != "codex" {
+		t.Fatalf("完成帧 extra 不符: %+v", doneCall.Extra)
+	}
+	if doneCall.Extra["durationMs"] != int64(120) {
+		t.Fatalf("完成帧应带耗时: %+v", doneCall.Extra)
+	}
+
+	failEvent := parse(codex.ItemCompleted, failed)
+	if failEvent == nil || failEvent.Type != types.EventToolCompleted {
+		t.Fatalf("失败也应是 tool_completed，让前端收敛这一条: %+v", failEvent)
+	}
+	failCall := failEvent.Message.ToolCalls[0]
+	if failCall.Extra["success"] != false {
+		t.Fatalf("失败帧应带 success=false: %+v", failCall.Extra)
+	}
+	if failCall.Extra["error"] != "resources/list failed: MCP startup failed" {
+		t.Fatalf("失败帧应带错误信息: %+v", failCall.Extra)
+	}
+	if failCall.Result != "resources/list failed: MCP startup failed" {
+		t.Fatalf("无结果时应退回错误信息，实际 %q", failCall.Result)
+	}
+}

@@ -60,20 +60,89 @@ type itemlifecycle struct {
 	ToolCallItemDetail
 }
 
-// ToolCallItemDetail 函数调用。
+// item 状态取值，commandExecution / dynamicToolCall / mcpToolCall 共用
+const (
+	ItemStatusInProgress = "inProgress"
+	ItemStatusCompleted  = "completed"
+	ItemStatusFailed     = "failed"
+)
+
+// ToolExtras 汇总工具调用帧的附加字段，实时流（cdm）与回放（replay）共用，
+// 两条链路给出同一套 extra，前端才能用同一条渲染分支。
+func (i itemlifecycle) ToolExtras() map[string]any {
+	extra := make(map[string]any, 4)
+	if i.Namespace != "" {
+		extra["namespace"] = i.Namespace
+	}
+	if i.CallId != "" {
+		extra["callID"] = i.CallId
+	}
+	// mcpToolCall 没有 namespace，改带 MCP 服务名
+	if i.Server != "" {
+		extra["server"] = i.Server
+		extra["mcp"] = true
+	}
+	if i.Status != "" {
+		extra["status"] = i.Status
+	}
+	// success：dynamicToolCall 报文里直接给；mcpToolCall 只能由 status/error 推导，
+	// inProgress 阶段不表态，否则开始帧就会被前端画成失败。
+	errText := i.ErrorText()
+	switch {
+	case i.Success != nil:
+		extra["success"] = *i.Success
+	case errText != "":
+		extra["success"] = false
+		extra["error"] = errText
+	case i.Status == ItemStatusCompleted:
+		extra["success"] = true
+	case i.Status == ItemStatusFailed:
+		extra["success"] = false
+	}
+	if i.DurationMs > 0 {
+		extra["durationMs"] = i.DurationMs
+	}
+	return extra
+}
+
+// ToolCallItemDetail 函数调用，dynamicToolCall 与 mcpToolCall 共用。
 //
-// 注意字段来源：codex 的 item/completed 里工具结果是 contentItems，不是 result，
-// 后者在本协议中并不存在（全库事件无一例带 result）。只读 result 会让工具结果永远为空。
+// 注意字段来源：codex 的 dynamicToolCall item/completed 里工具结果是 contentItems，不是 result，
+// 后者在该类型下并不存在（全库事件无一例带 result）。只读 result 会让工具结果永远为空。
+// mcpToolCall 恰好相反：结果在 result 里（原样透传 MCP 的 CallToolResult），没有 contentItems，
+// 失败信息在 error 里，且不带 success。
 // status / durationMs 与本结构体的兄弟 CommandExecutionItemDetail 同名，共用同一 tag，
 // 这里不再重复声明，直接读 item.Status / item.DurationMs。
 type ToolCallItemDetail struct {
 	CallId       string                  `json:"callId"`
 	Namespace    string                  `json:"namespace"`
+	Server       string                  `json:"server"`
 	Tool         string                  `json:"tool"`
 	Arguments    map[string]any          `json:"arguments"`
 	Result       json.RawMessage         `json:"result"`
 	Success      *bool                   `json:"success"`
+	Error        json.RawMessage         `json:"error"`
 	ContentItems []ToolOutputContentItem `json:"contentItems"`
+}
+
+// MCPToolResult MCP 工具返回体，codex 原样透传服务端的 CallToolResult。
+type MCPToolResult struct {
+	Content           []MCPContent    `json:"content"`
+	StructuredContent json.RawMessage `json:"structuredContent"`
+	IsError           bool            `json:"isError"`
+}
+
+// MCPContent MCP 返回内容项，type 取值 text | image | audio | resource
+type MCPContent struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+}
+
+// MCPError MCP 工具调用错误，对应 item.error
+type MCPError struct {
+	Message string `json:"message"`
 }
 
 // ToolOutputContentItem 工具输出项，对应 codex 的 DynamicToolCallResponse.contentItems。
@@ -88,9 +157,13 @@ type ToolOutputContentItem struct {
 
 // ResultText 取工具执行结果的文本形式，供实时流与历史回放共用。
 //
-// 结果的主载体是 contentItems（codex 的 item/completed 里没有 result 字段），
-// result 只在少数版本回填，作为兜底放在后面。逻辑集中在这里，避免两条解析路径各写一份。
+// dynamicToolCall 的结果主载体是 contentItems（其 item/completed 里没有 result 字段），
+// mcpToolCall 的结果在 result.content 里，先展开成文本。逻辑集中在这里，
+// 避免两条解析路径各写一份。
 func (d ToolCallItemDetail) ResultText() string {
+	if text := d.mcpResultText(); text != "" {
+		return text
+	}
 	if text := rawJSONText(d.Result); text != "" {
 		return text
 	}
@@ -106,6 +179,54 @@ func (d ToolCallItemDetail) ResultText() string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// ResultOrError 结果文本，失败且没有结果时退回错误信息，
+// 保证前端在工具报错时也有内容可渲染，而不是一个空结果。
+func (d ToolCallItemDetail) ResultOrError() string {
+	if text := d.ResultText(); text != "" {
+		return text
+	}
+	return d.ErrorText()
+}
+
+// ErrorText 取 mcpToolCall 的错误信息，没有错误返回空串。
+func (d ToolCallItemDetail) ErrorText() string {
+	var mcpErr MCPError
+	if err := json.Unmarshal(d.Error, &mcpErr); err == nil && mcpErr.Message != "" {
+		return mcpErr.Message
+	}
+	return rawJSONText(d.Error)
+}
+
+// mcpResultText 展开 MCP 的 CallToolResult。非 MCP 结构（或没有内容）时返回空串，
+// 由 ResultText 继续走 result 原文 / contentItems 分支。
+func (d ToolCallItemDetail) mcpResultText() string {
+	if len(d.Result) == 0 {
+		return ""
+	}
+	var result MCPToolResult
+	if err := json.Unmarshal(d.Result, &result); err != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(result.Content))
+	for _, item := range result.Content {
+		switch {
+		case item.Text != "":
+			parts = append(parts, item.Text)
+		case item.Type == "image":
+			parts = append(parts, "[图片] "+item.MimeType)
+		case item.Type == "audio":
+			parts = append(parts, "[音频] "+item.MimeType)
+		case item.Type == "resource":
+			parts = append(parts, "[资源]")
+		}
+	}
+	if text := strings.Join(parts, "\n"); text != "" {
+		return text
+	}
+	// 只有结构化结果时保留原始 JSON，交给前端按需解析
+	return rawJSONText(result.StructuredContent)
 }
 
 // rawJSONText 把 json.RawMessage 转成可读文本：null / 空 给空串，

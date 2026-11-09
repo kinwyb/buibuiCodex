@@ -321,30 +321,21 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 		}
 		msg.ToolCalls = append(msg.ToolCalls, calls)
 		eType = types.EventToolStart
-	case jsonRpc.DynamicToolCall:
+	// MCP 工具调用与本地动态工具走同一条渲染分支：都是「函数型工具 + 入参 + 结果」，
+	// 差别只在结果载体（result.content vs contentItems）与来源标识（server vs namespace），
+	// 这两点已经在 jsonRpc 的解析里抹平。此前 mcpToolCall 落到 default 分支只打日志，
+	// 事件类型为空被 codexEventParse 丢弃，前端完全看不到 MCP 调用。
+	case jsonRpc.DynamicToolCall, jsonRpc.MCPToolCall:
 		msg.Role = types.RoleTool
-		calls := types.ToolCall{
+		// 报文里没有 callId，item.ID 本身就是 call_xxx，回给模型时用的就是它
+		msg.ToolCalls = append(msg.ToolCalls, types.ToolCall{
 			ID:     item.ID,
 			Type:   types.ToolTypeFunction,
 			Name:   item.ToolCallItemDetail.Tool,
 			Params: toolParamsText(item.ToolCallItemDetail.Arguments),
-			Result: item.ToolCallItemDetail.ResultText(),
-			Extra:  make(map[string]any),
-		}
-		if item.ToolCallItemDetail.Namespace != "" {
-			calls.Extra["namespace"] = item.ToolCallItemDetail.Namespace
-		}
-		// 报文里没有 callId，item.ID 本身就是 call_xxx，回给模型时用的就是它
-		if item.Status != "" {
-			calls.Extra["status"] = item.Status
-		}
-		if item.ToolCallItemDetail.Success != nil {
-			calls.Extra["success"] = *item.ToolCallItemDetail.Success
-		}
-		if item.DurationMs > 0 {
-			calls.Extra["durationMs"] = item.DurationMs
-		}
-		msg.ToolCalls = append(msg.ToolCalls, calls)
+			Result: item.ToolCallItemDetail.ResultOrError(),
+			Extra:  item.ToolExtras(),
+		})
 		eType = types.EventToolStart
 	case jsonRpc.UserMessage:
 		msg.Content = notification.RawData.String()

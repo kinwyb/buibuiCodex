@@ -245,49 +245,36 @@ func itemStep(ev db.TurnEvent, bodyLimit int) (*protocol.AgentData, string) {
 		call.Result, data.Truncated = clip(rawText(item.Results), bodyLimit)
 		data.ToolCalls = []types.ToolCall{call}
 
-	case jsonRpc.DynamicToolCall:
+	// dynamicToolCall 与 mcpToolCall 同构：函数型工具 + 入参 + 结果
+	case jsonRpc.DynamicToolCall, jsonRpc.MCPToolCall:
 		data.Event = eventOf(done, types.EventToolCompleted, types.EventToolStart)
 		data.Role = string(types.RoleTool)
 		name := item.Tool
 		if name == "" {
 			name = "tool"
 		}
-		params, _ := json.Marshal(item.Arguments)
-		if string(params) == "null" {
-			params = nil
+		// 与实时流一致：空入参给空串，不是 "{}" 也不是 "null"
+		var params []byte
+		if len(item.Arguments) > 0 {
+			params, _ = json.Marshal(item.Arguments)
 		}
 		call := types.ToolCall{
 			ID:   item.ID,
 			Type: types.ToolTypeFunction,
 			Name: name,
 		}
-		extra := map[string]any{}
-		if item.Namespace != "" {
-			extra["namespace"] = item.Namespace
-		}
-		if item.CallId != "" {
-			extra["callID"] = item.CallId
-		}
-		// 与实时流保持同一套 extra 字段，前端才能用同一条渲染分支
-		if item.Status != "" {
-			extra["status"] = item.Status
-		}
-		if item.ToolCallItemDetail.Success != nil {
-			extra["success"] = *item.ToolCallItemDetail.Success
-		}
-		if item.DurationMs > 0 {
-			extra["durationMs"] = item.DurationMs
-		}
-		if len(extra) > 0 {
+		// 与实时流共用同一份 extra 汇总，前端才能用同一条渲染分支
+		if extra := item.ToolExtras(); len(extra) > 0 {
 			call.Extra = extra
 		}
 		call.Params, _ = clip(string(params), bodyLimit)
-		// 结果在 contentItems 里，result 只是兜底；两条链路共用同一份解析
-		call.Result, data.Truncated = clip(item.ToolCallItemDetail.ResultText(), bodyLimit)
+		// dynamicToolCall 的结果在 contentItems 里，mcpToolCall 在 result.content 里，
+		// 解析集中在 jsonRpc 侧；失败无结果时退回 error 文本
+		call.Result, data.Truncated = clip(item.ToolCallItemDetail.ResultOrError(), bodyLimit)
 		data.ToolCalls = []types.ToolCall{call}
 
 	default:
-		// 未单独建模的 item 类型（fileChange / mcpToolCall / plan ...）
+		// 未单独建模的 item 类型（fileChange / plan / imageGeneration ...）
 		// 统一降级为工具步骤，原始 item 保留在结果里，信息不丢。
 		data.Event = eventOf(done, types.EventToolCompleted, types.EventToolStart)
 		data.Role = string(types.RoleTool)

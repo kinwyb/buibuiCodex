@@ -341,3 +341,86 @@ func TestBuildCarriesEventID(t *testing.T) {
 		t.Fatalf("审批标识应放在 data.approval.id: %+v", approval.Approval)
 	}
 }
+
+// MCP 工具调用要还原成正常工具步骤（含服务名与展开后的结果），
+// 而不是降级为 unparsed 兜底帧，否则历史里看不出这一步调了什么。
+func TestBuildMapsMCPToolCallToToolSteps(t *testing.T) {
+	frames, lossy := build(t, []db.TurnEvent{
+		ev(1, "item/started", `{"item":{"type":"mcpToolCall","id":"call_1","server":"boda","tool":"order_efficiency","status":"inProgress","arguments":{"startDate":"2026-09-15"},"result":null,"error":null},"threadId":"t1","turnId":"u1","startedAtMs":1789528357382}`),
+		ev(2, "item/completed", `{"item":{"type":"mcpToolCall","id":"call_1","server":"boda","tool":"order_efficiency","status":"completed","arguments":{"startDate":"2026-09-15"},"result":{"content":[{"type":"text","text":"{\"data\":[1]}"}],"structuredContent":null},"error":null,"durationMs":321},"threadId":"t1","turnId":"u1","completedAtMs":1789528358000}`),
+		ev(3, "item/completed", `{"item":{"type":"mcpToolCall","id":"call_2","server":"boda","tool":"list_mcp_resources","status":"failed","arguments":{},"result":null,"error":{"message":"resources/list failed"},"durationMs":0},"threadId":"t1","turnId":"u1"}`),
+	}, Options{})
+	if lossy {
+		t.Fatal("内容未超限时不应标记有损")
+	}
+	if len(frames) != 3 {
+		t.Fatalf("应还原 3 帧，实际 %d", len(frames))
+	}
+
+	start := decodeFrame(t, frames[0])
+	if start.Event != string(types.EventToolStart) || start.Role != string(types.RoleTool) {
+		t.Fatalf("开始帧类型不符: %+v", start)
+	}
+	if start.Meta["codex_item_type"] != "mcpToolCall" || start.Meta["unparsed"] != nil {
+		t.Fatalf("MCP 工具调用不应走兜底分支: %+v", start.Meta)
+	}
+	startCall := start.ToolCalls[0]
+	if startCall.Name != "order_efficiency" || startCall.Type != types.ToolTypeFunction {
+		t.Fatalf("工具标识不符: %+v", startCall)
+	}
+	if startCall.Params != `{"startDate":"2026-09-15"}` {
+		t.Fatalf("入参不符: %q", startCall.Params)
+	}
+	if startCall.Extra["server"] != "boda" || startCall.Extra["mcp"] != true {
+		t.Fatalf("应带 MCP 服务名: %+v", startCall.Extra)
+	}
+	if _, ok := startCall.Extra["success"]; ok {
+		t.Fatalf("inProgress 阶段不应表态 success: %+v", startCall.Extra)
+	}
+	if frames[0].EventID != "call_1" || frames[1].EventID != "call_1" {
+		t.Fatalf("同一 item 的开始/完成帧应共享 eventID: %q / %q", frames[0].EventID, frames[1].EventID)
+	}
+
+	done := decodeFrame(t, frames[1])
+	if done.Event != string(types.EventToolCompleted) {
+		t.Fatalf("完成帧类型不符: %+v", done)
+	}
+	doneCall := done.ToolCalls[0]
+	if doneCall.Result != `{"data":[1]}` {
+		t.Fatalf("结果应展开 result.content[].text，实际 %q", doneCall.Result)
+	}
+	// extra 经过信封序列化再解出，数字统一是 float64
+	if doneCall.Extra["success"] != true || doneCall.Extra["durationMs"] != float64(321) {
+		t.Fatalf("完成帧 extra 不符: %+v", doneCall.Extra)
+	}
+
+	failed := decodeFrame(t, frames[2])
+	failedCall := failed.ToolCalls[0]
+	if failedCall.Params != "" {
+		t.Fatalf("空入参应为空串，实际 %q", failedCall.Params)
+	}
+	if failedCall.Result != "resources/list failed" {
+		t.Fatalf("失败无结果时应退回错误信息，实际 %q", failedCall.Result)
+	}
+	if failedCall.Extra["success"] != false || failedCall.Extra["error"] != "resources/list failed" {
+		t.Fatalf("失败帧 extra 不符: %+v", failedCall.Extra)
+	}
+}
+
+// MCP 结果动辄几 KB，回放必须按 BodyLimit 截断并标记有损
+func TestBuildTruncatesMCPToolResult(t *testing.T) {
+	frames, lossy := build(t, []db.TurnEvent{
+		ev(1, "item/completed", `{"item":{"type":"mcpToolCall","id":"call_1","server":"boda","tool":"order_efficiency","status":"completed","arguments":{},"result":{"content":[{"type":"text","text":"0123456789abcdef"}]},"error":null},"threadId":"t1","turnId":"u1"}`),
+	}, Options{BodyLimit: 8})
+	if !lossy {
+		t.Fatal("结果被截断时应标记有损")
+	}
+	data := decodeFrame(t, frames[0])
+	if !data.Truncated {
+		t.Fatal("帧应带 truncated 标记")
+	}
+	got := data.ToolCalls[0].Result
+	if !strings.HasPrefix(got, "01234567") || !strings.Contains(got, "已截断") {
+		t.Fatalf("截断结果不符合预期: %q", got)
+	}
+}
