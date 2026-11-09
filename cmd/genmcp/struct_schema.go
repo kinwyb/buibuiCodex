@@ -144,6 +144,7 @@ func (l *goTypeLoader) convertStruct(node *ast.StructType, stack map[string]bool
 		if description := tag.Get("description"); description != "" {
 			fieldSchema.Description = description
 		}
+		fieldSchema.Enum = splitEnumTag(tag.Get("enum"))
 		for index, name := range field.Names {
 			if !ast.IsExported(name.Name) {
 				continue
@@ -161,6 +162,20 @@ func (l *goTypeLoader) convertStruct(node *ast.StructType, stack map[string]bool
 		}
 	}
 	return result, nil
+}
+
+func splitEnumTag(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func goBuiltinKind(name string) (string, bool) {

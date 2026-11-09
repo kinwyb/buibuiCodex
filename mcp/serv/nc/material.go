@@ -6,15 +6,17 @@ import (
 )
 
 type materialQueryRequest struct {
-	Code string `json:"code,omitempty" description:"物料编码"`
-	Name string `json:"name,omitempty" description:"物料名称"`
+	Code       string `json:"code,omitempty" description:"物料编码(9位纯数字)"`
+	Name       string `json:"name,omitempty" description:"物料名称"`
+	VFree      string `json:"vfreeName,omitempty" enum:"vfree1,vfree4,vfree6,vfree7" description:"辅助属性,可选值[vfree1:款号，vfree4:批次/批号/缸号,vfree6:颜色,vfree7:尺码]"`
+	VFreeValue string `json:"vfreeValue,omitempty" description:"辅助属性值"`
 }
 
 type materialConvert struct {
 	Measdoc           string `json:"measdoc" description:"单位名称"`
 	MeasdocCode       string `json:"measdocCode" description:"单位编码"`
 	Measrate          string `json:"measrate" description:"转换率"`
-	PkMaterialconvert string `json:"pk_materialconvert" description:""`
+	PkMaterialconvert string `json:"pk_materialconvert" description:"单位转换率PK"`
 	PkMeasdoc         string `json:"pk_measdoc" description:"单位PK"`
 }
 
@@ -38,10 +40,11 @@ type materialQueryResponse struct {
 // 物料查询
 func materialQuery() serv.IMcpTool {
 	return openapi.NewTypedRequestResponseOpenAPITool[materialQueryRequest, []materialQueryResponse](openapi.OpenAPIToolSpec{
-		Name:        "nc_material_query",
-		Description: "查询物料基础信息(code或者name必须要传一个)",
-		Method:      "POST",
-		Path:        "/nc/material/query",
+		Name: "nc_material_query",
+		Description: "查询物料基础信息。当用户需要按物料编码(code)或物料名称(name)查询物料档案、物料基本信息、物料详情时使用此工具。" +
+			"[code,name,vfreeName]必须至少传一个，如果传vfreeName还必须同步传vfreeValue",
+		Method: "POST",
+		Path:   "/nc/material/query",
 		Binding: openapi.OpenAPIRequestBinding{
 			Path:      map[string]string(nil),
 			Query:     map[string]string(nil),

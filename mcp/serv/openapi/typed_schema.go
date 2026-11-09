@@ -87,6 +87,7 @@ func compactSchemaFromType(typ reflect.Type, stack map[reflect.Type]bool) Compac
 			if description := field.Tag.Get("description"); description != "" {
 				fieldSchema.Description = description
 			}
+			fieldSchema.Enum = enumTagValues(field.Tag.Get("enum"))
 			result.Fields = append(result.Fields, CompactField{
 				Name:     name,
 				Required: runtimeFieldRequired(field, omitempty),
@@ -97,6 +98,20 @@ func compactSchemaFromType(typ reflect.Type, stack map[reflect.Type]bool) Compac
 	default:
 		return CompactSchema{Kind: "raw"}
 	}
+}
+
+func enumTagValues(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func runtimeJSONField(field reflect.StructField) (name string, omitempty bool, skip bool) {
@@ -137,6 +152,9 @@ func compactSchemaJSONSchema(schema CompactSchema) map[string]any {
 	result := make(map[string]any)
 	if schema.Description != "" {
 		result["description"] = schema.Description
+	}
+	if len(schema.Enum) > 0 {
+		result["enum"] = schema.Enum
 	}
 	switch schema.Kind {
 	case "object":

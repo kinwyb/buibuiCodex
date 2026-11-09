@@ -126,6 +126,11 @@ func TestRenderGeneratedFileSynthesizesInlineTypes(t *testing.T) {
 			Kind: "object",
 			Fields: []openapi.CompactField{
 				{Name: "code", Required: true, Type: openapi.CompactSchema{Kind: "string", Description: "物料编码"}},
+				{Name: "vfreeName", Type: openapi.CompactSchema{
+					Kind:        "string",
+					Description: "辅助属性",
+					Enum:        []string{"vfree1", "vfree4", "vfree6", "vfree7"},
+				}},
 			},
 		},
 		ResponseSchema: openapi.CompactSchema{
@@ -150,6 +155,7 @@ func TestRenderGeneratedFileSynthesizesInlineTypes(t *testing.T) {
 		"openapi.NewTypedRequestResponseOpenAPITool[NcMaterialQueryRequest, []NcMaterialQueryResponseItem]",
 		`json:"code"`,
 		`description:"物料名称"`,
+		`enum:"vfree1,vfree4,vfree6,vfree7"`,
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("generated content missing %q:\n%s", expected, text)

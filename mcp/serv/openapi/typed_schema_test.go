@@ -25,8 +25,9 @@ type typedMaterial struct {
 }
 
 type typedMaterialQuery struct {
-	Code string `json:"code" description:"物料编码"`
-	Name string `json:"name,omitempty" description:"物料名称"`
+	Code  string `json:"code" description:"物料编码"`
+	Name  string `json:"name,omitempty" description:"物料名称"`
+	VFree string `json:"vfreeName,omitempty" enum:"vfree1,vfree4,vfree6,vfree7" description:"辅助属性"`
 }
 
 func TestCompactSchemaFromTypeUsesStructOrderAndTags(t *testing.T) {
@@ -109,8 +110,9 @@ func TestTypedRequestSchemaComesFromStruct(t *testing.T) {
 	schema := JSONSchemaFromType(reflectType[typedMaterialQuery]())
 	var decoded struct {
 		Properties map[string]struct {
-			Description string `json:"description"`
-			Type        string `json:"type"`
+			Description string   `json:"description"`
+			Type        string   `json:"type"`
+			Enum        []string `json:"enum"`
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
@@ -119,6 +121,9 @@ func TestTypedRequestSchemaComesFromStruct(t *testing.T) {
 	}
 	if decoded.Properties["code"].Description != "物料编码" || decoded.Properties["code"].Type != "string" {
 		t.Fatalf("schema = %#v", decoded.Properties)
+	}
+	if len(decoded.Properties["vfreeName"].Enum) != 4 || decoded.Properties["vfreeName"].Enum[0] != "vfree1" {
+		t.Fatalf("vfree enum = %#v", decoded.Properties["vfreeName"].Enum)
 	}
 	if len(decoded.Required) != 1 || decoded.Required[0] != "code" {
 		t.Fatalf("required = %v", decoded.Required)

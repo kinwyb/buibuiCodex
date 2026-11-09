@@ -70,15 +70,18 @@ func (r *goTypeRenderer) renderObject(name string, schema openapi.CompactSchema)
 			"\t%s %s %s\n",
 			fieldName,
 			fieldType,
-			goStructTagLiteral(jsonValue, field.Type.Description),
+			goStructTagLiteral(jsonValue, field.Type.Description, field.Type.Enum),
 		)
 	}
 	builder.WriteString("}\n")
 	r.lines = append(r.lines, builder.String())
 }
 
-func goStructTagLiteral(jsonName, description string) string {
+func goStructTagLiteral(jsonName, description string, enum []string) string {
 	tag := "json:" + strconv.Quote(jsonName) + " description:" + strconv.Quote(description)
+	if len(enum) > 0 {
+		tag += " enum:" + strconv.Quote(strings.Join(enum, ","))
+	}
 	if strings.Contains(tag, "`") {
 		return strconv.Quote(tag)
 	}

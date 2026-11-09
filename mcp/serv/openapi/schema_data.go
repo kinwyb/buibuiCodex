@@ -25,6 +25,7 @@ const (
 type CompactSchema struct {
 	Kind        string         `json:"kind"`
 	Description string         `json:"description,omitempty"`
+	Enum        []string       `json:"enum,omitempty"`
 	Fields      []CompactField `json:"fields,omitempty"`
 	Items       *CompactSchema `json:"items,omitempty"`
 	Values      *CompactSchema `json:"values,omitempty"`

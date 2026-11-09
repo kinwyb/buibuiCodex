@@ -52,6 +52,7 @@ go run ./cmd/genmcp \
 - `description` 标签保留字段中文含义。
 - 没有 `omitempty` 的字段默认必填；指针和带 `omitempty` 的字段默认选填。
 - `required:"true"` 或 `required:"false"` 可以显式覆盖必填规则。
+- 字符串枚举使用 `enum:"值1,值2,值3"`，与 `omitempty` 组合即为选填枚举。
 - `[]Type` 表示数组，嵌套结构体、指针和 `map[string]Type` 会递归处理。
 - 被引用类型可以定义在同一目录的其他 `.go` 文件中。
 

@@ -889,7 +889,11 @@ func (c schemaConverter) convert(raw json.RawMessage, stack map[string]bool) (op
 
 	switch typ {
 	case "string", "integer", "number", "boolean":
-		return openapi.CompactSchema{Kind: typ, Description: description}, nil
+		result := openapi.CompactSchema{Kind: typ, Description: description}
+		if typ == "string" {
+			result.Enum = node.stringSlice("enum")
+		}
+		return result, nil
 	case "array":
 		result := openapi.CompactSchema{Kind: "array", Description: description}
 		items, ok := node.get("items")
