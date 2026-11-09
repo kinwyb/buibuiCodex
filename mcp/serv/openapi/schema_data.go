@@ -48,9 +48,10 @@ type schemaDataEnvelope struct {
 }
 
 type schemaDataMeta struct {
-	Total int    `json:"total"`
-	Shown int    `json:"shown"`
-	File  string `json:"file"`
+	Total    int    `json:"total"`
+	Shown    int    `json:"shown"`
+	File     string `json:"file"`
+	FileHint string `json:"fileHint"`
 }
 
 // EncodeSchemaData 将 API JSON 转换为按 schema 字段顺序排列的紧凑结构。
@@ -84,8 +85,15 @@ func EncodeSchemaData(schema CompactSchema, data, page json.RawMessage) (string,
 	if len(fullBytes) < schemaDataInlineLimit {
 		return string(fullBytes), nil
 	}
+	if schema.Kind != "array" {
+		return string(fullBytes), nil
+	}
 
-	fileURL, err := writeSchemaDataFile(fullBytes)
+	fileBytes, err := json.Marshal(fullData)
+	if err != nil {
+		return "", fmt.Errorf("序列化完整数据失败: %w", err)
+	}
+	fileURL, err := writeSchemaDataFile(fileBytes)
 	if err != nil {
 		return string(fullBytes), nil
 	}
@@ -101,9 +109,10 @@ func EncodeSchemaData(schema CompactSchema, data, page json.RawMessage) (string,
 		Data:   previewData,
 		Page:   pageValue,
 		Meta: &schemaDataMeta{
-			Total: total,
-			Shown: shown,
-			File:  fileURL,
+			Total:    total,
+			Shown:    shown,
+			File:     fileURL,
+			FileHint: "文件内容是上方 data 数组；按上方 schema 的字段顺序读取",
 		},
 	}
 	previewBytes, err := json.Marshal(preview)
@@ -323,8 +332,7 @@ func decodeJSONValue(raw json.RawMessage) (any, error) {
 
 func previewSchemaData(schema *CompactSchema, data json.RawMessage) (any, int, int, error) {
 	if schema.Kind != "array" {
-		value, err := encodeSchemaValue(schema, data)
-		return value, 1, 1, err
+		return nil, 0, 0, errors.New("只有数组数据支持文件预览")
 	}
 
 	var items []json.RawMessage

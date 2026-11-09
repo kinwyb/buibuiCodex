@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kinwyb/buibuiCodex/mcp/serv"
@@ -153,8 +154,11 @@ func TestEncodeSchemaDataLargeResultUsesFile(t *testing.T) {
 	if preview.Format != schemaDataFormat {
 		t.Fatalf("preview format = %q", preview.Format)
 	}
-	if len(preview.Meta) != 3 || preview.Meta["total"] != float64(300) || preview.Meta["shown"] != float64(3) {
+	if len(preview.Meta) != 4 || preview.Meta["total"] != float64(300) || preview.Meta["shown"] != float64(3) {
 		t.Fatalf("meta = %+v", preview.Meta)
+	}
+	if preview.Meta["fileHint"] == "" {
+		t.Fatalf("file metadata = %+v", preview.Meta)
 	}
 	if len(preview.Data) != 3 {
 		t.Fatalf("preview rows = %d", len(preview.Data))
@@ -184,24 +188,17 @@ func TestEncodeSchemaDataLargeResultUsesFile(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			var full struct {
-				Format string `json:"format"`
-				Schema any    `json:"schema"`
-				Data   []any  `json:"data"`
-			}
-			if err := json.Unmarshal(fullData, &full); err != nil {
+			var fileData []any
+			if err := json.Unmarshal(fullData, &fileData); err != nil {
 				return err
 			}
-			if full.Format != schemaDataFormat {
-				t.Fatalf("file format = %q", full.Format)
+			if len(fileData) != 300 {
+				t.Fatalf("file rows = %d", len(fileData))
 			}
-			if len(full.Data) != 300 {
-				t.Fatalf("full rows = %d", len(full.Data))
-			}
-			previewSchema, _ := json.Marshal(preview.Schema)
-			fileSchema, _ := json.Marshal(full.Schema)
-			if string(previewSchema) != string(fileSchema) {
-				t.Fatalf("schema mismatch\npreview: %s\nfile: %s", previewSchema, fileSchema)
+			previewRow, _ := json.Marshal(preview.Data[0])
+			fileRow, _ := json.Marshal(fileData[0])
+			if string(previewRow) != string(fileRow) {
+				t.Fatalf("first row mismatch\npreview: %s\nfile: %s", previewRow, fileRow)
 			}
 		}
 		return nil
@@ -210,6 +207,33 @@ func TestEncodeSchemaDataLargeResultUsesFile(t *testing.T) {
 	}
 	if fileCount != 1 {
 		t.Fatalf("file count = %d", fileCount)
+	}
+}
+
+func TestEncodeSchemaDataLargeObjectStaysInline(t *testing.T) {
+	schema := CompactSchema{
+		Kind: "object",
+		Fields: []CompactField{
+			{Name: "content", Required: true, Type: CompactSchema{Kind: "string"}},
+		},
+	}
+	data, _ := json.Marshal(map[string]string{
+		"content": strings.Repeat("large-object-content-", 400),
+	})
+	output, err := EncodeSchemaData(schema, data, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Format string         `json:"format"`
+		Data   []any          `json:"data"`
+		Meta   map[string]any `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Format != schemaDataFormat || len(envelope.Data) != 1 || envelope.Meta != nil {
+		t.Fatalf("large object should stay inline: format=%q data=%d meta=%#v", envelope.Format, len(envelope.Data), envelope.Meta)
 	}
 }
 

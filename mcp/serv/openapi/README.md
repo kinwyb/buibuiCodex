@@ -38,7 +38,7 @@
 
 完整协议小于 5KB 时全部内联。
 
-达到或超过 5KB 时：
+根 `data` 是数组，且完整协议达到或超过 5KB 时：
 
 1. schema 始终内联。
 2. 只返回前 3 条数据。
@@ -49,15 +49,18 @@
   "meta": {
     "total": 300,
     "shown": 3,
-    "file": "http://host/tmp_file?file=20261106xxx.json"
+    "file": "http://host/tmp_file?file=20261106xxx.json",
+    "fileHint": "文件内容是上方 data 数组；按上方 schema 的字段顺序读取"
   }
 }
 ```
 
-4. 完整数据写入临时文件，文件内容仍是完整的 `schema-data/v1`，包含同一个 schema 和全部数据。
+4. 完整数据写入临时文件。文件内容只有当前响应的 `data` 字段，不再重复 `format`、`layout`、`schema` 和 `page`。
 5. 文件写入失败时回退为完整内联结果，不会返回缺少数据的预览。
 
-`page` 存在时同时保留在预览文件和完整文件中。
+下载文件后应直接按上面的 `schema` 解释文件内容，不需要再读取 `.data` 字段。`page` 只保留在预览响应中。
+
+根 `data` 不是数组时，即使超过 5KB 也始终完整内联，不生成文件。单个大对象或基础类型无法按记录截断，因此不适用 `total/shown/file` 流程。
 
 ## 手动 Struct 的必填规则
 
