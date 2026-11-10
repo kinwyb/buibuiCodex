@@ -65,13 +65,13 @@ func TestOpenAPIToolGETBuildsPathQueryAndToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	var envelope struct {
-		Data []any `json:"data"`
-		Page any   `json:"page"`
+		Data map[string]any `json:"data"`
+		Page any            `json:"page"`
 	}
 	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if len(envelope.Data) != 2 || envelope.Data[0] != "M001" || envelope.Data[1] != "物料A" {
+	if envelope.Data["物料编码"] != "M001" || envelope.Data["物料名称"] != "物料A" {
 		t.Fatalf("data = %#v", envelope.Data)
 	}
 	if envelope.Page == nil {

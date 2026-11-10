@@ -47,6 +47,11 @@ type schemaDataEnvelope struct {
 	Meta   *schemaDataMeta `json:"meta,omitempty"`
 }
 
+type schemaObjectDataEnvelope struct {
+	Data any `json:"data"`
+	Page any `json:"page,omitempty"`
+}
+
 type schemaDataMeta struct {
 	Total    int    `json:"total"`
 	Shown    int    `json:"shown"`
@@ -54,23 +59,58 @@ type schemaDataMeta struct {
 	FileHint string `json:"fileHint"`
 }
 
-// EncodeSchemaData 将 API JSON 转换为按 schema 字段顺序排列的紧凑结构。
-// 返回值超过 5KB 时会写入临时文件，只保留 schema 和前三条数据。
+type schemaNamedField struct {
+	Name  string
+	Value any
+}
+
+type schemaNamedObject []schemaNamedField
+
+func (o schemaNamedObject) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, field := range o {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		name, err := json.Marshal(field.Name)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(name)
+		buf.WriteByte(':')
+		value, err := json.Marshal(field.Value)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(value)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+// EncodeSchemaData 将 API JSON 转换为紧凑结构。
+// 根数据是数组时使用 schema 加位置数组；根数据是对象时使用字段说明作为 key。
+// 对象结果超过 5KB 且包含重复对象结构时，会回退到位置数组并取更短的结果。
+// 根数组超过 5KB 时会写入临时文件，只保留 schema 和前三条数据。
 func EncodeSchemaData(schema CompactSchema, data, page json.RawMessage) (string, error) {
 	schema = cloneCompactSchema(schema)
 	if err := prepareCompactSchema(&schema, data); err != nil {
 		return "", err
 	}
 
-	fullData, err := encodeSchemaValue(&schema, data)
-	if err != nil {
-		return "", err
-	}
 	pageValue, err := decodeJSONValue(page)
 	if err != nil {
 		return "", fmt.Errorf("解析分页信息失败: %w", err)
 	}
+	if schema.Kind == "object" {
+		return encodeObjectSchemaData(&schema, data, pageValue)
+	}
 
+	fullData, err := encodeSchemaValue(&schema, data)
+	if err != nil {
+		return "", err
+	}
 	full := schemaDataEnvelope{
 		Format: schemaDataFormat,
 		Layout: schemaDataLayout(),
@@ -120,6 +160,148 @@ func EncodeSchemaData(schema CompactSchema, data, page json.RawMessage) (string,
 		return "", fmt.Errorf("序列化预览数据失败: %w", err)
 	}
 	return string(previewBytes), nil
+}
+
+func encodeObjectSchemaData(schema *CompactSchema, data json.RawMessage, page any) (string, error) {
+	namedData, err := encodeNamedSchemaValue(schema, data)
+	if err != nil {
+		return "", err
+	}
+	namedBytes, err := json.Marshal(schemaObjectDataEnvelope{Data: namedData, Page: page})
+	if err != nil {
+		return "", fmt.Errorf("序列化对象数据失败: %w", err)
+	}
+	if len(namedBytes) < schemaDataInlineLimit || !hasRepeatedObject(schema) {
+		return string(namedBytes), nil
+	}
+
+	fullData, err := encodeSchemaValue(schema, data)
+	if err != nil {
+		return "", err
+	}
+	positionalBytes, err := json.Marshal(schemaDataEnvelope{
+		Format: schemaDataFormat,
+		Layout: schemaDataLayout(),
+		Schema: compactSchemaWire(schema),
+		Data:   fullData,
+		Page:   page,
+	})
+	if err != nil {
+		return "", fmt.Errorf("序列化紧凑数据失败: %w", err)
+	}
+	if len(positionalBytes) < len(namedBytes) {
+		return string(positionalBytes), nil
+	}
+	return string(namedBytes), nil
+}
+
+func encodeNamedSchemaValue(schema *CompactSchema, raw json.RawMessage) (any, error) {
+	if schema == nil || len(bytes.TrimSpace(raw)) == 0 || isJSONNull(raw) {
+		return nil, nil
+	}
+	switch schema.Kind {
+	case "object":
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return nil, fmt.Errorf("解析对象数据失败: %w", err)
+		}
+		keys := namedObjectKeys(schema.Fields)
+		result := make(schemaNamedObject, 0, len(schema.Fields))
+		for i := range schema.Fields {
+			field := &schema.Fields[i]
+			value, err := encodeNamedSchemaValue(&field.Type, object[field.Name])
+			if err != nil {
+				return nil, fmt.Errorf("字段 %s 转换失败: %w", field.Name, err)
+			}
+			result = append(result, schemaNamedField{Name: keys[i], Value: value})
+		}
+		return result, nil
+	case "array":
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, fmt.Errorf("解析数组数据失败: %w", err)
+		}
+		result := make([]any, 0, len(items))
+		for _, item := range items {
+			value, err := encodeNamedSchemaValue(schema.Items, item)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, value)
+		}
+		return result, nil
+	case "map":
+		var values map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &values); err != nil {
+			return nil, fmt.Errorf("解析字典数据失败: %w", err)
+		}
+		result := make(map[string]any, len(values))
+		for key, item := range values {
+			value, err := encodeNamedSchemaValue(schema.Values, item)
+			if err != nil {
+				return nil, fmt.Errorf("字典键 %s 转换失败: %w", key, err)
+			}
+			result[key] = value
+		}
+		return result, nil
+	default:
+		return encodeSchemaValue(schema, raw)
+	}
+}
+
+func namedObjectKeys(fields []CompactField) []string {
+	keys := make([]string, len(fields))
+	names := make(map[string]struct{}, len(fields))
+	counts := make(map[string]int, len(fields))
+	for i := range fields {
+		names[fields[i].Name] = struct{}{}
+		key := strings.TrimSpace(fields[i].Type.Description)
+		if key == "" {
+			key = fields[i].Name
+		}
+		keys[i] = key
+		if key != fields[i].Name {
+			counts[key]++
+		}
+	}
+	for i := range fields {
+		if keys[i] == fields[i].Name {
+			continue
+		}
+		if counts[keys[i]] > 1 {
+			keys[i] = fields[i].Name
+			continue
+		}
+		if _, exists := names[keys[i]]; exists {
+			keys[i] = fields[i].Name
+		}
+	}
+	return keys
+}
+
+func hasRepeatedObject(schema *CompactSchema) bool {
+	if schema == nil {
+		return false
+	}
+	switch schema.Kind {
+	case "object":
+		for i := range schema.Fields {
+			if hasRepeatedObject(&schema.Fields[i].Type) {
+				return true
+			}
+		}
+	case "array":
+		if schema.Items == nil {
+			return false
+		}
+		return schema.Items.Kind == "object" || hasRepeatedObject(schema.Items)
+	case "map":
+		if schema.Values == nil {
+			return false
+		}
+		return schema.Values.Kind == "object" || hasRepeatedObject(schema.Values)
+	}
+	return false
 }
 
 func schemaDataLayout() map[string]any {
