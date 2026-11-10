@@ -14,6 +14,10 @@ type StartTurnParams struct {
 	ApprovalPolicy    ApprovalPolicy `json:"approvalPolicy,omitempty"`
 	ApprovalsReviewer string         `json:"approvalsReviewer,omitempty"`
 	SandboxPolicy     *SandboxPolicy `json:"sandboxPolicy,omitempty"`
+	// ParentTurnID/RootTurnID 用于 recovery continuation：实际 turn ID 会变化，
+	// 但 app-server 需要继续挂到原始逻辑轮次上。
+	ParentTurnID string `json:"parentTurnId,omitempty"`
+	RootTurnID   string `json:"rootTurnId,omitempty"`
 }
 
 // StartTurnResult 发起 Turn 返回结果
@@ -23,6 +27,7 @@ type StartTurnResult struct {
 
 type Turn struct {
 	TurnID      string       `json:"id"`
+	RootTurnID  string       `json:"rootTurnId,omitempty"`
 	Status      string       `json:"status"`
 	StartedAt   int64        `json:"startedAt"`
 	CompletedAt int64        `json:"completedAt"`

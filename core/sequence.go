@@ -132,14 +132,15 @@ func (s *sessionSequence) Start(handler sessionHandler) error {
 	}
 }
 
-// Stop 停止所有 Agent
-func (s *sessionSequence) Stop() error {
+// BeginStop 只负责停止接收新消息和清理排队消息，不等待正在执行的 Prompt。
+// Manager 需要先进入这个状态，再让 Agent 带超时地等待/中断活跃 turn，
+// 最后由 Wait 收口；否则 sequence.Stop 的无限等待会让 Agent.Stop 永远没有机会执行。
+func (s *sessionSequence) BeginStop() {
 	if s.cancel != nil {
 		s.cancel()
 	}
 	if s.inBoundSub != nil {
 		s.inBoundSub.Close()
-		s.inBoundSub = nil
 	}
 
 	// 清理 pendingMessages（cancel 后不再处理新消息）
@@ -147,9 +148,18 @@ func (s *sessionSequence) Stop() error {
 	s.pendingMessages = make(map[string][]*types.State)
 	s.pendingTotal = 0
 	s.pendingMu.Unlock()
+}
 
+// Wait 等待已启动的消息处理 goroutine 全部退出。
+func (s *sessionSequence) Wait() {
 	// 等待所有 goroutine 退出（handleInboundMessage、processPendingScheduler）
 	s.wg.Wait()
+}
+
+// Stop 停止所有 Agent
+func (s *sessionSequence) Stop() error {
+	s.BeginStop()
+	s.Wait()
 	return nil
 }
 

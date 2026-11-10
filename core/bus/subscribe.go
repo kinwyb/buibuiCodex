@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/kinwyb/buibuiCodex/core/types"
 )
@@ -20,7 +21,7 @@ type subscription[T any] struct {
 	Channel  chan *T
 	channels []string // 过滤的 channels，空切片表示订阅所有
 	fanout   *fanoutMessage[T]
-	closed   bool
+	closed   atomic.Bool
 	mu       sync.Mutex
 }
 
@@ -30,24 +31,24 @@ func (o *subscription[T]) push(msg *T) {
 
 // Consume 消费一条信息,bool标记是否还有后续消息
 func (o *subscription[T]) Consume(ctx context.Context) (*T, bool) {
-	if o.closed {
+	if o.closed.Load() {
 		return nil, false
 	}
 	select {
 	case <-ctx.Done():
 		return nil, false
-	case msg := <-o.Channel:
-		return msg, true
+	case msg, ok := <-o.Channel:
+		return msg, ok && msg != nil
 	}
 }
 
 func (o *subscription[T]) Close() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.closed {
+	if o.closed.Load() {
 		return
 	}
-	o.closed = true
+	o.closed.Store(true)
 	o.fanout.Unsubscriber(o.subID)
 	close(o.Channel)
 }

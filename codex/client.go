@@ -210,7 +210,7 @@ func (c *Client) requestLoop() {
 					event.Raw = itemEvt
 					event.ThreadID = itemEvt.ThreadID
 					event.TurnID = itemEvt.TurnID
-				case string(TurnStart), string(TurnCompleted):
+				case string(TurnStart), string(TurnStarted), string(TurnCompleted):
 					event.Type = EventTypeNotification
 					var itemEvt jsonRpc.TurnStartEvent
 					err := json.Unmarshal(req.Params, &itemEvt)

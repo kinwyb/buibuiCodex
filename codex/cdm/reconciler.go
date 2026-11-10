@@ -38,10 +38,11 @@ var reconcileBackoff = []time.Duration{
 }
 
 type turnReconcileState struct {
-	turnID   string
-	attempts int
-	next     time.Time
-	deadline time.Time
+	logicalTurnID string
+	runTurnID     string
+	attempts      int
+	next          time.Time
+	deadline      time.Time
 }
 
 type threadReconcileJob struct {
@@ -134,9 +135,12 @@ func (r *turnReconciler) Stop() {
 	r.mu.Unlock()
 }
 
-func (r *turnReconciler) Enqueue(threadID, turnID string) {
-	if r == nil || r.store == nil || r.readTurns == nil || threadID == "" || turnID == "" {
+func (r *turnReconciler) Enqueue(threadID, logicalTurnID, runTurnID string) {
+	if r == nil || r.store == nil || r.readTurns == nil || threadID == "" || runTurnID == "" {
 		return
+	}
+	if logicalTurnID == "" {
+		logicalTurnID = runTurnID
 	}
 	now := r.now()
 
@@ -154,15 +158,16 @@ func (r *turnReconciler) Enqueue(threadID, turnID string) {
 		r.jobs[threadID] = job
 	}
 	firstCheck := now.Add(r.debounce)
-	if state := job.turns[turnID]; state != nil {
+	if state := job.turns[runTurnID]; state != nil {
 		if state.next.After(firstCheck) {
 			state.next = firstCheck
 		}
 	} else {
-		job.turns[turnID] = &turnReconcileState{
-			turnID:   turnID,
-			next:     firstCheck,
-			deadline: now.Add(r.maxAge),
+		job.turns[runTurnID] = &turnReconcileState{
+			logicalTurnID: logicalTurnID,
+			runTurnID:     runTurnID,
+			next:          firstCheck,
+			deadline:      now.Add(r.maxAge),
 		}
 	}
 	job.recalcNext()
@@ -197,7 +202,7 @@ func (r *turnReconciler) scanOpenTurns() {
 		return
 	}
 	for _, turn := range turns {
-		r.Enqueue(turn.ThreadID, turn.TurnID)
+		r.Enqueue(turn.ThreadID, turn.TurnID, turn.RunTurnID)
 	}
 	if len(turns) > 0 {
 		slog.Info("发现未完成 turn 事件，已按 thread 加入补全队列", "count", len(turns))
@@ -236,21 +241,27 @@ func (r *turnReconciler) processDue() {
 		if r.ctx == nil || r.ctx.Err() != nil {
 			return
 		}
-		outcomes := r.processThreadJob(r.ctx, item.job.threadID, item.turnIDs)
+		logicalByRun := make(map[string]string, len(item.turnIDs))
+		for _, runTurnID := range item.turnIDs {
+			if state := item.job.turns[runTurnID]; state != nil {
+				logicalByRun[runTurnID] = state.logicalTurnID
+			}
+		}
+		outcomes := r.processThreadJob(r.ctx, item.job.threadID, item.turnIDs, logicalByRun)
 		r.finishThreadJob(item.job, item.turnIDs, outcomes)
 	}
 }
 
-func (r *turnReconciler) processThreadJob(ctx context.Context, threadID string, turnIDs []string) map[string]turnOutcome {
+func (r *turnReconciler) processThreadJob(ctx context.Context, threadID string, turnIDs []string, logicalByRun map[string]string) map[string]turnOutcome {
 	outcomes := make(map[string]turnOutcome, len(turnIDs))
 	if len(turnIDs) == 0 {
 		return outcomes
 	}
 
 	events, err := r.store.TurnEventList(ctx, db.TurnEventQuery{
-		TurnIDs: turnIDs,
-		Methods: []string{"item/started", "item/completed"},
-		Limit:   -1,
+		RunTurnIDs: turnIDs,
+		Methods:    []string{"item/started", "item/completed"},
+		Limit:      -1,
 	})
 	if err != nil {
 		for _, turnID := range turnIDs {
@@ -261,7 +272,11 @@ func (r *turnReconciler) processThreadJob(ctx context.Context, threadID string, 
 
 	byTurn := make(map[string][]db.TurnEvent, len(turnIDs))
 	for _, event := range events {
-		byTurn[event.TurnID] = append(byTurn[event.TurnID], event)
+		runTurnID := event.RunTurnID
+		if runTurnID == "" {
+			runTurnID = event.TurnID
+		}
+		byTurn[runTurnID] = append(byTurn[runTurnID], event)
 	}
 
 	openByTurn := make(map[string]map[string]struct{}, len(turnIDs))
@@ -289,14 +304,18 @@ func (r *turnReconciler) processThreadJob(ctx context.Context, threadID string, 
 		return outcomes
 	}
 
-	for _, turnID := range needRead {
-		turn := turns[turnID]
+	for _, runTurnID := range needRead {
+		turn := turns[runTurnID]
 		if turn == nil {
-			outcomes[turnID] = turnOutcome{err: fmt.Errorf("app-server 中未找到 turn")}
+			outcomes[runTurnID] = turnOutcome{err: fmt.Errorf("app-server 中未找到 turn")}
 			continue
 		}
-		done, _, err := r.reconcileOpenItems(ctx, threadID, turnID, turn, openByTurn[turnID])
-		outcomes[turnID] = turnOutcome{done: done, err: err}
+		logicalTurnID := logicalByRun[runTurnID]
+		if logicalTurnID == "" {
+			logicalTurnID = runTurnID
+		}
+		done, _, err := r.reconcileOpenItems(ctx, threadID, logicalTurnID, runTurnID, turn, openByTurn[runTurnID])
+		outcomes[runTurnID] = turnOutcome{done: done, err: err}
 	}
 	return outcomes
 }
@@ -341,10 +360,20 @@ func (r *turnReconciler) finishThreadJob(job *threadReconcileJob, turnIDs []stri
 
 // reconcileTurn 保留单 turn 入口，供单元测试和手动补全使用。
 func (r *turnReconciler) reconcileTurn(ctx context.Context, threadID, turnID string) (bool, error) {
+	// 兼容旧调用：首次运行时逻辑 ID 与实际 ID 相同。
+	return r.reconcileRun(ctx, threadID, turnID, turnID)
+}
+
+// reconcileRun 只补某一次实际运行的事件。逻辑 TurnID 用于落库，
+// RunTurnID 用于从 app-server 读取对应 turn，二者不能混用。
+func (r *turnReconciler) reconcileRun(ctx context.Context, threadID, logicalTurnID, runTurnID string) (bool, error) {
+	if logicalTurnID == "" {
+		logicalTurnID = runTurnID
+	}
 	events, err := r.store.TurnEventList(ctx, db.TurnEventQuery{
-		TurnIDs: []string{turnID},
-		Methods: []string{"item/started", "item/completed"},
-		Limit:   -1,
+		RunTurnIDs: []string{runTurnID},
+		Methods:    []string{"item/started", "item/completed"},
+		Limit:      -1,
 	})
 	if err != nil {
 		return false, fmt.Errorf("读取 turn 事件失败: %w", err)
@@ -356,19 +385,19 @@ func (r *turnReconciler) reconcileTurn(ctx context.Context, threadID, turnID str
 
 	readCtx, cancel := context.WithTimeout(ctx, r.readWait)
 	defer cancel()
-	turns, err := r.readTurns(readCtx, threadID, []string{turnID})
+	turns, err := r.readTurns(readCtx, threadID, []string{runTurnID})
 	if err != nil {
 		return false, fmt.Errorf("读取 app-server turn 失败: %w", err)
 	}
-	turn := turns[turnID]
+	turn := turns[runTurnID]
 	if turn == nil {
 		return false, fmt.Errorf("app-server 中未找到 turn")
 	}
-	done, _, err := r.reconcileOpenItems(ctx, threadID, turnID, turn, open)
+	done, _, err := r.reconcileOpenItems(ctx, threadID, logicalTurnID, runTurnID, turn, open)
 	return done, err
 }
 
-func (r *turnReconciler) reconcileOpenItems(ctx context.Context, threadID, turnID string, turn *jsonRpc.Turn, open map[string]struct{}) (bool, int, error) {
+func (r *turnReconciler) reconcileOpenItems(ctx context.Context, threadID, logicalTurnID, runTurnID string, turn *jsonRpc.Turn, open map[string]struct{}) (bool, int, error) {
 	fixed := 0
 	for itemID := range open {
 		rawItem, ok := findThreadItem(turn, itemID)
@@ -377,20 +406,21 @@ func (r *turnReconciler) reconcileOpenItems(ctx context.Context, threadID, turnI
 		}
 		final, normalized, err := finalItemPayload(rawItem, turn.Status)
 		if err != nil {
-			slog.Warn("解析 app-server item 失败", "turnID", turnID, "itemID", itemID, "error", err.Error())
+			slog.Warn("解析 app-server item 失败", "logicalTurnID", logicalTurnID, "runTurnID", runTurnID, "itemID", itemID, "error", err.Error())
 			continue
 		}
 		if !final {
 			continue
 		}
-		rawData, err := completionEventRaw(threadID, turnID, normalized)
+		rawData, err := completionEventRaw(threadID, runTurnID, normalized)
 		if err != nil {
 			return false, fixed, fmt.Errorf("构造 item/completed 事件失败: %w", err)
 		}
 		event := &db.TurnEvent{
-			ID:         stableLifecycleEventID(turnID, itemID, "item/completed"),
+			ID:         stableLifecycleEventID(runTurnID, itemID, "item/completed"),
 			ThreadID:   threadID,
-			TurnID:     turnID,
+			TurnID:     logicalTurnID,
+			RunTurnID:  runTurnID,
 			Type:       "notification",
 			Method:     "item/completed",
 			RawData:    string(rawData),
@@ -402,7 +432,7 @@ func (r *turnReconciler) reconcileOpenItems(ctx context.Context, threadID, turnI
 		fixed++
 	}
 	if fixed > 0 {
-		slog.Info("已补全 turn 事件", "threadID", threadID, "turnID", turnID, "items", fixed, "remaining", len(open)-fixed)
+		slog.Info("已补全 turn 事件", "threadID", threadID, "logicalTurnID", logicalTurnID, "runTurnID", runTurnID, "items", fixed, "remaining", len(open)-fixed)
 	}
 	return fixed == len(open), fixed, nil
 }

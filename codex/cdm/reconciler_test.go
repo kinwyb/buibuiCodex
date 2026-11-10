@@ -49,6 +49,7 @@ func saveOpenCommandFor(t *testing.T, store db.ISession, turnID, itemID, eventID
 		ID:         eventID,
 		ThreadID:   "t1",
 		TurnID:     turnID,
+		RunTurnID:  turnID,
 		Type:       "notification",
 		Method:     "item/started",
 		RawData:    fmt.Sprintf(`{"item":{"id":%q,"type":"commandExecution","status":"inProgress","command":"curl"}}`, itemID),
@@ -198,6 +199,49 @@ func TestReconcileTurnMarksInProgressFailedWhenTurnFailed(t *testing.T) {
 	}
 }
 
+func TestReconcileRunWritesLogicalAndRunIDs(t *testing.T) {
+	store := newReconcileTestStore(t)
+	if err := store.TurnEventSave(context.Background(), &db.TurnEvent{
+		ID:         "started-run-1",
+		ThreadID:   "t1",
+		TurnID:     "logical-1",
+		RunTurnID:  "run-1",
+		Method:     "item/started",
+		RawData:    `{"item":{"id":"i1","type":"commandExecution","status":"inProgress","command":"curl"}}`,
+		CreateTime: time.Now(),
+	}); err != nil {
+		t.Fatalf("写入 started 事件失败: %v", err)
+	}
+	reconciler := newTurnReconciler(store, func(_ context.Context, threadID string, turnIDs []string) (map[string]*jsonRpc.Turn, error) {
+		if threadID != "t1" || len(turnIDs) != 1 || turnIDs[0] != "run-1" {
+			t.Fatalf("reconciler 应读取实际 RunTurnID: thread=%s turns=%v", threadID, turnIDs)
+		}
+		return map[string]*jsonRpc.Turn{
+			"run-1": reconcileTurnResultFor("run-1", "interrupted",
+				`{"id":"i1","type":"commandExecution","status":"inProgress","command":"curl"}`,
+			),
+		}, nil
+	})
+
+	done, err := reconciler.reconcileRun(context.Background(), "t1", "logical-1", "run-1")
+	if err != nil || !done {
+		t.Fatalf("补全 interrupted run 失败: done=%v err=%v", done, err)
+	}
+	events, err := store.TurnEventList(context.Background(), db.TurnEventQuery{
+		TurnIDs: []string{"logical-1"},
+		Methods: []string{"item/completed"},
+	})
+	if err != nil {
+		t.Fatalf("查询补全事件失败: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("应补一条完成帧，实际 %d 条", len(events))
+	}
+	if events[0].TurnID != "logical-1" || events[0].RunTurnID != "run-1" {
+		t.Fatalf("补全事件必须同时保留逻辑 ID 和实际运行 ID: %+v", events[0])
+	}
+}
+
 func TestProcessThreadJobBatchesTurns(t *testing.T) {
 	store := newReconcileTestStore(t)
 	saveOpenCommandFor(t, store, "u1", "i1", "started-u1")
@@ -222,7 +266,12 @@ func TestProcessThreadJobBatchesTurns(t *testing.T) {
 		}, nil
 	})
 
-	outcomes := reconciler.processThreadJob(context.Background(), "t1", []string{"u1", "u2"})
+	outcomes := reconciler.processThreadJob(
+		context.Background(),
+		"t1",
+		[]string{"u1", "u2"},
+		map[string]string{"u1": "u1", "u2": "u2"},
+	)
 	if readCalls != 1 {
 		t.Fatalf("同一 thread 应只调用一次 app-server 读取，实际 %d 次", readCalls)
 	}
@@ -252,9 +301,9 @@ func TestEnqueueGroupsByThread(t *testing.T) {
 	reconciler.now = func() time.Time { return now }
 	reconciler.running = true
 
-	reconciler.Enqueue("t1", "u1")
-	reconciler.Enqueue("t1", "u2")
-	reconciler.Enqueue("t2", "u3")
+	reconciler.Enqueue("t1", "u1", "u1")
+	reconciler.Enqueue("t1", "u2", "u2")
+	reconciler.Enqueue("t2", "u3", "u3")
 
 	if len(reconciler.jobs) != 2 {
 		t.Fatalf("应按 thread 聚合为 2 个任务，实际 %d 个", len(reconciler.jobs))
@@ -280,9 +329,10 @@ func TestFinishThreadJobReschedulesPerTurn(t *testing.T) {
 		threadID: "t1",
 		turns: map[string]*turnReconcileState{
 			"u1": {
-				turnID:   "u1",
-				next:     now,
-				deadline: now.Add(time.Hour),
+				logicalTurnID: "u1",
+				runTurnID:     "u1",
+				next:          now,
+				deadline:      now.Add(time.Hour),
 			},
 		},
 		next: now,

@@ -89,6 +89,78 @@ func TestClientEventLifecycleIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestClientEventRecoveryRunUsesLogicalTurnID(t *testing.T) {
+	storage, err := db.NewSQLiteStorage(filepath.Join(t.TempDir(), "cdm-recovery-run.db"))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	data := db.NewData(storage)
+	defer data.Close()
+
+	sess := data.Session()
+	a := NewAgent(&config.AgentConfig{Name: "codex", SessionDB: sess}, 0)
+	a.epMu.Lock()
+	a.turnRootMap["run-1"] = "logical-1"
+	a.turnRootMap["run-2"] = "logical-1"
+	a.epMu.Unlock()
+
+	notify := func(method codex.NotificationMethod, runTurnID, raw string) {
+		a.clientEvent(&codex.Event{
+			Type:     codex.EventTypeNotification,
+			Method:   string(method),
+			ThreadID: "t1",
+			TurnID:   runTurnID,
+			RawData:  []byte(raw),
+		})
+	}
+	notify(codex.ItemAgentMessageDelta, "run-1", `{"itemId":"i1","delta":"旧"}`)
+	notify(codex.ItemAgentMessageDelta, "run-2", `{"itemId":"i2","delta":"新"}`)
+	notify(codex.ItemCompleted, "run-2", `{"item":{"id":"i2","type":"agentMessage","text":"新"}}`)
+
+	events, err := sess.TurnEventList(context.Background(), db.TurnEventQuery{TurnIDs: []string{"logical-1"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("逻辑 TurnID 下应保留旧 run delta 和新 run 完成帧，实际 %+v", events)
+	}
+	for _, event := range events {
+		if event.TurnID != "logical-1" {
+			t.Fatalf("事件应按逻辑 TurnID 落库: %+v", event)
+		}
+	}
+	if events[0].RunTurnID != "run-1" || events[1].RunTurnID != "run-2" {
+		t.Fatalf("RunTurnID 应保留实际运行归属: %+v", events)
+	}
+}
+
+func TestClientEventTurnStartedLearnsRootTurnID(t *testing.T) {
+	storage, err := db.NewSQLiteStorage(filepath.Join(t.TempDir(), "cdm-root-turn.db"))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	data := db.NewData(storage)
+	defer data.Close()
+
+	sess := data.Session()
+	a := NewAgent(&config.AgentConfig{Name: "codex", SessionDB: sess}, 0)
+	a.clientEvent(&codex.Event{
+		Type:     codex.EventTypeNotification,
+		Method:   string(codex.TurnStarted),
+		ThreadID: "t1",
+		TurnID:   "run-2",
+		RawData:  []byte(`{"threadId":"t1","turn":{"id":"run-2","rootTurnId":"logical-1","status":"inProgress"}}`),
+	})
+
+	events, err := sess.TurnEventList(context.Background(), db.TurnEventQuery{TurnIDs: []string{"logical-1"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(events) != 1 || events[0].RunTurnID != "run-2" {
+		t.Fatalf("turn/started 应学习 rootTurnId 并落到逻辑 TurnID 下: %+v", events)
+	}
+}
+
 // Test_lifeEventParse_dynamicToolCall 覆盖回归场景：
 // dynamicToolCall 的 item/started、item/completed 必须产出 tool_start / tool_completed，
 // 且载荷里带上工具名与入参。曾经因为类型映射存在第二份表，该 item 的事件类型被清空，

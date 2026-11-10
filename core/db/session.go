@@ -32,20 +32,44 @@ type SessionThread struct {
 }
 
 type SessionTurn struct {
-	ReqID              string     `json:"req_id" gorm:"uniqueIndex;type:varchar(128)"`
-	Seq                uint       `json:"seq" gorm:"primaryKey;autoIncrement"`
-	TurnID             string     `json:"turn_id" gorm:"index;type:varchar(128)"`
-	ThreadID           string     `json:"thread_id" gorm:"index;type:varchar(128)"`
-	SessionID          string     `json:"session_id" gorm:"index;type:varchar(128)"`
-	Agent              string     `json:"agent" gorm:"index;type:varchar(64)"`
-	Question           string     `json:"question" gorm:"type:text"`         // 用户问题
-	Answer             string     `json:"answer" gorm:"type:text"`           // AI回答
-	IsCompleted        bool       `json:"is_completed" gorm:"default:false"` // 是否已完整回答
-	CreatedAt          time.Time  `json:"created_at" gorm:"index;not null"`  // 创建时间
-	CompletedAt        *time.Time `json:"completed_at"`                      // 完成时间
-	ModelContextWindow int64      `json:"modelContextWindow"`                // 模型最大上下文窗口
-	TokenUsage         TokenUsage `json:"last" gorm:"embedded"`              // 本轮交互用量
+	ReqID string `json:"req_id" gorm:"uniqueIndex;type:varchar(128)"`
+	Seq   uint   `json:"seq" gorm:"primaryKey;autoIncrement"`
+	// TurnID 是一次用户对话的逻辑 ID。中断恢复只会新增 RunTurnID，
+	// 不会改变 TurnID，因此前端历史、回放和消息归属都保持稳定。
+	TurnID string `json:"turn_id" gorm:"index;type:varchar(128)"`
+	// RunTurnID 是当前实际运行的 app-server turn ID。一次对话首次运行时
+	// 与 TurnID 相同；如果进程中断后继续执行，这里会更新为新的 turn ID。
+	RunTurnID   string `json:"run_turn_id" gorm:"index;type:varchar(128)"`
+	ThreadID    string `json:"thread_id" gorm:"index;type:varchar(128)"`
+	SessionID   string `json:"session_id" gorm:"index;type:varchar(128)"`
+	Agent       string `json:"agent" gorm:"index;type:varchar(64)"`
+	Question    string `json:"question" gorm:"type:text"`         // 用户问题
+	Answer      string `json:"answer" gorm:"type:text"`           // AI回答
+	IsCompleted bool   `json:"is_completed" gorm:"default:false"` // 是否已完整回答
+	// RecoveryStatus 表示执行层的恢复状态，与 IsCompleted 不同：
+	// 事件补录完成不代表对话已经恢复完成，只有 TurnID 对应的整个逻辑对话结束才算完成。
+	RecoveryStatus     string     `json:"recovery_status" gorm:"index;type:varchar(32);default:''"`
+	RecoveryAttempt    int        `json:"recovery_attempt" gorm:"default:0"`
+	RecoveryError      string     `json:"recovery_error" gorm:"type:text"`
+	CreatedAt          time.Time  `json:"created_at" gorm:"index;not null"` // 创建时间
+	CompletedAt        *time.Time `json:"completed_at"`                     // 完成时间
+	ModelContextWindow int64      `json:"modelContextWindow"`               // 模型最大上下文窗口
+	TokenUsage         TokenUsage `json:"last" gorm:"embedded"`             // 本轮交互用量
 }
+
+const (
+	// RecoveryStatusRunning 表示首次运行正在进行。进程异常退出后会停留在该状态，
+	// 下次启动据此判断该逻辑对话需要恢复。
+	RecoveryStatusRunning = "running"
+	// RecoveryStatusInterrupted 表示服务主动停止或重启时终止了当前 run。
+	RecoveryStatusInterrupted = "interrupted"
+	// RecoveryStatusRecovering 表示已经启动 recovery continuation turn。
+	RecoveryStatusRecovering = "recovering"
+	// RecoveryStatusCompleted 表示执行层已经正常结束。
+	RecoveryStatusCompleted = "completed"
+	// RecoveryStatusFailed 表示恢复或执行失败；failed 不会被自动重跑。
+	RecoveryStatusFailed = "failed"
+)
 
 // TokenUsage 单次或累计的详细 Token 拆分
 type TokenUsage struct {
@@ -59,10 +83,15 @@ type TokenUsage struct {
 
 // TurnEvent 会话事件记录
 type TurnEvent struct {
-	ID         string    `json:"id" gorm:"uniqueIndex;type:varchar(128)"`
-	Seq        uint      `json:"seq" gorm:"primaryKey;autoIncrement"`
-	ThreadID   string    `json:"thread_id" gorm:"index;type:varchar(128)"` //threadID
-	TurnID     string    `json:"turn_id" gorm:"index;type:varchar(128)"`   //turnID
+	ID       string `json:"id" gorm:"uniqueIndex;type:varchar(128)"`
+	Seq      uint   `json:"seq" gorm:"primaryKey;autoIncrement"`
+	ThreadID string `json:"thread_id" gorm:"index;type:varchar(128)"` //threadID
+	// TurnID 是逻辑对话 ID，同一轮恢复多次时所有事件都归在同一个 TurnID 下，
+	// 这样前端回放仍然只需按 TurnID 查询即可得到完整执行过程。
+	TurnID string `json:"turn_id" gorm:"index;type:varchar(128)"`
+	// RunTurnID 是实际产生该事件的 app-server turn ID。reconciler 通过它
+	// 读取对应 run 的终态，避免把旧 run 的状态套到恢复中的新 run 上。
+	RunTurnID  string    `json:"run_turn_id" gorm:"index;type:varchar(128)"`
 	Type       string    `json:"type" gorm:"index;type:varchar(64)"`
 	Method     string    `json:"method" gorm:"index;type:varchar(64)"` //方法
 	RawData    string    `json:"raw_data" gorm:"type:JSON"`
@@ -120,6 +149,8 @@ func (q TurnQuery) NormalizeLimit() int {
 type TurnEventQuery struct {
 	// TurnIDs 轮次标识列表，按 turn_id 批量取事件（一次 IN 查询，避免逐轮 N+1）
 	TurnIDs []string
+	// RunTurnIDs 按实际运行 ID 过滤，供 reconciler 精确处理某一次 run。
+	RunTurnIDs []string
 	// ThreadID 线程标识，与 TurnIDs 二选一
 	ThreadID string
 	// Methods 只取这些 method 的事件。
@@ -134,8 +165,9 @@ type TurnEventQuery struct {
 
 // TurnEventOpenTurn 表示仍有 item/started 缺少对应 item/completed 的轮次。
 type TurnEventOpenTurn struct {
-	ThreadID string
-	TurnID   string
+	ThreadID  string
+	TurnID    string // 逻辑对话 ID
+	RunTurnID string // 实际运行 ID
 }
 
 // NormalizeLimit 归一化 limit，返回实际生效的条数
@@ -227,6 +259,12 @@ type ISession interface {
 	TurnSave(ctx context.Context, turn *SessionTurn) error
 	// TurnQueryByID 会话信息查询
 	TurnQueryByID(ctx context.Context, turnID string) *SessionTurn
+	// TurnListRecoverableByAgent 查询最近需要恢复或补齐完成状态的逻辑对话。
+	// 只扫描 running/interrupted/recovering/completed，避免把历史普通失败轮次全部重新执行。
+	TurnListRecoverableByAgent(ctx context.Context, agent string, since time.Time, limit int) ([]SessionTurn, error)
+	// TurnRecoveryUpdate 更新执行层恢复状态。runTurnID 为空时保留原值，
+	// lastError 每次都会写入，便于清理旧错误；attempt 小于 0 时保留原重试次数。
+	TurnRecoveryUpdate(ctx context.Context, reqID, runTurnID, status, lastError string, attempt int) error
 	// ThreadList 查询会话下的所有线程，按创建时间升序返回，用于 session -> thread -> turn 的层级遍历
 	ThreadList(ctx context.Context, sessionID string) ([]SessionThread, error)
 	// ThreadPage 按用户分页查询线程，按最后更新时间倒序返回，用于对话列表
@@ -249,6 +287,9 @@ type ISession interface {
 	// 这些碎片不再参与回放，留着只会让 turn_events 无限膨胀。
 	// turnID 或 methods 为空时不做任何事，避免误删整表。
 	TurnEventDeleteByMethods(ctx context.Context, turnID string, methods []string) error
+	// TurnEventDeleteByRun 删除某一次实际运行下指定 method 的事件。
+	// 逻辑 TurnID 在恢复后会复用，因此 delta 清理必须按 RunTurnID 限定范围。
+	TurnEventDeleteByRun(ctx context.Context, runTurnID string, methods []string) error
 	// TurnTokenUsage 根据 turnID 更新本轮的 token 用量，
 	// contextWindow 为模型上下文窗口（0 表示上游未提供，保留原值）
 	TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage, contextWindow int64) error
@@ -297,6 +338,14 @@ func (s *sessionDefautStorage) TurnQueryByID(ctx context.Context, turnID string)
 	return nil
 }
 
+func (s *sessionDefautStorage) TurnListRecoverableByAgent(ctx context.Context, agent string, since time.Time, limit int) ([]SessionTurn, error) {
+	return nil, nil
+}
+
+func (s *sessionDefautStorage) TurnRecoveryUpdate(ctx context.Context, reqID, runTurnID, status, lastError string, attempt int) error {
+	return nil
+}
+
 func (s *sessionDefautStorage) TurnList(ctx context.Context, query TurnQuery) ([]SessionTurn, error) {
 	return nil, nil
 }
@@ -330,6 +379,10 @@ func (s *sessionDefautStorage) TurnEventOpenTurns(ctx context.Context, since tim
 }
 
 func (s *sessionDefautStorage) TurnEventDeleteByMethods(ctx context.Context, turnID string, methods []string) error {
+	return nil
+}
+
+func (s *sessionDefautStorage) TurnEventDeleteByRun(ctx context.Context, runTurnID string, methods []string) error {
 	return nil
 }
 
@@ -435,6 +488,58 @@ func (s *sessionStorage) TurnQueryByID(ctx context.Context, turnID string) *Sess
 		return nil
 	}
 	return &ret
+}
+
+// TurnListRecoverableByAgent 只返回运行中、主动中断、恢复中或已完成但可能
+// 还没写回 IsCompleted 的对话。历史普通失败轮次的 RecoveryStatus 为空，
+// 不能被自动重跑，否则升级后会把旧失败全部执行一遍。
+func (s *sessionStorage) TurnListRecoverableByAgent(ctx context.Context, agent string, since time.Time, limit int) ([]SessionTurn, error) {
+	if limit <= 0 {
+		limit = 200
+	} else if limit > MaxTurnLimit {
+		limit = MaxTurnLimit
+	}
+	tx := s.db.WithContext(ctx).Model(&SessionTurn{}).
+		Where("agent = ? AND is_completed = ?", agent, false).
+		Where("recovery_status IN ?", []string{
+			RecoveryStatusRunning,
+			RecoveryStatusInterrupted,
+			RecoveryStatusRecovering,
+			RecoveryStatusCompleted,
+		})
+	if !since.IsZero() {
+		tx = tx.Where("created_at >= ?", since)
+	}
+	threads := s.tableName("SessionThread")
+	tx = tx.Where(
+		fmt.Sprintf("NOT EXISTS (SELECT 1 FROM %s st WHERE st.thread_id = session_turns.thread_id AND st.isdel = ?)", threads),
+		true,
+	)
+
+	var list []SessionTurn
+	if err := tx.Order("seq asc").Limit(limit).Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (s *sessionStorage) TurnRecoveryUpdate(ctx context.Context, reqID, runTurnID, status, lastError string, attempt int) error {
+	if reqID == "" {
+		return errors.New("req_id is required")
+	}
+	updates := map[string]any{
+		"recovery_status": status,
+		"recovery_error":  lastError,
+	}
+	if attempt >= 0 {
+		updates["recovery_attempt"] = attempt
+	}
+	if runTurnID != "" {
+		updates["run_turn_id"] = runTurnID
+	}
+	return s.db.WithContext(ctx).Model(&SessionTurn{}).
+		Where("req_id = ?", reqID).
+		Updates(updates).Error
 }
 
 // ThreadList 查询会话下的所有线程，按创建时间升序返回
@@ -618,7 +723,7 @@ func (s *sessionStorage) TurnEventUpsert(ctx context.Context, turn *TurnEvent) e
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"thread_id", "turn_id", "type", "method", "raw_data", "create_time",
+			"thread_id", "turn_id", "run_turn_id", "type", "method", "raw_data", "create_time",
 		}),
 	}).Create(turn).Error
 }
@@ -626,13 +731,19 @@ func (s *sessionStorage) TurnEventUpsert(ctx context.Context, turn *TurnEvent) e
 // TurnEventList 按轮次/线程查询会话事件，按 seq 升序返回。
 // 升序是回放的硬要求：seq 是自增主键，同一轮内严格等于事件发生顺序。
 func (s *sessionStorage) TurnEventList(ctx context.Context, query TurnEventQuery) ([]TurnEvent, error) {
-	if len(query.TurnIDs) == 0 && query.ThreadID == "" {
-		return nil, errors.New("turn_ids or thread_id is required")
+	if len(query.TurnIDs) == 0 && len(query.RunTurnIDs) == 0 && query.ThreadID == "" {
+		return nil, errors.New("turn_ids, run_turn_ids or thread_id is required")
 	}
 
 	tx := s.db.WithContext(ctx).Model(&TurnEvent{})
 	if len(query.TurnIDs) > 0 {
 		tx = tx.Where("turn_id IN ?", query.TurnIDs)
+	}
+	if len(query.RunTurnIDs) > 0 {
+		// 升级前的数据没有 run_turn_id；当时逻辑 ID 和实际 ID 相同，
+		// 因此回退到 turn_id 匹配，避免历史 open turn 从此无法补全。
+		tx = tx.Where("(run_turn_id IN ? OR ((run_turn_id IS NULL OR run_turn_id = '') AND turn_id IN ?))",
+			query.RunTurnIDs, query.RunTurnIDs)
 	}
 	if query.ThreadID != "" {
 		tx = tx.Where("thread_id = ?", query.ThreadID)
@@ -666,6 +777,15 @@ func (s *sessionStorage) TurnEventDeleteByMethods(ctx context.Context, turnID st
 		Delete(&TurnEvent{}).Error
 }
 
+func (s *sessionStorage) TurnEventDeleteByRun(ctx context.Context, runTurnID string, methods []string) error {
+	if runTurnID == "" || len(methods) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).
+		Where("run_turn_id = ? AND method IN ?", runTurnID, methods).
+		Delete(&TurnEvent{}).Error
+}
+
 // TurnEventOpenTurns 扫描最近的事件窗口，按 thread/turn 聚合 item 生命周期。
 // item id 在 raw_data 里，跨 MySQL/SQLite 做 JSON 判断不划算，因此拉少量候选行后在 Go 里聚合。
 func (s *sessionStorage) TurnEventOpenTurns(ctx context.Context, since time.Time, limit int) ([]TurnEventOpenTurn, error) {
@@ -676,7 +796,7 @@ func (s *sessionStorage) TurnEventOpenTurns(ctx context.Context, since time.Time
 	}
 
 	tx := s.db.WithContext(ctx).Model(&TurnEvent{}).
-		Select("thread_id", "turn_id", "method", "raw_data", "seq").
+		Select("thread_id", "turn_id", "run_turn_id", "method", "raw_data", "seq").
 		Where("method IN ?", []string{"item/started", "item/completed"})
 	if !since.IsZero() {
 		tx = tx.Where("create_time >= ?", since)
@@ -695,6 +815,7 @@ func (s *sessionStorage) TurnEventOpenTurns(ctx context.Context, since time.Time
 	type lifecycle struct {
 		threadID  string
 		turnID    string
+		runTurnID string
 		started   map[string]struct{}
 		completed map[string]struct{}
 	}
@@ -705,12 +826,18 @@ func (s *sessionStorage) TurnEventOpenTurns(ctx context.Context, since time.Time
 		if itemID == "" {
 			continue
 		}
-		key := event.ThreadID + "\x00" + event.TurnID
+		runTurnID := event.RunTurnID
+		if runTurnID == "" {
+			// 兼容升级前的数据：旧事件没有 run_turn_id，当时逻辑 ID 和实际 ID 相同。
+			runTurnID = event.TurnID
+		}
+		key := event.ThreadID + "\x00" + event.TurnID + "\x00" + runTurnID
 		entry := items[key]
 		if entry == nil {
 			entry = &lifecycle{
 				threadID:  event.ThreadID,
 				turnID:    event.TurnID,
+				runTurnID: runTurnID,
 				started:   make(map[string]struct{}),
 				completed: make(map[string]struct{}),
 			}
@@ -738,8 +865,9 @@ func (s *sessionStorage) TurnEventOpenTurns(ctx context.Context, since time.Time
 			continue
 		}
 		result = append(result, TurnEventOpenTurn{
-			ThreadID: entry.threadID,
-			TurnID:   entry.turnID,
+			ThreadID:  entry.threadID,
+			TurnID:    entry.turnID,
+			RunTurnID: entry.runTurnID,
 		})
 		if len(result) >= limit {
 			break
@@ -762,7 +890,8 @@ func turnEventItemID(raw string) string {
 
 func (s *sessionStorage) TurnTokenUsage(ctx context.Context, turnID string, tokenUsage TokenUsage, contextWindow int64) error {
 	// contextWindow 为 0 时 gorm 的 Updates(struct) 会忽略该字段，保留库里已有的值
-	return s.db.WithContext(ctx).Where("turn_id = ?", turnID).
+	// 恢复后的 Token 事件携带实际 RunTurnID，因此两个 ID 都要匹配。
+	return s.db.WithContext(ctx).Where("turn_id = ? OR run_turn_id = ?", turnID, turnID).
 		Updates(&SessionTurn{TokenUsage: tokenUsage, ModelContextWindow: contextWindow}).Error
 }
 

@@ -31,31 +31,89 @@ type codexTurn struct {
 }
 
 type Agent struct {
-	cfg          *config.AgentConfig
-	process      proc.Process
-	client       *codex.Client
-	epMu         sync.Mutex
-	eps          map[string]*codexTurn
-	turnMap      map[string]string //turnID => sessionID
+	cfg     *config.AgentConfig
+	process proc.Process
+	client  *codex.Client
+	epMu    sync.Mutex
+	eps     map[string]*codexTurn
+	turnMap map[string]string //turnID => sessionID
+	// turnRootMap 记录实际 app-server turn ID 到逻辑 TurnID 的映射。
+	// 恢复执行会生成新的 turn ID，但事件仍要落到原始 TurnID 下供前端回放。
+	turnRootMap  map[string]string //runTurnID => logical TurnID
 	isInit       bool
 	initMu       sync.Mutex
 	tools        []*toolGroup
 	historyTurnN int
 	reconciler   *turnReconciler
+	recovery     *turnRecovery
+
+	// 以下字段只保护 Agent 自身的启动/停止生命周期。
+	// Prompt 在开始时登记，退出时注销；Stop 先停止接收新任务，再等待登记数归零。
+	lifeMu          sync.Mutex
+	stopping        bool
+	activeTurns     int
+	drainCh         chan struct{}
+	stopSignal      context.Context
+	stopSignalClose context.CancelFunc
+	stopDrain       time.Duration
+	stopForceWait   time.Duration
 }
+
+var errAgentStopping = errors.New("agent is stopping")
 
 func NewAgent(cfg *config.AgentConfig, historyTurnN int) *Agent {
 	ret := &Agent{
-		cfg:          cfg,
-		eps:          make(map[string]*codexTurn),
-		historyTurnN: historyTurnN,
+		cfg:           cfg,
+		eps:           make(map[string]*codexTurn),
+		turnMap:       make(map[string]string),
+		turnRootMap:   make(map[string]string),
+		historyTurnN:  historyTurnN,
+		stopDrain:     30 * time.Second,
+		stopForceWait: 5 * time.Second,
 	}
+	ret.resetStopSignal()
 	var sessionDB db.ISession
 	if cfg != nil {
 		sessionDB = cfg.SessionDB
 	}
 	ret.reconciler = newTurnReconciler(sessionDB, ret.readTurns)
+	ret.recovery = newTurnRecovery(ret, sessionDB)
 	return ret
+}
+
+// SetRecoveryNotifier 注入管理器的事件出口。
+// 恢复 turn 不是由 Prompt 触发的，没有现成的调用方 EventHandler；
+// 这个出口让恢复过程仍然能像普通对话一样向用户推送事件。
+func (a *Agent) SetRecoveryNotifier(notify func(*types.Event)) {
+	if a.recovery != nil {
+		a.recovery.SetNotifier(notify)
+	}
+}
+
+func (a *Agent) resetStopSignal() {
+	a.stopSignal, a.stopSignalClose = context.WithCancel(context.Background())
+}
+
+func (a *Agent) beginTurn() error {
+	a.lifeMu.Lock()
+	defer a.lifeMu.Unlock()
+	if a.stopping {
+		return errAgentStopping
+	}
+	a.activeTurns++
+	return nil
+}
+
+func (a *Agent) endTurn() {
+	a.lifeMu.Lock()
+	defer a.lifeMu.Unlock()
+	if a.activeTurns > 0 {
+		a.activeTurns--
+	}
+	if a.stopping && a.activeTurns == 0 && a.drainCh != nil {
+		close(a.drainCh)
+		a.drainCh = nil
+	}
 }
 
 func (a *Agent) AgentID() string {
@@ -66,6 +124,13 @@ func (a *Agent) Init() error {
 	if a.cfg.DockerImage == "" {
 		return errors.New("docker image is required")
 	}
+	// 允许 Stop 后重新 Init；正常运行时这里不会改变状态。
+	a.lifeMu.Lock()
+	a.stopping = false
+	a.activeTurns = 0
+	a.drainCh = nil
+	a.resetStopSignal()
+	a.lifeMu.Unlock()
 	return a.initProcess()
 }
 
@@ -164,6 +229,9 @@ func (a *Agent) initProcess() error {
 	a.client = client
 	a.isInit = true
 	a.reconciler.Start()
+	// 恢复必须在 client 和 reconciler 就绪后启动：它需要读 app-server 的
+	// interrupted 状态，也可能借助 reconciler 先补齐旧 run 的缺失完成帧。
+	a.recovery.Start()
 	// 禁用默认的skill
 	// 默认的图片生成skill
 	skill := codex.NewSkill(client)
@@ -315,9 +383,18 @@ func (a *Agent) newThread(ctx context.Context, thread *codex.Thread, sessionID s
 
 // Prompt 执行一个请求
 func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
+	if err := a.beginTurn(); err != nil {
+		return err
+	}
+	defer a.endTurn()
 	// 初始化进程
 	err := a.initProcess()
 	if err != nil {
+		return err
+	}
+	// initProcess 可能刚启动 recovery 扫描，因此必须先初始化再等待恢复标记。
+	// 恢复 turn 期间同一 session 不能并发启动普通 turn，否则 app-server 会拒绝。
+	if err := a.recovery.WaitSession(ctx, state.SessionID); err != nil {
 		return err
 	}
 	cmd := CommandParse(state.Input.Content)
@@ -362,20 +439,29 @@ func (a *Agent) Prompt(ctx context.Context, state *types.State) error {
 	if ct, ok := a.eps[state.SessionID]; ok {
 		ct.turn = turn
 		ct.state = state
+		a.turnMap[turn.TurnID()] = state.SessionID
+		a.turnRootMap[turn.TurnID()] = turn.RootTurnID()
 	}
 	a.epMu.Unlock()
 	// 保存turn
 	dbErr := a.cfg.SessionDB.TurnSave(ctx, &db.SessionTurn{
-		ReqID:     state.ReqID,
-		TurnID:    turn.TurnID(),
-		ThreadID:  turn.ThreadID(),
-		SessionID: state.SessionID,
-		Agent:     a.AgentID(),
+		ReqID:          state.ReqID,
+		TurnID:         turn.RootTurnID(),
+		RunTurnID:      turn.TurnID(),
+		ThreadID:       turn.ThreadID(),
+		SessionID:      state.SessionID,
+		Agent:          a.AgentID(),
+		RecoveryStatus: db.RecoveryStatusRunning,
 	})
 	if dbErr != nil {
 		slog.Error("fail to save db turn ", "error", dbErr.Error())
 	}
-	err = <-completed
+	select {
+	case err = <-completed:
+	case <-a.stopSignal.Done():
+		// 只有 Stop 超时或强制退出时才会触发。正常关闭会等待 turn 自己完成。
+		err = errAgentStopping
+	}
 	close(completed)
 	return err
 }
@@ -463,18 +549,122 @@ func (a *Agent) Cancel(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// todo: 这里要控制等待所有任务完成，在停止codex进程
+// Stop 先停止接收新任务，再等待当前活跃 turn 结束；超过宽限期后中断并强制退出。
+//
+// 这里的“等待”只针对已经进入 Prompt/恢复流程的有限任务集合。Manager 在调用
+// Stop 之前已经关闭入站订阅，因此不会出现“等任务时又不断进来新消息”的死循环。
 func (a *Agent) Stop() error {
+	a.lifeMu.Lock()
+	a.stopping = true
+	var drain <-chan struct{}
+	if a.activeTurns > 0 {
+		ch := make(chan struct{})
+		a.drainCh = ch
+		drain = ch
+	} else {
+		closed := make(chan struct{})
+		close(closed)
+		drain = closed
+	}
+	a.lifeMu.Unlock()
+	if a.recovery != nil {
+		// 停止扫描新的恢复任务，但正在执行的 recovery continuation 仍计入 activeTurns，
+		// 由下面的 drain 逻辑等待或超时中断。
+		a.recovery.BeginStop()
+	}
+
+	timer := time.NewTimer(a.stopDrain)
+	defer timer.Stop()
+	forced := false
+	select {
+	case <-drain:
+	case <-timer.C:
+		slog.Warn("agent stop drain timeout, interrupting active turns")
+		ctx, cancel := context.WithTimeout(context.Background(), a.stopForceWait)
+		a.interruptActive(ctx)
+		cancel()
+
+		// 给 Interrupt 一个短暂的收敛窗口，之后主动解除 Prompt 的等待，
+		// 防止 app-server 已经失联时整个进程永远停在 Stop。
+		forceTimer := time.NewTimer(a.stopForceWait)
+		select {
+		case <-drain:
+			forceTimer.Stop()
+		case <-forceTimer.C:
+			forced = true
+			slog.Error("agent stop force timeout, abandoning active turns")
+			// 只有在确认无法收敛时才标记 interrupted。若中断后 turn 正常结束，
+			// turnEvent 已经写入了真实的 completed/failed 状态，不能被这里覆盖。
+			a.markActiveTurnsInterrupted(context.Background())
+			a.stopSignalClose()
+		}
+	}
+
+	// reconciler 会读取 client，必须在关闭 client 前停止；同时放在 drain 之后，
+	// 让正常结束的 turn 还有机会把最后一批 TurnCompleted 事件补全并落库。
 	a.reconciler.Stop()
+	if a.recovery != nil {
+		a.recovery.Wait()
+	}
 	a.initMu.Lock()
 	defer a.initMu.Unlock()
+	var errs []error
 	if a.client != nil {
-		a.client.Close()
+		errs = append(errs, a.client.Close())
 	}
 	if a.process != nil {
-		a.process.Stop()
+		errs = append(errs, a.process.Stop())
 	}
 	a.isInit = false
+	a.epMu.Lock()
 	clear(a.eps)
-	return nil
+	clear(a.turnMap)
+	clear(a.turnRootMap)
+	a.epMu.Unlock()
+	if forced {
+		errs = append(errs, errAgentStopping)
+	}
+	return errors.Join(errs...)
+}
+
+func (a *Agent) interruptActive(ctx context.Context) {
+	a.epMu.Lock()
+	turns := make([]*codex.Turn, 0, len(a.eps))
+	for _, ct := range a.eps {
+		if ct.turn != nil {
+			turns = append(turns, ct.turn)
+		}
+	}
+	a.epMu.Unlock()
+	for _, turn := range turns {
+		if err := turn.Interrupt(ctx); err != nil {
+			slog.Warn("interrupt active turn failed", "turnID", turn.TurnID(), "error", err.Error())
+		}
+	}
+}
+
+func (a *Agent) markActiveTurnsInterrupted(ctx context.Context) {
+	if a.cfg == nil || a.cfg.SessionDB == nil {
+		return
+	}
+	a.epMu.Lock()
+	type activeTurn struct {
+		reqID string
+		runID string
+	}
+	active := make([]activeTurn, 0, len(a.eps))
+	for _, ct := range a.eps {
+		if ct.state == nil || ct.turn == nil {
+			continue
+		}
+		active = append(active, activeTurn{reqID: ct.state.ReqID, runID: ct.turn.TurnID()})
+	}
+	a.epMu.Unlock()
+	for _, turn := range active {
+		if err := a.cfg.SessionDB.TurnRecoveryUpdate(
+			ctx, turn.reqID, turn.runID, db.RecoveryStatusInterrupted, "service stopping", 0,
+		); err != nil {
+			slog.Warn("mark turn interrupted failed", "reqID", turn.reqID, "error", err.Error())
+		}
+	}
 }

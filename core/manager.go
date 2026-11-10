@@ -165,6 +165,15 @@ func (m *Manager) InitFromConfig(ctx context.Context, cfg *config.ManagerConfig)
 		m.pathMapper[resolved.Name] = agentPathMapper
 		// 创建 Agent
 		ag := cdm.NewAgent(resolved, 5)
+		// 恢复 turn 没有原始 Prompt 调用栈，需要把事件重新接回 Manager 的出口。
+		recoverySeq := 0
+		ag.SetRecoveryNotifier(func(event *types.Event) {
+			if event == nil {
+				return
+			}
+			recoverySeq++
+			m.handleAgentEvent(context.Background(), event, recoverySeq, ag.AgentID())
+		})
 
 		baseToolGroup := types.GetToolGroupByName("base")
 		if baseToolGroup == nil {
@@ -300,21 +309,27 @@ func (m *Manager) Stop() error {
 		m.cancel()
 	}
 
+	// 先停止接收和排队，不等待正在执行的 Prompt。Agent.Stop 需要在这个状态下
+	// 自己等待活跃 turn，并在超时后中断它们；最后再由 sequence.Wait 收口。
 	if m.sequence != nil {
-		m.sequence.Stop()
+		m.sequence.BeginStop()
 	}
 
-	// 等待所有 goroutine 退出（processMessages、processCancel、processPendingScheduler、业务 goroutine）
+	// 等待 Manager 自身 goroutine 退出（processCancel、调度器）。
 	m.wg.Wait()
 
-	// 然后停止所有 agents
+	// 停止所有 agents。Agent.Stop 内部有 drain timeout，不会无限等待单个卡死的 turn。
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	for id, agent := range m.agents {
 		if err := agent.Stop(); err != nil {
 			m.log(context.Background(), bus.LogLevelError, "manager", fmt.Sprintf("Failed to stop agent %s: %v", id, err))
 		}
+	}
+	m.mu.RUnlock()
+
+	// Agent 已保证活跃 Prompt 要么自然结束，要么被强制解除等待，此时可以安全收口。
+	if m.sequence != nil {
+		m.sequence.Wait()
 	}
 
 	if m.dataStorage != nil {

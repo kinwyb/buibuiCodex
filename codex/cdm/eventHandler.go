@@ -36,18 +36,23 @@ func (a *Agent) clientEvent(event *codex.Event) {
 	if a.cfg == nil || a.cfg.SessionDB == nil {
 		return
 	}
+	runTurnID := event.TurnID
+	logicalTurnID := a.logicalTurnID(event)
 	eventID := uuid.NewV4().String()
 	if codex.NotificationMethod(event.Method) == codex.ItemStarted ||
 		codex.NotificationMethod(event.Method) == codex.ItemCompleted {
 		if itemID := eventItemID(string(event.RawData)); itemID != "" {
-			eventID = stableLifecycleEventID(event.TurnID, itemID, event.Method)
+			// 稳定 ID 使用实际运行 ID：同一逻辑 turn 恢复多次时，不同 run 的
+			// 相同 item ID 不能互相覆盖。
+			eventID = stableLifecycleEventID(runTurnID, itemID, event.Method)
 		}
 	}
 	// 将事件保存入数据库
 	dbErr := a.cfg.SessionDB.TurnEventUpsert(context.Background(), &db.TurnEvent{
 		ID:         eventID,
 		ThreadID:   event.ThreadID,
-		TurnID:     event.TurnID,
+		TurnID:     logicalTurnID,
+		RunTurnID:  runTurnID,
 		Type:       string(event.Type),
 		Method:     event.Method,
 		RawData:    string(event.RawData),
@@ -60,20 +65,53 @@ func (a *Agent) clientEvent(event *codex.Event) {
 	// 此刻已完成 item 的 delta 全部失效，未开始 item 的 delta 尚未产生，
 	// 因此按 turn 粒度清理是安全的，而且不必逐 item 比对 ID。
 	if codex.NotificationMethod(event.Method) == codex.ItemCompleted {
-		if err := a.cfg.SessionDB.TurnEventDeleteByMethods(context.Background(), event.TurnID, deltaEventMethods); err != nil {
-			slog.Error("fail to delete turn delta events", "error", err.Error(), "turnID", event.TurnID)
+		// 逻辑 TurnID 在恢复后会被复用，delta 清理必须限定到本次实际运行。
+		if err := a.cfg.SessionDB.TurnEventDeleteByRun(context.Background(), runTurnID, deltaEventMethods); err != nil {
+			slog.Error("fail to delete turn delta events", "error", err.Error(), "runTurnID", runTurnID)
 		}
 	}
 	if codex.NotificationMethod(event.Method) == codex.TurnCompleted {
 		// 入队后由 reconciler 按 thread 合并读取，turn 只作为待补全的最小状态单位。
-		a.reconciler.Enqueue(event.ThreadID, event.TurnID)
+		a.reconciler.Enqueue(event.ThreadID, logicalTurnID, runTurnID)
 	}
+}
+
+// logicalTurnID 将 app-server 的实际 turn ID 映射回逻辑 TurnID。
+// turn/started 和 turn/completed 的载荷里自带 rootTurnId，可在映射尚未建立
+// 或进程刚重启时补上关联；其他 item 事件则依赖启动 turn 时写入的映射。
+func (a *Agent) logicalTurnID(event *codex.Event) string {
+	if event == nil {
+		return ""
+	}
+	runTurnID := event.TurnID
+	a.epMu.Lock()
+	if logical := a.turnRootMap[runTurnID]; logical != "" {
+		a.epMu.Unlock()
+		return logical
+	}
+	a.epMu.Unlock()
+
+	if event.Method == string(codex.TurnStarted) || event.Method == string(codex.TurnCompleted) {
+		if turnEvent, err := event.To[jsonRpc.TurnEvent](); err == nil {
+			logical := turnEvent.Turn.RootTurnID
+			if logical == "" {
+				logical = runTurnID
+			}
+			a.epMu.Lock()
+			a.turnRootMap[runTurnID] = logical
+			a.epMu.Unlock()
+			return logical
+		}
+	}
+	// 兼容旧数据和极早到达的事件：首次运行时逻辑 ID 与实际 ID 相同。
+	return runTurnID
 }
 
 // unknowThreadEventHandler 无法被消化的thread事件处理，正常进入thread的事件都会被turn消化，但是比如turn已经结束或者异常导致无法分发的消息会被这里接手
 func (a *Agent) unknowThreadEventHandler(event *codex.Event) {
 	slog.Warn("未知的turn事件", "event", event)
-	turn := a.cfg.SessionDB.TurnQueryByID(context.Background(), event.TurnID)
+	logicalTurnID := a.logicalTurnID(event)
+	turn := a.cfg.SessionDB.TurnQueryByID(context.Background(), logicalTurnID)
 	if turn == nil {
 		slog.Error("fail to find turn", "turnID", event.TurnID)
 		return
@@ -110,6 +148,13 @@ func (a *Agent) turnEvent(state *types.State, completed chan<- error) func(event
 	return func(event *codex.Event) {
 		a.codexEventParse(state, event)
 		if event.Method == string(codex.TurnCompleted) {
+			turnEvent, _ := event.To[jsonRpc.TurnEvent]()
+			status := db.RecoveryStatusCompleted
+			lastErr := ""
+			if turnEvent.Turn.Error != nil {
+				status = db.RecoveryStatusFailed
+				lastErr = turnEvent.Turn.Error.Message
+			}
 			a.epMu.Lock()
 			if sessionID, ok := a.turnMap[event.TurnID]; ok {
 				if ct, ok2 := a.eps[sessionID]; ok2 {
@@ -118,13 +163,22 @@ func (a *Agent) turnEvent(state *types.State, completed chan<- error) func(event
 				}
 				delete(a.turnMap, event.TurnID)
 			}
-			turnEvent, _ := event.To[jsonRpc.TurnEvent]()
+			delete(a.turnRootMap, event.TurnID)
+			a.epMu.Unlock()
+			// 执行层状态和 IsCompleted 分开维护：这里只记录本次 run 的结果，
+			// 逻辑对话是否最终完成仍由 Manager/恢复流程决定。
+			if state.ReqID != "" && a.cfg != nil && a.cfg.SessionDB != nil {
+				if err := a.cfg.SessionDB.TurnRecoveryUpdate(
+					context.Background(), state.ReqID, event.TurnID, status, lastErr, -1,
+				); err != nil {
+					slog.Error("fail to update turn recovery status", "error", err.Error(), "reqID", state.ReqID)
+				}
+			}
 			if turnEvent.Turn.Error != nil {
 				completed <- errors.New(turnEvent.Turn.Error.Message)
 			} else {
 				completed <- nil
 			}
-			a.epMu.Unlock()
 		}
 	}
 }

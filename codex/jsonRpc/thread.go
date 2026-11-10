@@ -89,7 +89,10 @@ type StartThreadResult struct {
 type Thread struct {
 	ID        string `json:"id"`
 	SessionID string `json:"sessionId"`
-	Turns     []Turn `json:"turns,omitempty"`
+	Status    struct {
+		Type string `json:"type"`
+	} `json:"status,omitempty"`
+	Turns []Turn `json:"turns,omitempty"`
 }
 
 // ThreadReadParams 读取已存储 thread 的参数。

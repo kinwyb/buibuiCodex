@@ -90,16 +90,24 @@ func (t *Thread) Start(ctx context.Context, params jsonRpc.StartThreadParams) (s
 
 // Resume 恢复一个线程
 func (t *Thread) Resume(ctx context.Context, threadID string) error {
+	_, err := t.ResumeWithThread(ctx, threadID)
+	return err
+}
+
+// ResumeWithThread 恢复线程并返回 app-server 的线程快照。
+// 恢复判断必须读取返回的 turn 状态：进程重启后，旧 turn 会在 resume 时
+// 从 inProgress 收敛为 interrupted，只有拿到这个状态才能决定是否继续执行。
+func (t *Thread) ResumeWithThread(ctx context.Context, threadID string) (*jsonRpc.Thread, error) {
 	var res jsonRpc.StartThreadResult
 	err := t.client.Call(ctx, ThreadResume, map[string]string{
 		"threadId": threadID,
 	}, &res)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	t.threadID = res.Thread.ID
 	t.client.SubScribeEvent(t.threadID, t.eventHandler)
-	return nil
+	return &res.Thread, nil
 }
 
 func (t *Thread) eventHandler(event *Event) {

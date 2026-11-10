@@ -23,11 +23,23 @@ func TurnStartWithSandboxPolicy(policy jsonRpc.SandboxPolicy) TurnStartOptions {
 	}
 }
 
+// TurnStartWithRecoveryLink 把恢复 turn 挂回原始逻辑轮次。
+// app-server 会为恢复执行生成新的 turn ID，但 rootTurnId 保持原值，
+// 数据库因此可以用 TurnID 表示逻辑对话、RunTurnID 表示本次实际运行。
+func TurnStartWithRecoveryLink(parentTurnID, rootTurnID string) TurnStartOptions {
+	return func(params *jsonRpc.StartTurnParams) {
+		params.ParentTurnID = parentTurnID
+		params.RootTurnID = rootTurnID
+	}
+}
+
 type Turn struct {
 	client *Client
 	thread *Thread
 	turnID string
-	event  EventHandler
+	// rootTurnID 是逻辑对话 ID；首次运行等于 turnID，恢复运行后仍指向原 turn。
+	rootTurnID string
+	event      EventHandler
 }
 
 // NewTurn 创建一个turn
@@ -48,6 +60,10 @@ func (t *Turn) ThreadID() string {
 
 func (t *Turn) TurnID() string {
 	return t.turnID
+}
+
+func (t *Turn) RootTurnID() string {
+	return t.rootTurnID
 }
 
 // BuildInputWithText 文本输入
@@ -93,6 +109,10 @@ func (t *Turn) Start(ctx context.Context, input []jsonRpc.InputItem, options ...
 		return err
 	}
 	t.turnID = res.Turn.TurnID
+	t.rootTurnID = res.Turn.RootTurnID
+	if t.rootTurnID == "" {
+		t.rootTurnID = t.turnID
+	}
 	t.thread.SubScribeEvent(t.turnID, t.eventHandler)
 	return nil
 }
