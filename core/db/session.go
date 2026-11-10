@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"gorm.io/gorm"
@@ -404,6 +405,23 @@ func newSessionStorage(db *gorm.DB) *sessionStorage {
 
 func (s *sessionStorage) Init() {
 	s.db.AutoMigrate(&Session{}, &SessionThread{}, &SessionTurn{}, &TurnEvent{})
+	s.backfillRunTurnID()
+}
+
+// backfillRunTurnID 兼容升级前的数据。旧版本没有恢复执行，TurnID 同时就是
+// 实际运行的 turn ID，因此只需把空的 RunTurnID 补成 TurnID，不能改写 TurnID。
+// 只更新 NULL/空值，重复启动不会覆盖恢复流程写入的新 RunTurnID。
+func (s *sessionStorage) backfillRunTurnID() {
+	if err := s.db.Model(&SessionTurn{}).
+		Where("run_turn_id IS NULL OR run_turn_id = ''").
+		Update("run_turn_id", gorm.Expr("turn_id")).Error; err != nil {
+		slog.Warn("回填 session_turns.run_turn_id 失败", "error", err.Error())
+	}
+	if err := s.db.Model(&TurnEvent{}).
+		Where("run_turn_id IS NULL OR run_turn_id = ''").
+		Update("run_turn_id", gorm.Expr("turn_id")).Error; err != nil {
+		slog.Warn("回填 turn_events.run_turn_id 失败", "error", err.Error())
+	}
 }
 
 func (s *sessionStorage) SessionSave(ctx context.Context, session *Session) error {

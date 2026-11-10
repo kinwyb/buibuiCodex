@@ -121,3 +121,42 @@ func TestTurnEventDeleteByRunOnlyDeletesCurrentRun(t *testing.T) {
 		t.Fatalf("只应删除 run-1 的 delta，实际 %+v", events)
 	}
 }
+
+func TestInitBackfillsLegacyRunTurnID(t *testing.T) {
+	storage, err := NewSQLiteStorage(filepath.Join(t.TempDir(), "backfill.db"))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	data := NewData(storage)
+	defer data.Close()
+	s := data.Session()
+	ctx := context.Background()
+
+	if err := s.RequestSave(ctx, "s1", "r1", "旧问题", "codex"); err != nil {
+		t.Fatalf("保存请求失败: %v", err)
+	}
+	if err := s.TurnSave(ctx, &SessionTurn{
+		ReqID: "r1", TurnID: "legacy-turn", ThreadID: "t1", SessionID: "s1", Agent: "codex", IsCompleted: true,
+	}); err != nil {
+		t.Fatalf("保存旧 turn 失败: %v", err)
+	}
+	if err := s.TurnEventSave(ctx, &TurnEvent{
+		ID: "legacy-event", ThreadID: "t1", TurnID: "legacy-turn", Method: "item/completed", RawData: `{"item":{"id":"i1"}}`,
+	}); err != nil {
+		t.Fatalf("保存旧事件失败: %v", err)
+	}
+
+	// 模拟升级后再次启动，Init 会把两张表的空 RunTurnID 回填为 TurnID。
+	s.Init()
+	turn := s.TurnQueryByID(ctx, "legacy-turn")
+	if turn == nil || turn.RunTurnID != "legacy-turn" {
+		t.Fatalf("session_turns 未正确回填: %+v", turn)
+	}
+	events, err := s.TurnEventList(ctx, TurnEventQuery{TurnIDs: []string{"legacy-turn"}})
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if len(events) != 1 || events[0].RunTurnID != "legacy-turn" {
+		t.Fatalf("turn_events 未正确回填: %+v", events)
+	}
+}
