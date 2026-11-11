@@ -31,17 +31,21 @@ type Identity struct {
 	UserID string
 	// ChatID 当前对话标识，前端不传时后续消息都落在这个对话里
 	ChatID string
+	// ViewerID 页面标识，用于区分同一用户的多个在线页面
+	ViewerID string
 }
 
 // Client 单条 WebSocket 连接。
 // 读与写分别由独立的 goroutine 负责：gorilla/websocket 不允许并发写。
 type Client struct {
-	id      string
-	userID  string
-	conn    *websocket.Conn
-	hub     *Hub
-	handler Handler
-	cfg     Config
+	id        string
+	userID    string
+	viewerID  string
+	temporary bool
+	conn      *websocket.Conn
+	hub       *Hub
+	handler   Handler
+	cfg       Config
 
 	chatMu sync.RWMutex
 	chatID string
@@ -61,17 +65,22 @@ func NewClient(cfg Config, ws *websocket.Conn, hub *Hub, handler Handler, identi
 	if cfg.SendBuffer <= 0 {
 		cfg.SendBuffer = 256
 	}
+	viewerID := identity.ViewerID
+	if viewerID == "" {
+		viewerID = uuid.NewString()
+	}
 	return &Client{
-		id:      uuid.NewString(),
-		userID:  identity.UserID,
-		chatID:  identity.ChatID,
-		conn:    ws,
-		hub:     hub,
-		handler: handler,
-		cfg:     cfg,
-		out:     newOutQueue(cfg.SendBuffer),
-		tap:     make(chan []byte, cfg.SendBuffer),
-		done:    make(chan struct{}),
+		id:       uuid.NewString(),
+		userID:   identity.UserID,
+		viewerID: viewerID,
+		chatID:   identity.ChatID,
+		conn:     ws,
+		hub:      hub,
+		handler:  handler,
+		cfg:      cfg,
+		out:      newOutQueue(cfg.SendBuffer),
+		tap:      make(chan []byte, cfg.SendBuffer),
+		done:     make(chan struct{}),
 	}
 }
 
@@ -83,6 +92,16 @@ func (c *Client) ID() string {
 // UserID 返回连接所属用户，会话键为 ws_<userID>_<chatID>
 func (c *Client) UserID() string {
 	return c.userID
+}
+
+// ViewerID 返回页面标识，用于区分同一用户的多个在线页面。
+func (c *Client) ViewerID() string {
+	return c.viewerID
+}
+
+// Temporary 返回当前连接是否为临时页面。
+func (c *Client) Temporary() bool {
+	return c.temporary
 }
 
 // ChatID 返回当前对话标识

@@ -360,11 +360,28 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	viewerID := strings.TrimSpace(r.URL.Query().Get("viewerID"))
+	if viewerID == "" {
+		viewerID = uuid.NewString()
+	} else if !validUserID(viewerID) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	requestedSessionID := strings.TrimSpace(r.URL.Query().Get("sessionID"))
+	if requestedSessionID != "" {
+		if !s.commands.OwnsSession(userID, requestedSessionID) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		chatID = strings.TrimPrefix(requestedSessionID, s.opts.Channel+"_"+userID+"_")
+	}
 	chatID = strings.TrimSpace(chatID)
 	if chatID == "" {
-		// 前端只带 token 时，由服务端确定当前对话
+		// 前端没有恢复指定会话时，由鉴权结果或服务端确定当前对话
 		chatID = uuid.NewString()
-	} else if len(chatID) > maxChatIDLength {
+	}
+	if len(chatID) > maxChatIDLength {
 		s.log.Warn("websocket chatID too long", "user", userID, "length", len(chatID))
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -379,12 +396,20 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := conn.NewClient(s.clientCfg, rawConn, s.hub, s, conn.Identity{UserID: userID, ChatID: chatID})
+	c := conn.NewClient(s.clientCfg, rawConn, s.hub, s, conn.Identity{
+		UserID:   userID,
+		ChatID:   chatID,
+		ViewerID: viewerID,
+	})
 	s.hub.Add(c)
+	chatID = c.ChatID()
 	c.SendEnvelope(protocol.NewEnvelope(protocol.KindSystem, protocol.TypeHello).WithData(&protocol.HelloData{
 		ClientID:     c.ID(),
 		UserID:       userID,
+		ViewerID:     c.ViewerID(),
+		SessionID:    s.commands.SessionKey(userID, chatID),
 		ChatID:       chatID,
+		Temporary:    c.Temporary(),
 		Protocol:     protocol.ProtocolVersion,
 		Agents:       command.AgentInfos(s.opts.Agents),
 		DefaultAgent: s.cfg.DefaultAgent,

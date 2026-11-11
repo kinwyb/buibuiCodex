@@ -192,7 +192,7 @@ server ──> command ──> replay ──> protocol
 
 | type | 时机 | data |
 | --- | --- | --- |
-| `hello` | 连接建立后第一帧 | `clientID`、`userID`、`chatID`、`protocol`、`agents`、`defaultAgent`、`heartbeat` |
+| `hello` | 连接建立后第一帧 | `clientID`、`userID`、`viewerID`、`sessionID`、`chatID`、`temporary`、`protocol`、`agents`、`defaultAgent`、`heartbeat` |
 | `ack` | 上行请求受理 | `ok`、`sessionID`、`chatID`、`reqID` |
 | `pong` | 收到 `ping` | `clientTS`、`serverTS` |
 | `error` | 任何失败 | `code`、`message`、`detail` |
@@ -597,6 +597,7 @@ curl -X PUT --data-binary @report.md \
 ## 5. 会话与路由
 
 - 会话键为 `Channel_UserID_ChatID`，即 `ws_<userID>_<chatID>`。`AccountID` 承载用户身份，不同用户的同名 chatID 落在不同会话；单用户模式下 userID 固定为 `web`，键仍是 `ws_web_<chatID>`，与改造前兼容。
+- 同一用户的第一个在线 WS 为主连接，沿用正常 `chatID/sessionID`；后续页面为临时连接，`chatID` 使用页面 `viewerID`，得到独立的 `sessionID`。主连接断开后临时页面不会自动升级，原主页面可用保存的 `viewerID/sessionID` 重连恢复。
 - `chat.send` 与 `session.history` 都会让连接**自动订阅**该 sessionID；`Hub` 按订阅关系分发，多标签、多用户之间不会串消息。
 - 事件只转发给订阅了对应 `sessionID` 的连接，未订阅则不投递（返回 0）。
 - 默认只转发 `event.Channel == "ws"` 的事件，微信等渠道的回复不会串到 Web。`forward_all_channels=true` 可放开，但仍需客户端订阅对应会话才会收到。
@@ -802,7 +803,7 @@ wsServer := ws.New(ws.Options{
 })
 ```
 
-前端最简用法：只带 token，`hello` 里拿到 `chatID` 后直接 `chat.send`，不需要自己生成或保存任何对话标识；要切换对话时再显式传 `chatID`。
+前端每个标签页应在 `sessionStorage` 保存随机 `viewerID`，握手时通过 `?viewerID=` 传入；重连时同时传已保存的 `sessionID`。`hello` 会返回本次连接的实际 `sessionID`、`chatID` 和 `temporary` 标记。临时页面使用自己的独立会话，新页面默认没有历史。
 
 token 传递：`?token=xxx` 或 `Authorization: Bearer xxx`，Header 优先。
 

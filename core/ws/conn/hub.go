@@ -9,17 +9,19 @@ import (
 
 // Hub 维护所有 WebSocket 连接，并按会话把消息路由给订阅者。
 type Hub struct {
-	mu       sync.RWMutex
-	clients  map[string]*Client            // clientID -> Client
-	sessions map[string]map[string]*Client // sessionID -> clientID -> Client
-	seq      atomic.Int64                  // 全局单调序号
+	mu             sync.RWMutex
+	clients        map[string]*Client            // clientID -> Client
+	sessions       map[string]map[string]*Client // sessionID -> clientID -> Client
+	primaryViewers map[string]string             // userID -> viewerID
+	seq            atomic.Int64                  // 全局单调序号
 }
 
 // NewHub 创建连接集合
 func NewHub() *Hub {
 	return &Hub{
-		clients:  make(map[string]*Client),
-		sessions: make(map[string]map[string]*Client),
+		clients:        make(map[string]*Client),
+		sessions:       make(map[string]map[string]*Client),
+		primaryViewers: make(map[string]string),
 	}
 }
 
@@ -27,6 +29,18 @@ func NewHub() *Hub {
 func (h *Hub) Add(c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	primaryViewer, hasPrimary := h.primaryViewers[c.userID]
+	switch {
+	case !hasPrimary:
+		h.primaryViewers[c.userID] = c.viewerID
+		c.temporary = false
+	case primaryViewer == c.viewerID:
+		c.temporary = false
+	default:
+		c.temporary = true
+		c.SetChatID(c.viewerID)
+	}
 	h.clients[c.id] = c
 }
 
@@ -40,6 +54,17 @@ func (h *Hub) Remove(c *Client) {
 		if len(set) == 0 {
 			delete(h.sessions, sessionID)
 		}
+	}
+
+	hasUserClient := false
+	for _, other := range h.clients {
+		if other.userID == c.userID {
+			hasUserClient = true
+			break
+		}
+	}
+	if !hasUserClient {
+		delete(h.primaryViewers, c.userID)
 	}
 }
 

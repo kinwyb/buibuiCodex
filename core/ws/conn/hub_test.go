@@ -41,6 +41,81 @@ func TestHubDispatchBySession(t *testing.T) {
 	}
 }
 
+func TestHubAssignsPrimaryAndTemporaryConnections(t *testing.T) {
+	h := NewHub()
+	primary := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{
+		UserID:   "web",
+		ChatID:   "chat-a",
+		ViewerID: "viewer-a",
+	})
+	temporary := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{
+		UserID:   "web",
+		ChatID:   "chat-b",
+		ViewerID: "viewer-b",
+	})
+
+	h.Add(primary)
+	h.Add(temporary)
+
+	if primary.Temporary() || primary.ChatID() != "chat-a" {
+		t.Fatalf("第一个连接应为主连接: temporary=%v chatID=%s", primary.Temporary(), primary.ChatID())
+	}
+	if !temporary.Temporary() || temporary.ChatID() != "viewer-b" {
+		t.Fatalf("后续连接应为临时连接: temporary=%v chatID=%s", temporary.Temporary(), temporary.ChatID())
+	}
+}
+
+func TestHubRetainsPrimaryViewerUntilAllConnectionsClose(t *testing.T) {
+	h := NewHub()
+	primary := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{
+		UserID:   "web",
+		ChatID:   "chat-a",
+		ViewerID: "viewer-a",
+	})
+	temporary := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{
+		UserID:   "web",
+		ChatID:   "chat-b",
+		ViewerID: "viewer-b",
+	})
+	h.Add(primary)
+	h.Add(temporary)
+	h.Remove(primary)
+
+	other := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{
+		UserID:   "web",
+		ChatID:   "chat-c",
+		ViewerID: "viewer-c",
+	})
+	h.Add(other)
+	if !other.Temporary() {
+		t.Fatal("主连接断开但仍有页面在线时，新页面应保持临时连接")
+	}
+
+	reconnected := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{
+		UserID:   "web",
+		ChatID:   "chat-a",
+		ViewerID: "viewer-a",
+	})
+	h.Add(reconnected)
+	if reconnected.Temporary() {
+		t.Fatal("原主页面重连应恢复主连接")
+	}
+
+	h.Remove(temporary)
+	h.Remove(other)
+	h.Remove(reconnected)
+
+	next := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{
+		UserID:   "web",
+		ChatID:   "chat-next",
+		ViewerID: "viewer-next",
+	})
+	h.Add(next)
+	if next.Temporary() {
+		t.Fatal("所有连接关闭后，下一个连接应重新成为主连接")
+	}
+}
+
 func TestHubRemoveCleansSubscriptions(t *testing.T) {
 	h := NewHub()
 	c := NewClient(Config{SendBuffer: 8}, nil, h, nil, Identity{UserID: "web"})
