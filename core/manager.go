@@ -233,6 +233,17 @@ func (m *Manager) ListAgents() []string {
 	return ids
 }
 
+// AgentSkills 返回指定 Agent 实际加载的技能。
+func (m *Manager) AgentSkills(ctx context.Context, agentID string) ([]types.Skill, error) {
+	m.mu.RLock()
+	agent, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("agent '%s' not found", agentID)
+	}
+	return agent.Skills(ctx)
+}
+
 // SessionStatus 返回指定 sessionID 当前的运行与排队状态。
 //
 // Running 反映消息是否正在 Manager/Agent 链路中处理；即使 Agent 尚未完成

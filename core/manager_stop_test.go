@@ -20,6 +20,9 @@ type blockingManagerAgent struct {
 
 func (a *blockingManagerAgent) AgentID() string { return "blocking" }
 func (a *blockingManagerAgent) Init() error     { return nil }
+func (a *blockingManagerAgent) Skills(context.Context) ([]types.Skill, error) {
+	return nil, nil
+}
 func (a *blockingManagerAgent) Prompt(context.Context, *types.State) error {
 	if a.prompts.Add(1) == 1 {
 		close(a.started)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/db"
+	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
 	"github.com/kinwyb/buibuiCodex/core/ws/filestore"
 	"github.com/kinwyb/buibuiCodex/core/ws/preflow"
@@ -27,6 +28,7 @@ type Canceller interface {
 // AgentSource agent 列表来源，由 core.Manager 实现
 type AgentSource interface {
 	ListAgents() []string
+	AgentSkills(ctx context.Context, agent string) ([]types.Skill, error)
 }
 
 // TurnReader 会话数据读取能力，由 db.ISession 实现。
@@ -87,6 +89,7 @@ type Registry struct {
 //	chat_send.go        chat.send
 //	chat_cancel.go      chat.cancel
 //	agent_list.go       agent.list
+//	agent_skills.go     agent.skills
 //	session_list.go     session.list
 //	session_history.go  session.history
 //	session_delete.go   session.delete
@@ -101,6 +104,7 @@ func NewRegistry(deps Deps) *Registry {
 	r.Register(protocol.TypeChatSend, r.chatSend)
 	r.Register(protocol.TypeChatCancel, r.chatCancel)
 	r.Register(protocol.TypeAgentList, r.agentList)
+	r.Register(protocol.TypeAgentSkills, r.agentSkills)
 	r.Register(protocol.TypeSessionList, r.sessionList)
 	r.Register(protocol.TypeSessionHistory, r.sessionHistory)
 	r.Register(protocol.TypeSessionDelete, r.sessionDelete)

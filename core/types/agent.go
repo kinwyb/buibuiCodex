@@ -11,6 +11,8 @@ type Agent interface {
 	AgentID() string
 	// Init 初始化agent
 	Init() error
+	// Skills 返回 Codex 实际加载的技能
+	Skills(ctx context.Context) ([]Skill, error)
 	// Prompt 对话请求
 	Prompt(ctx context.Context, state *State) error
 	// Approve 提交审批结果

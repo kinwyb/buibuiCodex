@@ -93,6 +93,16 @@ func (t *Turn) BuildInputWithLocalImage(path string, inputs ...jsonRpc.InputItem
 	return append(inputs, input)
 }
 
+// BuildInputWithSkill 指定本轮使用的技能
+func (t *Turn) BuildInputWithSkill(name, path string, inputs ...jsonRpc.InputItem) []jsonRpc.InputItem {
+	input := jsonRpc.InputItem{
+		Type: "skill",
+		Name: name,
+		Path: path,
+	}
+	return append(inputs, input)
+}
+
 // Start 启动一个turn
 func (t *Turn) Start(ctx context.Context, input []jsonRpc.InputItem, options ...TurnStartOptions) error {
 	params := jsonRpc.StartTurnParams{

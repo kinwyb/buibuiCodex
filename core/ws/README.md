@@ -130,6 +130,7 @@ core/ws/
 │   ├── chat_send.go      chat.send（含 fileID 还原）
 │   ├── chat_cancel.go    chat.cancel
 │   ├── agent_list.go     agent.list
+│   ├── agent_skills.go   agent.skills
 │   ├── session_list.go   session.list
 │   ├── session_history.go session.history（含执行过程帧）
 │   ├── session_delete.go session.delete（thread 软删除）
@@ -197,6 +198,7 @@ server ──> command ──> replay ──> protocol
 | `pong` | 收到 `ping` | `clientTS`、`serverTS` |
 | `error` | 任何失败 | `code`、`message`、`detail` |
 | `agent.list` | 收到同名上行命令 | `agents`、`defaultAgent` |
+| `agent.skills` | 收到同名上行命令 | `agent`、`skills[]`（`name`、`displayName`、`description`、`path`、`scope`、`enabled`） |
 | `session.list` | 收到同名上行命令 | `items[]`、`hasMore`、下一页游标（见 5.1） |
 | `session.history` | 收到同名上行命令 | `sessionID`、`threads[]`、（可选）`frames[]`（见 5.2） |
 | `session.delete` | 收到同名上行命令 | `threadID`、`deleted` |
@@ -290,6 +292,7 @@ delta == false   全量快照，整体覆盖当前消息
 | `chat.cancel` | `sessionID?`、`chatID?` | 中断当前会话 |
 | `ping` | `ts` | 应用层心跳，测 RTT |
 | `agent.list` | — | 拉取可用 agent |
+| `agent.skills` | `agent?` | 拉取指定 agent 实际加载的技能；不传 agent 时使用默认 agent |
 | `session.list` | `limit?`、`beforeLastUpdate?`、`beforeThreadID?` | 拉取对话列表，见 5.1 |
 | `session.history` | `sessionID?`、`chatID?`、`threadID?`、`beforeSeq?`、`since?`、`limit?`、`includeFrames?` | 拉取历史消息，见 5.2 |
 | `session.delete` | `threadID` | 软删除一个对话线程，见 5.1 |
@@ -298,6 +301,19 @@ delta == false   全量快照，整体覆盖当前消息
 `chat.send` 可以不传 `chatID` 与 `sessionID`：服务端会沿用连接当前的对话（即 `hello` 下发的 `chatID`），前端只需持有登录 token。传 `chatID` 表示切换到该对话，连接上下文随之更新；`ack` 会返回本次使用的 `chatID` 与 `sessionID`（`ws_<userID>_<chatID>`）。
 
 从历史列表继续某个对话时，额外传 `threadID`。服务端会校验该 thread 属于当前用户，并与此前传入的 `sessionID` / `chatID` 一致；校验通过后，这条消息会直接在该历史 thread 下开始新轮次。只传 `threadID` 也可以，服务端会从 thread 记录反推 `sessionID`、`chatID` 与所用 agent。不传 `threadID` 时仍走原来的“当前会话”逻辑，企微等不会指定 `threadID` 的渠道完全不受影响。
+
+前端选择技能后，在 `content` 开头加 `$<name>`（`name` 取 `agent.skills` 返回值）：
+
+```json
+{"kind":"client","type":"chat.send","data":{
+  "agent":"codex",
+  "content":"$order-progress-analysis 查一下这个订单的进度"
+}}
+```
+
+服务端只在 `<name>`（技能 `name` 或 `displayName`）与当前 agent 的已启用技能匹配时消费该前缀，随后把正文
+`查一下这个订单的进度` 和 Codex 原生 `skill` 输入一起发送给模型。技能不存在、
+未启用时返回 `skill_not_found`；选择后既没有正文也没有媒体时返回 `bad_request`。
 
 ### 3.5 错误码
 
@@ -308,6 +324,7 @@ delta == false   全量快照，整体覆盖当前消息
 | `forbidden` | 访问不属于当前用户 `sessionID` 的会话，或他人的文件 |
 | `unsupported` | 未知 `kind` 或 `type` |
 | `agent_not_found` | 指定的 agent 不存在 |
+| `skill_not_found` | `$<name>` 指定的技能不存在、未启用，或不属于当前 agent |
 | `too_many_clients` | 以 HTTP 503 返回 |
 | `internal` | 投递失败等服务端异常 |
 | `busy` | 预留 |

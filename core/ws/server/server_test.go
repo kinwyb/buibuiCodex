@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
+	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/protocol"
 	"github.com/kinwyb/buibuiCodex/mcp/edp"
 )
@@ -18,6 +20,9 @@ import (
 type fakeAgents []string
 
 func (f fakeAgents) ListAgents() []string { return []string(f) }
+func (f fakeAgents) AgentSkills(context.Context, string) ([]types.Skill, error) {
+	return nil, nil
+}
 
 func tokenAuthenticator(token string) (string, string, bool) {
 	if !validUserID(token) {

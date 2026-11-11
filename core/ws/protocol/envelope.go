@@ -62,6 +62,7 @@ const (
 	TypeChatCancel     = "chat.cancel"         // 中断当前会话
 	TypePing           = "ping"                // 应用层心跳
 	TypeAgentList      = "agent.list"          // 拉取可用 agent
+	TypeAgentSkills    = "agent.skills"        // 拉取 agent 实际加载的技能
 	TypeSessionList    = "session.list"        // 拉取对话列表（响应使用同名的 system 类型）
 	TypeSessionHistory = "session.history"     // 拉取历史消息（响应使用同名的 system 类型）
 	TypeSessionDelete  = "session.delete"      // 软删除一个对话线程（响应使用同名的 system 类型）
@@ -83,6 +84,7 @@ const (
 	CodeForbidden      = "forbidden"        // 越权访问其他用户的会话或文件
 	CodeUnsupported    = "unsupported"      // 未支持的消息类型
 	CodeAgentNotFound  = "agent_not_found"  // 指定的 agent 不存在
+	CodeSkillNotFound  = "skill_not_found"  // 指定的技能不存在、未启用或与 agent 不匹配
 	CodeBusy           = "busy"             // 服务繁忙
 	CodeTooManyClients = "too_many_clients" // 连接数超过上限
 	CodeInternal       = "internal"         // 服务端内部错误

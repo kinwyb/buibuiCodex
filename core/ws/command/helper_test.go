@@ -7,12 +7,16 @@ import (
 
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/db"
+	"github.com/kinwyb/buibuiCodex/core/types"
 	"github.com/kinwyb/buibuiCodex/core/ws/conn"
 )
 
 type fakeAgents []string
 
 func (f fakeAgents) ListAgents() []string { return []string(f) }
+func (f fakeAgents) AgentSkills(context.Context, string) ([]types.Skill, error) {
+	return nil, nil
+}
 
 func newTestRegistry(msgBus *bus.MessageBus, agents AgentSource) (*Registry, *conn.Hub) {
 	return newTestRegistryWithTurns(msgBus, agents, nil)

@@ -120,6 +120,37 @@ func (a *Agent) AgentID() string {
 	return a.cfg.Name
 }
 
+// Skills 返回该 Agent 的 Codex 实例实际加载的技能。
+func (a *Agent) Skills(ctx context.Context) ([]types.Skill, error) {
+	a.initMu.Lock()
+	client := a.client
+	a.initMu.Unlock()
+	if client == nil {
+		return nil, errors.New("codex client is not initialized")
+	}
+	items, err := codex.NewSkill(client).List(ctx, "/workspace")
+	if err != nil {
+		return nil, err
+	}
+	skills := make([]types.Skill, 0, len(items))
+	for _, item := range items {
+		displayName := ""
+		if item.Interface != nil {
+			displayName = item.Interface.DisplayName
+		}
+		skills = append(skills, types.Skill{
+			Name:             item.Name,
+			DisplayName:      displayName,
+			Description:      item.Description,
+			ShortDescription: item.ShortDescription,
+			Path:             item.Path,
+			Scope:            item.Scope,
+			Enabled:          item.Enabled,
+		})
+	}
+	return skills, nil
+}
+
 func (a *Agent) Init() error {
 	if a.cfg.DockerImage == "" {
 		return errors.New("docker image is required")
@@ -500,6 +531,9 @@ func (a *Agent) Steer(ctx context.Context, state *types.State) error {
 
 func (a *Agent) buildInput(turn *codex.Turn, message *types.InputMessage, inputs ...jsonRpc.InputItem) []jsonRpc.InputItem {
 	var result = inputs
+	for _, skill := range message.Skills {
+		result = turn.BuildInputWithSkill(skill.Name, skill.Path, result...)
+	}
 	if message.Content != "" {
 		result = turn.BuildInputWithText(message.Content, result...)
 	}

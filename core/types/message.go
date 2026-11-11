@@ -93,6 +93,17 @@ type Media struct {
 	Metadata map[string]any `json:"metadata,omitempty"` // 额外元数据（如加密参数等）
 }
 
+// Skill 是 Codex 已加载的技能，以及本轮显式选择的技能。
+type Skill struct {
+	Name             string `json:"name"`
+	DisplayName      string `json:"displayName,omitempty"`
+	Description      string `json:"description,omitempty"`
+	ShortDescription string `json:"shortDescription,omitempty"`
+	Path             string `json:"path"`
+	Scope            string `json:"scope,omitempty"`
+	Enabled          bool   `json:"enabled"`
+}
+
 // InputMessage 输入消息
 type InputMessage struct {
 	ID        string         `json:"id"`         // 请求ID
@@ -105,6 +116,7 @@ type InputMessage struct {
 	Media     []Media        `json:"media"`      // 媒体文件
 	Metadata  map[string]any `json:"metadata"`   // 元数据
 	AgentName string         `json:"agent_name"` // agent名称
+	Skills    []Skill        `json:"skills"`     // 本轮显式选择的技能
 	Timestamp time.Time      `json:"timestamp"`
 }
 

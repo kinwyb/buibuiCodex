@@ -115,6 +115,152 @@ func TestChatSendRejectsUnknownAgent(t *testing.T) {
 	}
 }
 
+func TestChatSendPassesValidatedSkills(t *testing.T) {
+	msgBus := bus.NewMessageBus(10)
+	defer msgBus.Close()
+
+	sub, err := msgBus.SubscribeInput()
+	if err != nil {
+		t.Fatalf("订阅入站消息失败: %v", err)
+	}
+	defer sub.Close()
+
+	skill := types.Skill{
+		Name:        "order-progress-analysis",
+		DisplayName: "订单进度分析",
+		Description: "查询订单进度",
+		Path:        "/root/.codex/skills/order-progress-analysis/SKILL.md",
+		Scope:       "user",
+		Enabled:     true,
+	}
+	reg, hub := newTestRegistry(msgBus, fakeSkillAgents{
+		names:  []string{"codex"},
+		skills: map[string][]types.Skill{"codex": {skill}},
+	})
+	c := newTestClient(hub)
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{
+			ChatID:  "c1",
+			Agent:   "codex",
+			Content: "$" + skill.Name + " 看看这个订单",
+		})
+	reg.Dispatch(context.Background(), c, env)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	in, ok := sub.Consume(ctx)
+	if !ok || in == nil {
+		t.Fatal("未收到入站消息")
+	}
+	if len(in.Skills) != 1 || in.Skills[0] != skill {
+		t.Fatalf("入站消息未携带校验后的技能: %+v", in.Skills)
+	}
+	if in.Content != "看看这个订单" {
+		t.Fatalf("技能前缀应从正文移除，实际 %q", in.Content)
+	}
+}
+
+func TestChatSendPassesSkillInSteerMessage(t *testing.T) {
+	msgBus := bus.NewMessageBus(10)
+	defer msgBus.Close()
+
+	sub, err := msgBus.SubscribeInput()
+	if err != nil {
+		t.Fatalf("订阅入站消息失败: %v", err)
+	}
+	defer sub.Close()
+
+	skill := types.Skill{
+		Name:    "order-progress-analysis",
+		Path:    "/root/.codex/skills/order-progress-analysis/SKILL.md",
+		Enabled: true,
+	}
+	reg, hub := newTestRegistry(msgBus, fakeSkillAgents{
+		names:  []string{"codex"},
+		skills: map[string][]types.Skill{"codex": {skill}},
+	})
+	c := newTestClient(hub)
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{
+			ChatID:  "c1",
+			Agent:   "codex",
+			Content: "/steer $order-progress-analysis 再看看交期",
+		})
+	reg.Dispatch(context.Background(), c, env)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	in, ok := sub.Consume(ctx)
+	if !ok || in == nil {
+		t.Fatal("未收到入站消息")
+	}
+	if len(in.Skills) != 1 || in.Skills[0] != skill {
+		t.Fatalf("steer 消息未携带校验后的技能: %+v", in.Skills)
+	}
+	if in.Content != "/steer 再看看交期" {
+		t.Fatalf("steer 前缀应保留且技能标记应移除，实际 %q", in.Content)
+	}
+}
+
+func TestChatSendRejectsSkillNotEnabledForAgent(t *testing.T) {
+	msgBus := bus.NewMessageBus(2)
+	defer msgBus.Close()
+
+	reg, hub := newTestRegistry(msgBus, fakeSkillAgents{
+		names: []string{"codex"},
+		skills: map[string][]types.Skill{
+			"codex": {{
+				Name:    "disabled-skill",
+				Path:    "/root/.codex/skills/disabled-skill/SKILL.md",
+				Enabled: false,
+			}},
+		},
+	})
+	c := newTestClient(hub)
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{
+			ChatID:  "c1",
+			Agent:   "codex",
+			Content: "$disabled-skill hi",
+		})
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeSkillNotFound {
+		t.Fatalf("错误码应为 skill_not_found，实际 %s", body.Code)
+	}
+}
+
+func TestChatSendRejectsUnknownSkillPrefix(t *testing.T) {
+	msgBus := bus.NewMessageBus(2)
+	defer msgBus.Close()
+
+	reg, hub := newTestRegistry(msgBus, fakeSkillAgents{names: []string{"codex"}})
+	c := newTestClient(hub)
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{
+			ChatID:  "c1",
+			Agent:   "codex",
+			Content: "$missing-skill hi",
+		})
+	reg.Dispatch(context.Background(), c, env)
+
+	raw := <-c.Outbound()
+	resp, _ := protocol.DecodeEnvelope(raw)
+	var body protocol.ErrorBody
+	_ = resp.DecodeData(&body)
+	if body.Code != protocol.CodeSkillNotFound {
+		t.Fatalf("错误码应为 skill_not_found，实际 %s", body.Code)
+	}
+}
+
 func TestChatSendIsolatesUsers(t *testing.T) {
 	msgBus := bus.NewMessageBus(10)
 	defer msgBus.Close()

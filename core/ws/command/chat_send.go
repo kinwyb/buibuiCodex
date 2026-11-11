@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/kinwyb/buibuiCodex/core/db"
@@ -114,8 +115,70 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		}
 		agentName = thread.Agent
 	}
+	if agentName == "" {
+		agentName = r.deps.DefaultAgent
+	}
 	if agentName != "" && r.deps.Agents != nil && !slices.Contains(r.deps.Agents.ListAgents(), agentName) {
 		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeAgentNotFound, Message: "指定的 agent 不存在", Detail: agentName})
+		return
+	}
+
+	content := data.Content
+	trimmedContent := strings.TrimLeftFunc(content, unicode.IsSpace)
+	skillContent := trimmedContent
+	steerPrefix := ""
+	if strings.HasPrefix(strings.ToLower(skillContent), "/steer") {
+		afterSteer := skillContent[len("/steer"):]
+		if afterSteer == "" || strings.TrimLeftFunc(afterSteer, unicode.IsSpace) != afterSteer {
+			skillContent = strings.TrimLeftFunc(afterSteer, unicode.IsSpace)
+			steerPrefix = trimmedContent[:len("/steer")]
+		}
+	}
+	skillBody := strings.TrimPrefix(skillContent, "$")
+	hasSkillPrefix := skillBody != skillContent && skillBody != ""
+	var skills []types.Skill
+	if hasSkillPrefix {
+		if r.deps.Agents == nil || agentName == "" {
+			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeSkillNotFound, Message: "无法校验所选技能"})
+			return
+		}
+		available, err := r.deps.Agents.AgentSkills(ctx, agentName)
+		if err != nil {
+			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeInternal, Message: "读取 agent 技能失败", Detail: err.Error()})
+			return
+		}
+		rest := strings.TrimLeftFunc(skillBody, unicode.IsSpace)
+		matched := false
+		for _, skill := range available {
+			if !skill.Enabled || skill.Name == "" {
+				continue
+			}
+			selectedName := skill.Name
+			if !strings.HasPrefix(rest, selectedName) && skill.DisplayName != "" {
+				selectedName = skill.DisplayName
+			}
+			if !strings.HasPrefix(rest, selectedName) {
+				continue
+			}
+			suffix := rest[len(selectedName):]
+			if suffix != "" && strings.TrimLeftFunc(suffix, unicode.IsSpace) == suffix {
+				continue
+			}
+			content = strings.TrimLeftFunc(suffix, unicode.IsSpace)
+			if steerPrefix != "" {
+				content = strings.TrimSpace(steerPrefix + " " + content)
+			}
+			skills = []types.Skill{skill}
+			matched = true
+			break
+		}
+		if !matched {
+			c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeSkillNotFound, Message: "所选技能不存在或未启用", Detail: rest})
+			return
+		}
+	}
+	if strings.TrimSpace(content) == "" && len(media) == 0 {
+		c.ReplyError(env, &protocol.ErrorBody{Code: protocol.CodeBadRequest, Message: "技能选择后缺少消息内容"})
 		return
 	}
 
@@ -143,17 +206,18 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 		AccountID: userID,
 		SenderID:  userID,
 		ChatID:    chatID,
-		Content:   data.Content,
+		Content:   content,
 		Media:     media,
 		Metadata:  metadata,
 		AgentName: agentName,
+		Skills:    skills,
 		Timestamp: time.Now(),
 	}
 
 	// 界面前置路由要发 ui.request 并等浏览器回执，而回执恰好要从这条连接的读循环里读进来：
 	// 在读循环里等就是自己等自己。所以这里先应答受理，把消息排进所属会话的队列，
 	// 由队列串行地「判断 → 打开界面 → 投递」。ack 里的 reqID 就是最终那条消息的 ID。
-	if r.routeQueue != nil && strings.TrimSpace(data.Content) != "" {
+	if r.routeQueue != nil && strings.TrimSpace(msg.Content) != "" {
 		c.ReplyAck(env, &protocol.AckData{OK: true, SessionID: sessionID, ChatID: chatID, ReqID: msg.ID})
 		r.routeQueue.submit(msg)
 		return

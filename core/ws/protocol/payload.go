@@ -161,6 +161,23 @@ type AgentListData struct {
 	DefaultAgent string      `json:"defaultAgent,omitempty"`
 }
 
+// AgentSkillInfo Agent 当前可用的技能。
+type AgentSkillInfo struct {
+	Name             string `json:"name"`
+	DisplayName      string `json:"displayName,omitempty"`
+	Description      string `json:"description,omitempty"`
+	ShortDescription string `json:"shortDescription,omitempty"`
+	Path             string `json:"path"`
+	Scope            string `json:"scope,omitempty"`
+	Enabled          bool   `json:"enabled"`
+}
+
+// AgentSkillsData agent.skills 的请求与响应载荷。
+type AgentSkillsData struct {
+	Agent  string           `json:"agent,omitempty"`
+	Skills []AgentSkillInfo `json:"skills"`
+}
+
 // ChatSendData 上行发送消息
 type ChatSendData struct {
 	// SessionID 可选，重连后继续同一会话时回传

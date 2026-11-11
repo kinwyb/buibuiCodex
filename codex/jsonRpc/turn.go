@@ -1,10 +1,11 @@
 package jsonRpc
 
 type InputItem struct {
-	Type string `json:"type"` // 固定为 "text"
-	Text string `json:"text"`
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 	URL  string `json:"url,omitempty"`
 	Path string `json:"path,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 // StartTurnParams 发起 Turn 请求参数
