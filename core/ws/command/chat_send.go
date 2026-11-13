@@ -129,10 +129,8 @@ func (r *Registry) chatSend(ctx context.Context, c *conn.Client, env *protocol.E
 	steerPrefix := ""
 	if strings.HasPrefix(strings.ToLower(skillContent), "/steer") {
 		afterSteer := skillContent[len("/steer"):]
-		if afterSteer == "" || strings.TrimLeftFunc(afterSteer, unicode.IsSpace) != afterSteer {
-			skillContent = strings.TrimLeftFunc(afterSteer, unicode.IsSpace)
-			steerPrefix = trimmedContent[:len("/steer")]
-		}
+		skillContent = strings.TrimLeftFunc(afterSteer, unicode.IsSpace)
+		steerPrefix = trimmedContent[:len("/steer")]
 	}
 	skillBody := strings.TrimPrefix(skillContent, "$")
 	hasSkillPrefix := skillBody != skillContent && skillBody != ""

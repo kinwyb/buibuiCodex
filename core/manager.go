@@ -377,6 +377,7 @@ func (m *Manager) Cancel(sessionID string) {
 func (m *Manager) CancelSession(sessionID string) bool {
 	// 要从sequence中获取到运行的状态，进行取消
 	slog.Info("取消 agent 会话", "sessionID", sessionID)
+	status := m.SessionStatus(sessionID)
 	agent := m.defaultAgent
 	m.sessionAgentMux.Lock()
 	agentName := m.sessionAgent[sessionID]
@@ -387,7 +388,22 @@ func (m *Manager) CancelSession(sessionID string) bool {
 		}
 	}
 	if agent != nil {
-		agent.Cancel(m.ctx, sessionID)
+		if err := agent.Cancel(m.ctx, sessionID); err != nil {
+			m.log(m.ctx, bus.LogLevelError, "manager", fmt.Sprintf("Failed to cancel agent session %s: %v", sessionID, err))
+			return false
+		}
+		// 用户主动停止后，逻辑轮次立即收尾；不能等 app-server 的终态帧才落库，
+		// 否则进程恰好在此时重启会把已停止的轮次当成未完成恢复。
+		if status.ReqID != "" {
+			if err := m.dataStorage.Session().TurnSave(context.Background(), &db.SessionTurn{
+				ReqID:       status.ReqID,
+				SessionID:   sessionID,
+				IsCompleted: true,
+				CompletedAt: new(time.Now()),
+			}); err != nil {
+				slog.Error("fail to save cancelled turn", "error", err.Error(), "reqID", status.ReqID)
+			}
+		}
 	}
 	return true
 }
@@ -650,9 +666,9 @@ func (m *Manager) agentDo(ctx context.Context, state *types.State, agent types.A
 	return err
 }
 
-// agent执行中附加信息
+// agentSteer 把附加输入注入当前运行轮次。
+// steer 是控制输入，不创建独立 SessionTurn；否则历史里会出现一条有问无答的轮次。
 func (m *Manager) agentSteer(ctx context.Context, state *types.State) {
-
 	msg := state.Input
 	agent := m.defaultAgent
 	m.sessionAgentMux.Lock()
@@ -668,36 +684,9 @@ func (m *Manager) agentSteer(ctx context.Context, state *types.State) {
 
 	// 入站路径转换：本地路径 -> 宿主机路径（LLM 可见）
 	m.mapMediaToContainer(agent.AgentID(), state.Input)
-	// 保存请求信息
-	quest := state.Input.Content
-	if quest == "" {
-		questV, _ := json.Marshal(state.Input.Media)
-		quest = "附加信息：" + string(questV)
-	}
-	dbErr := m.dataStorage.Session().RequestSave(ctx, state.SessionID, state.ReqID, quest, agent.AgentID())
-	if dbErr != nil {
-		slog.Error("failed to save request", "error", dbErr)
-	}
 
 	// 使用 Agent 处理消息
-	err := agent.Steer(ctx, state)
-	if err != nil {
-		// 保存进数据库turn完成
-		answer := "成功"
-		if err != nil {
-			answer = "失败：" + err.Error()
-		}
-		dbErr = m.dataStorage.Session().TurnSave(ctx, &db.SessionTurn{
-			ReqID:       state.ReqID,
-			SessionID:   state.SessionID,
-			Answer:      answer,
-			IsCompleted: true,
-			CompletedAt: new(time.Now()),
-		})
-		if dbErr != nil {
-			slog.Error("fail to save db completed turn ", "error", dbErr.Error())
-		}
-
+	if err := agent.Steer(ctx, state); err != nil {
 		// 同时发布 OutboundMessage，确保调用方能收到响应不会卡住
 		outBound := state.BuildEvent()
 		outBound.Type = types.EventError

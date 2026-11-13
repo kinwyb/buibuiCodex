@@ -151,6 +151,9 @@ func (a *Agent) turnEvent(state *types.State, completed chan<- error) func(event
 			turnEvent, _ := event.To[jsonRpc.TurnEvent]()
 			status := db.RecoveryStatusCompleted
 			lastErr := ""
+			if turnEvent.Turn.Status == "interrupted" {
+				status = db.RecoveryStatusInterrupted
+			}
 			if turnEvent.Turn.Error != nil {
 				status = db.RecoveryStatusFailed
 				lastErr = turnEvent.Turn.Error.Message

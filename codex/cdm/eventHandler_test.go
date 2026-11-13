@@ -161,6 +161,59 @@ func TestClientEventTurnStartedLearnsRootTurnID(t *testing.T) {
 	}
 }
 
+func TestTurnEventInterruptedKeepsRecoveryStatus(t *testing.T) {
+	storage, err := db.NewSQLiteStorage(filepath.Join(t.TempDir(), "cdm-interrupted.db"))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	data := db.NewData(storage)
+	defer data.Close()
+	sess := data.Session()
+	ctx := context.Background()
+	if err := sess.RequestSave(ctx, "s1", "r1", "问题", "codex"); err != nil {
+		t.Fatalf("保存请求失败: %v", err)
+	}
+	if err := sess.TurnSave(ctx, &db.SessionTurn{
+		ReqID:          "r1",
+		TurnID:         "run-1",
+		RunTurnID:      "run-1",
+		ThreadID:       "t1",
+		SessionID:      "s1",
+		Agent:          "codex",
+		RecoveryStatus: db.RecoveryStatusRunning,
+	}); err != nil {
+		t.Fatalf("保存 turn 失败: %v", err)
+	}
+
+	a := NewAgent(&config.AgentConfig{Name: "codex", SessionDB: sess}, 0)
+	state := types.NewState(&types.InputMessage{ID: "r1", Session: "s1"})
+	completed := make(chan error, 1)
+	handler := a.turnEvent(state, completed)
+	handler(&codex.Event{
+		Type:     codex.EventTypeNotification,
+		Method:   string(codex.TurnCompleted),
+		ThreadID: "t1",
+		TurnID:   "run-1",
+		RawData:  []byte(`{"threadId":"t1","turn":{"id":"run-1","status":"interrupted"}}`),
+	})
+
+	turn := sess.TurnQueryByID(ctx, "run-1")
+	if turn == nil || turn.RecoveryStatus != db.RecoveryStatusInterrupted {
+		t.Fatalf("interrupted 终态不应写成 completed: %+v", turn)
+	}
+	if turn.IsCompleted {
+		t.Fatalf("执行层终态不应代替逻辑轮次收尾: %+v", turn)
+	}
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatalf("用户中断不应作为模型错误返回: %v", err)
+		}
+	default:
+		t.Fatal("应释放 Prompt 等待")
+	}
+}
+
 // Test_lifeEventParse_dynamicToolCall 覆盖回归场景：
 // dynamicToolCall 的 item/started、item/completed 必须产出 tool_start / tool_completed，
 // 且载荷里带上工具名与入参。曾经因为类型映射存在第二份表，该 item 的事件类型被清空，

@@ -166,6 +166,50 @@ func TestSessionHistoryFallbackWithoutThreads(t *testing.T) {
 	}
 }
 
+func TestSessionHistorySkipsLegacySteerTurns(t *testing.T) {
+	reader := &fakeTurnReader{
+		threads: []db.SessionThread{{ThreadID: "t1", SessionID: "ws_web_s1", Agent: "codex"}},
+		turns: map[string][]db.SessionTurn{
+			"t1": {
+				{ReqID: "r1", ThreadID: "t1", TurnID: "u1", Question: "正常问题", Answer: "正常回答", IsCompleted: true, Seq: 1},
+				{ReqID: "r2", ThreadID: "t1", Question: "/steer设置错了", Seq: 2},
+				{ReqID: "r3", ThreadID: "t1", Question: "/steer 补充要求", Answer: "失败：no running turn", IsCompleted: true, Seq: 3},
+			},
+		},
+	}
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "ws_web_s1"})
+	var result protocol.SessionHistoryResult
+	if err := resp.DecodeData(&result); err != nil {
+		t.Fatalf("解析载荷失败: %v", err)
+	}
+	if len(result.Threads) != 1 || len(result.Threads[0].Turns) != 1 {
+		t.Fatalf("历史应只保留正常问答轮次: %+v", result.Threads)
+	}
+	if result.Threads[0].Turns[0].ReqID != "r1" {
+		t.Fatalf("保留的轮次不符: %+v", result.Threads[0].Turns[0])
+	}
+}
+
+func TestSessionHistoryFallbackSkipsSteerOnlyTurns(t *testing.T) {
+	reader := &fakeTurnReader{
+		turns: map[string][]db.SessionTurn{
+			"": {{ReqID: "r1", Question: "/steer设置错了"}},
+		},
+	}
+	reg, hub := newTestRegistryWithTurns(nil, nil, reader)
+	c := newTestClient(hub)
+
+	resp := historyRequest(t, reg, c, protocol.SessionHistoryData{SessionID: "ws_web_s1"})
+	var result protocol.SessionHistoryResult
+	_ = resp.DecodeData(&result)
+	if len(result.Threads) != 0 {
+		t.Fatalf("只有 steer 记录时不应返回空问答线程: %+v", result.Threads)
+	}
+}
+
 func TestSessionHistoryRejectsMissingSession(t *testing.T) {
 	reg, hub := newTestRegistryWithTurns(nil, nil, &fakeTurnReader{})
 	c := newTestClient(hub)

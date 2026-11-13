@@ -204,6 +204,49 @@ func TestChatSendPassesSkillInSteerMessage(t *testing.T) {
 	}
 }
 
+func TestChatSendPassesSkillInSteerMessageWithoutSpace(t *testing.T) {
+	msgBus := bus.NewMessageBus(10)
+	defer msgBus.Close()
+
+	sub, err := msgBus.SubscribeInput()
+	if err != nil {
+		t.Fatalf("订阅入站消息失败: %v", err)
+	}
+	defer sub.Close()
+
+	skill := types.Skill{
+		Name:    "order-progress-analysis",
+		Path:    "/root/.codex/skills/order-progress-analysis/SKILL.md",
+		Enabled: true,
+	}
+	reg, hub := newTestRegistry(msgBus, fakeSkillAgents{
+		names:  []string{"codex"},
+		skills: map[string][]types.Skill{"codex": {skill}},
+	})
+	c := newTestClient(hub)
+
+	env := protocol.NewEnvelope(protocol.KindClient, protocol.TypeChatSend).
+		WithData(&protocol.ChatSendData{
+			ChatID:  "c1",
+			Agent:   "codex",
+			Content: "/steer$order-progress-analysis 再看看交期",
+		})
+	reg.Dispatch(context.Background(), c, env)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	in, ok := sub.Consume(ctx)
+	if !ok || in == nil {
+		t.Fatal("未收到入站消息")
+	}
+	if len(in.Skills) != 1 || in.Skills[0] != skill {
+		t.Fatalf("无空格 steer 消息未携带校验后的技能: %+v", in.Skills)
+	}
+	if in.Content != "/steer 再看看交期" {
+		t.Fatalf("无空格 steer 应规范化为命令前缀，实际 %q", in.Content)
+	}
+}
+
 func TestChatSendRejectsSkillNotEnabledForAgent(t *testing.T) {
 	msgBus := bus.NewMessageBus(2)
 	defer msgBus.Close()

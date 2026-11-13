@@ -17,9 +17,9 @@ func CommandParse(msg string) *Command {
 				NewThread: true,
 			}
 		}
-		if after, ok := strings.CutPrefix(msg, "/steer "); ok {
+		if after, ok := strings.CutPrefix(msg, "/steer"); ok {
 			return &Command{
-				Msg:   after,
+				Msg:   strings.TrimSpace(after),
 				Steer: true,
 			}
 		}

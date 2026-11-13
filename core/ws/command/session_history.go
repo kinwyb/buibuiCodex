@@ -91,13 +91,14 @@ func (r *Registry) loadHistory(ctx context.Context, sessionID string, data proto
 		if err != nil {
 			return nil, err
 		}
+		historyTurns := toHistoryTurns(turns)
 		// 线程级累计用量只在 thread 记录里，单独补一次查询
 		meta := r.deps.Turns.ThreadQueryByID(ctx, query.ThreadID)
 		// 已软删除的线程既没有 meta，轮次也会被存储层过滤掉；不返回空线程项。
-		if meta != nil || len(turns) > 0 {
+		if meta != nil || len(historyTurns) > 0 {
 			item := protocol.HistoryThread{
 				ThreadID: query.ThreadID,
-				Turns:    toHistoryTurns(turns),
+				Turns:    historyTurns,
 				HasMore:  len(turns) >= limit,
 			}
 			if meta != nil {
@@ -121,7 +122,8 @@ func (r *Registry) loadHistory(ctx context.Context, sessionID string, data proto
 			if err != nil {
 				return nil, err
 			}
-			if len(turns) == 0 {
+			historyTurns := toHistoryTurns(turns)
+			if len(historyTurns) == 0 {
 				continue
 			}
 			result.Threads = append(result.Threads, protocol.HistoryThread{
@@ -129,7 +131,7 @@ func (r *Registry) loadHistory(ctx context.Context, sessionID string, data proto
 				Agent:      thread.Agent,
 				CreatedAt:  millis(thread.CreateTime),
 				LastUpdate: millis(thread.LastUpdate),
-				Turns:      toHistoryTurns(turns),
+				Turns:      historyTurns,
 				HasMore:    len(turns) >= limit,
 				Usage:      threadUsageOf(thread),
 			})
@@ -143,9 +145,10 @@ func (r *Registry) loadHistory(ctx context.Context, sessionID string, data proto
 			if err != nil {
 				return nil, err
 			}
-			if len(turns) > 0 {
+			historyTurns := toHistoryTurns(turns)
+			if len(historyTurns) > 0 {
 				result.Threads = append(result.Threads, protocol.HistoryThread{
-					Turns:   toHistoryTurns(turns),
+					Turns:   historyTurns,
 					HasMore: len(turns) >= limit,
 				})
 			}
@@ -224,6 +227,10 @@ func (r *Registry) attachFrames(ctx context.Context, result *protocol.SessionHis
 func toHistoryTurns(list []db.SessionTurn) []protocol.HistoryTurn {
 	out := make([]protocol.HistoryTurn, 0, len(list))
 	for _, t := range list {
+		// 旧数据可能把 /steer 控制请求落成独立轮次；它不是问答，历史里跳过。
+		if strings.HasPrefix(strings.TrimSpace(t.Question), "/steer") {
+			continue
+		}
 		item := protocol.HistoryTurn{
 			Seq:       t.Seq,
 			ReqID:     t.ReqID,

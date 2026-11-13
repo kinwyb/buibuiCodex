@@ -577,7 +577,7 @@ func (a *Agent) Cancel(ctx context.Context, sessionID string) error {
 	a.epMu.Unlock()
 	if ok {
 		if ct.turn != nil {
-			ct.turn.Interrupt(ctx)
+			return ct.turn.Interrupt(ctx)
 		}
 	}
 	return nil
@@ -695,6 +695,14 @@ func (a *Agent) markActiveTurnsInterrupted(ctx context.Context) {
 	}
 	a.epMu.Unlock()
 	for _, turn := range active {
+		completedAt := time.Now()
+		if err := a.cfg.SessionDB.TurnSave(ctx, &db.SessionTurn{
+			ReqID:       turn.reqID,
+			IsCompleted: true,
+			CompletedAt: &completedAt,
+		}); err != nil {
+			slog.Warn("mark stopped turn completed failed", "reqID", turn.reqID, "error", err.Error())
+		}
 		if err := a.cfg.SessionDB.TurnRecoveryUpdate(
 			ctx, turn.reqID, turn.runID, db.RecoveryStatusInterrupted, "service stopping", 0,
 		); err != nil {
