@@ -119,4 +119,29 @@ type materialQueryRequest struct {
 }
 ```
 
-`至少传一个`、`A 有值时 B 必传` 这类跨字段规则不能通过单个字段标签表达，需要写入工具描述并在执行前校验。
+`至少传一个`、`A 有值时 B 必传` 这类跨字段规则不能通过单个字段标签表达，需要写入工具描述，并可用 `PrepareParams` 在执行前强制校验。
+
+## 固定参数、参数拦截与响应回调
+
+`OpenAPIToolSpec.FixedParams` 注入服务端固定参数：请求结构体中不声明这些字段，它们就不会出现在工具 schema 里。固定参数在 `PrepareParams` 之后合并，覆盖模型传入的同名参数，对 Path/Query/Body 绑定都生效。
+
+`OpenAPIToolSpec.PrepareParams` 在构建请求前校验或改写模型参数，返回错误则拒绝执行，不会发起 HTTP 请求：
+
+```go
+PrepareParams: func(info *serv.UserInfo, params serv.Param) (serv.Param, error) {
+    if len(params) == 0 {
+        return nil, errors.New("查询参数至少传一个")
+    }
+    return params, nil
+},
+```
+
+`TypedOpenAPITool.OnResponse` 设置响应回调，在请求成功后、紧凑编码前处理业务数据，适合过滤行、脱敏字段。回调签名为 `func(info *serv.UserInfo, data T) (T, error)`，schema 由响应类型生成，回调不要改变输出形状；需要完全不同的输出结构时应换响应类型或自定义工具：
+
+```go
+tool := openapi.NewTypedRequestResponseOpenAPITool[Req, []Row](spec).
+    OnResponse(func(info *serv.UserInfo, rows []Row) ([]Row, error) {
+        // 过滤、脱敏后返回
+        return rows, nil
+    })
+```

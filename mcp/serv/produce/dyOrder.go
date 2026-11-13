@@ -1,15 +1,17 @@
 package produce
 
 import (
+	"errors"
+
 	"github.com/kinwyb/buibuiCodex/mcp/serv"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/openapi"
 )
 
 type DyOrderList struct {
+	StartDate string `json:"StartDate" description:"开始日期(yyyy-mm-dd)"`
+	EndDate   string `json:"EndDate" description:"结束日期(yyyy-mm-dd)"`
 	DyUser    string `json:"DyUser,omitempty" description:"打样师傅名称"`
-	EndDate   string `json:"EndDate,omitempty" description:"结束日期(yyyy-mm-dd)和StartDate一起传递"`
 	OrderCode string `json:"OrderCode,omitempty" description:"订单号"`
-	StartDate string `json:"StartDate,omitempty" description:"开始日期(yyyy-mm-dd)和EndDate一起传递"`
 	StyleCode string `json:"StyleCode,omitempty" description:"款号(格式是数字和字母)"`
 	Ywy       string `json:"Ywy,omitempty" description:"业务员名称"`
 }
@@ -75,6 +77,14 @@ func dyOrderList() serv.IMcpTool {
 		Description: "打样单列表数据,查询参数至少要传递一个。如果要获取具体某一个打样单的详情请用返回结果数据中的DyOrderID去调用produce_dyOrder_info工具获取",
 		Method:      "POST",
 		Path:        "/produce/dy/order/list",
+		PrepareParams: func(info *serv.UserInfo, params serv.Param) (serv.Param, error) {
+			startDate, _ := params.Get[string]("StartDate")
+			endDate, _ := params.Get[string]("EndDate")
+			if startDate == "" || endDate == "" {
+				return nil, errors.New("开始日期(StartDate)和结束日期(EndDate)必须传递")
+			}
+			return params, nil
+		},
 		Binding: openapi.OpenAPIRequestBinding{
 			Path:      map[string]string(nil),
 			Query:     map[string]string(nil),

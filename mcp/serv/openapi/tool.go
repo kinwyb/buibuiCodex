@@ -23,6 +23,10 @@ type OpenAPIToolSpec struct {
 	Parameters     json.RawMessage
 	ResponseSchema json.RawMessage
 	Binding        OpenAPIRequestBinding
+	// FixedParams 服务端固定参数，不出现在工具 schema 中，合并时覆盖模型传入的同名参数。
+	FixedParams map[string]any
+	// PrepareParams 在构建请求前校验或改写模型参数，返回错误则拒绝执行；FixedParams 在其后合并。
+	PrepareParams func(info *serv.UserInfo, params serv.Param) (serv.Param, error)
 }
 
 // OpenAPIRequestBinding 将 MCP 参数映射到 HTTP path、query 和 body。
@@ -96,8 +100,9 @@ func (t *OpenAPITool) Execute(info *serv.UserInfo, params serv.Param) (string, e
 
 // TypedOpenAPITool 使用 Go 结构体作为响应类型，并通过通用 edp.DoClient 执行请求。
 type TypedOpenAPITool[T any] struct {
-	spec    OpenAPIToolSpec
-	compact CompactSchema
+	spec            OpenAPIToolSpec
+	compact         CompactSchema
+	responseHandler func(*serv.UserInfo, T) (T, error)
 }
 
 // NewTypedOpenAPITool 创建强类型 Swagger 工具。
@@ -119,6 +124,13 @@ func NewTypedRequestOpenAPITool[TRequest any](spec OpenAPIToolSpec) *OpenAPITool
 func NewTypedRequestResponseOpenAPITool[TRequest, TResponse any](spec OpenAPIToolSpec) *TypedOpenAPITool[TResponse] {
 	spec.Parameters = JSONSchemaFromType(reflect.TypeOf((*TRequest)(nil)).Elem())
 	return NewTypedOpenAPITool[TResponse](spec)
+}
+
+// OnResponse 设置响应回调，在紧凑编码前对业务数据做过滤、脱敏等处理，返回错误则作为工具执行失败。
+// 回调保持 T -> T，schema 由响应类型生成，不要在回调中改变输出形状。
+func (t *TypedOpenAPITool[T]) OnResponse(handler func(info *serv.UserInfo, data T) (T, error)) *TypedOpenAPITool[T] {
+	t.responseHandler = handler
+	return t
 }
 
 // Name 工具名称。
@@ -154,7 +166,14 @@ func (t *TypedOpenAPITool[T]) Execute(info *serv.UserInfo, params serv.Param) (s
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal(response.Data)
+	result := response.Data
+	if t.responseHandler != nil {
+		result, err = t.responseHandler(info, result)
+		if err != nil {
+			return "", err
+		}
+	}
+	data, err := json.Marshal(result)
 	if err != nil {
 		return "", fmt.Errorf("序列化响应结构体失败: %w", err)
 	}
@@ -162,6 +181,19 @@ func (t *TypedOpenAPITool[T]) Execute(info *serv.UserInfo, params serv.Param) (s
 }
 
 func (s OpenAPIToolSpec) newRequest(info *serv.UserInfo, params serv.Param) (*edp.Request, error) {
+	if s.PrepareParams != nil {
+		var err error
+		params, err = s.PrepareParams(info, params)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(s.FixedParams) > 0 && params == nil {
+		params = make(serv.Param, len(s.FixedParams))
+	}
+	for name, value := range s.FixedParams {
+		params[name] = value
+	}
 	path, err := s.buildPath(params)
 	if err != nil {
 		return nil, err

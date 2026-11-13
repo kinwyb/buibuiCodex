@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -134,6 +135,72 @@ func TestTypedRequestSchemaComesFromStruct(t *testing.T) {
 	})
 	if string(tool.RawParameters()) != string(schema) {
 		t.Fatalf("tool parameters = %s, want %s", tool.RawParameters(), schema)
+	}
+}
+
+func TestTypedOpenAPIToolOnResponseProcessesData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":[
+			{"code":"M001","name":"物料A","version":1},
+			{"code":"M002","name":"物料B","version":1}
+		]}`))
+	}))
+	defer server.Close()
+	edp.NewAPIClient(server.URL)
+
+	tool := NewTypedRequestResponseOpenAPITool[typedMaterialQuery, []typedMaterial](OpenAPIToolSpec{
+		Name:   "nc_material_query",
+		Method: http.MethodPost,
+		Path:   "/nc/material/query",
+	}).OnResponse(func(info *serv.UserInfo, rows []typedMaterial) ([]typedMaterial, error) {
+		if info.UserID != "user-1" {
+			t.Errorf("info.UserID = %q", info.UserID)
+		}
+		var kept []typedMaterial
+		for _, row := range rows {
+			if row.Code == "M001" {
+				row.Name = "已脱敏"
+				kept = append(kept, row)
+			}
+		}
+		return kept, nil
+	})
+	output, err := tool.Execute(&serv.UserInfo{UserID: "user-1", Token: "token-1"}, serv.Param{"code": "M001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Data []any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data) != 1 {
+		t.Fatalf("data = %#v", envelope.Data)
+	}
+	row, ok := envelope.Data[0].([]any)
+	if !ok || row[0] != "已脱敏" || row[1] != "M001" {
+		t.Fatalf("row = %#v", envelope.Data[0])
+	}
+}
+
+func TestTypedOpenAPIToolOnResponseError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":[{"code":"M001","name":"物料A"}]}`))
+	}))
+	defer server.Close()
+	edp.NewAPIClient(server.URL)
+
+	tool := NewTypedOpenAPITool[[]typedMaterial](OpenAPIToolSpec{
+		Name:   "nc_material_query",
+		Method: http.MethodPost,
+		Path:   "/nc/material/query",
+	}).OnResponse(func(info *serv.UserInfo, rows []typedMaterial) ([]typedMaterial, error) {
+		return nil, errors.New("无权查看该数据")
+	})
+	_, err := tool.Execute(&serv.UserInfo{Token: "token-1"}, serv.Param{})
+	if err == nil || err.Error() != "无权查看该数据" {
+		t.Fatalf("error = %v", err)
 	}
 }
 
