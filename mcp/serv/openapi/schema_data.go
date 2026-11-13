@@ -98,6 +98,17 @@ func EncodeSchemaData(schema CompactSchema, data, page json.RawMessage) (string,
 	if err := prepareCompactSchema(&schema, data); err != nil {
 		return "", err
 	}
+	if schema.Kind == "array" && isEmptyRootArray(data) {
+		emptyData, err := encodeSchemaValue(&schema, data)
+		if err != nil {
+			return "", err
+		}
+		emptyBytes, err := json.Marshal(schemaObjectDataEnvelope{Data: emptyData})
+		if err != nil {
+			return "", fmt.Errorf("序列化空数据失败: %w", err)
+		}
+		return string(emptyBytes), nil
+	}
 
 	pageValue, err := decodeJSONValue(page)
 	if err != nil {
@@ -160,6 +171,11 @@ func EncodeSchemaData(schema CompactSchema, data, page json.RawMessage) (string,
 		return "", fmt.Errorf("序列化预览数据失败: %w", err)
 	}
 	return string(previewBytes), nil
+}
+
+func isEmptyRootArray(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return isJSONNull(trimmed) || bytes.Equal(trimmed, []byte("[]"))
 }
 
 func encodeObjectSchemaData(schema *CompactSchema, data json.RawMessage, page any) (string, error) {

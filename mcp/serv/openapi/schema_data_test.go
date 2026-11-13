@@ -75,6 +75,37 @@ func TestEncodeSchemaDataMissingFieldBecomesNull(t *testing.T) {
 	}
 }
 
+func TestEncodeSchemaDataEmptyArrayOmitsSchemaAndPage(t *testing.T) {
+	schema := CompactSchema{
+		Kind: "array",
+		Items: &CompactSchema{
+			Kind: "object",
+			Fields: []CompactField{
+				{Name: "code", Type: CompactSchema{Kind: "string", Description: "物料编码"}},
+			},
+		},
+	}
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "null", data: "null", want: `{"data":null}`},
+		{name: "empty array", data: "[]", want: `{"data":[]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output, err := EncodeSchemaData(schema, json.RawMessage(test.data), json.RawMessage(`{"page":1,"total":0}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if output != test.want {
+				t.Fatalf("output = %s, want %s", output, test.want)
+			}
+		})
+	}
+}
+
 func TestEncodeSchemaDataObjectFallsBackForDuplicateDescription(t *testing.T) {
 	schema := CompactSchema{
 		Kind: "object",

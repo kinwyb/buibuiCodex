@@ -59,6 +59,16 @@
 
 完整协议小于 5KB 时全部内联。
 
+根 `data` 是 `null` 或空数组时，只返回原始空值，不输出 `format`、`layout`、`schema` 和 `page`：
+
+```json
+{"data":null}
+```
+
+```json
+{"data":[]}
+```
+
 根 `data` 是数组，且完整协议达到或超过 5KB 时：
 
 1. schema 始终内联。
