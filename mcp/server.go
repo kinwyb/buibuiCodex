@@ -17,12 +17,13 @@ import (
 	"github.com/kinwyb/buibuiCodex/mcp/serv/finance"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/nc"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/order"
+	"github.com/kinwyb/buibuiCodex/mcp/serv/produce"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 // 免费开放的工具集
-var pubToolPrefix = []string{"nc"}
+var pubToolPrefix = []string{"nc", "produce"}
 
 type Config struct {
 	Name      string            `description:"mcp名称"`
@@ -111,6 +112,7 @@ func (m *Mcp) Start(ctx context.Context) error {
 	order.InitTool()
 	finance.InitTool()
 	nc.InitTool()
+	produce.InitTool()
 	tools := serv.McpTools()
 	if len(tools) > 0 {
 		s.AddTools(tools...)

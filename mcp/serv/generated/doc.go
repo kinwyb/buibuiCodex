@@ -2,3 +2,5 @@
 // 以及工具生成时引用、人工维护的 Go 结构体。
 // 生成文件在 init 阶段注册工具，mcp/server.go 只需空白导入本包一次。
 package generated
+
+//go run ./cmd/genmcp --api /produce/dy/order/info --out mcp/serv/generated/dyOrder2.go --allow-method post
