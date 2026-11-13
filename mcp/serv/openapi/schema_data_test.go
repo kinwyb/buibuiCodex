@@ -158,7 +158,7 @@ func TestEncodeSchemaDataLargeResultUsesFile(t *testing.T) {
 	if len(preview.Meta) != 4 || preview.Meta["total"] != float64(300) || preview.Meta["shown"] != float64(3) {
 		t.Fatalf("meta = %+v", preview.Meta)
 	}
-	if preview.Meta["fileHint"] == "" {
+	if preview.Meta["fileHint"] != "文件内容是上方 data 数组；请用脚本或代码筛选、聚合、分页读取，只加载回答所需的字段和记录，不要一次性读取完整文件" {
 		t.Fatalf("file metadata = %+v", preview.Meta)
 	}
 	if len(preview.Data) != 3 {

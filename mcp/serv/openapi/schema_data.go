@@ -152,7 +152,7 @@ func EncodeSchemaData(schema CompactSchema, data, page json.RawMessage) (string,
 			Total:    total,
 			Shown:    shown,
 			File:     fileURL,
-			FileHint: "文件内容是上方 data 数组；按上方 schema 的字段顺序读取",
+			FileHint: "文件内容是上方 data 数组；请用脚本或代码筛选、聚合、分页读取，只加载回答所需的字段和记录，不要一次性读取完整文件",
 		},
 	}
 	previewBytes, err := json.Marshal(preview)
