@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"gorm.io/gorm"
@@ -778,10 +779,20 @@ func (s *sessionStorage) TurnEventList(ctx context.Context, query TurnEventQuery
 		true,
 	)
 
-	var list []TurnEvent
-	if err := tx.Order("seq asc").Limit(query.NormalizeLimit()).Find(&list).Error; err != nil {
+	// MySQL 对 SELECT * + ORDER BY 会把 raw_data 大字段一并放进排序缓冲区，
+	// 事件多时容易触发 Out of sort memory。这里先只排序主键 seq，再按主键取整行。
+	var seqs []uint
+	if err := tx.Order("seq asc").Limit(query.NormalizeLimit()).Pluck("seq", &seqs).Error; err != nil {
 		return nil, err
 	}
+	if len(seqs) == 0 {
+		return nil, nil
+	}
+	var list []TurnEvent
+	if err := s.db.WithContext(ctx).Where("seq IN ?", seqs).Find(&list).Error; err != nil {
+		return nil, err
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Seq < list[j].Seq })
 	return list, nil
 }
 
