@@ -169,7 +169,7 @@ func (j *jsonRpcV2) readLoop() {
 			var msg jsonRpc.RPCData
 			err := j.conn.ReadJSON(&msg)
 			if err != nil {
-				if !errors.As(err, io.ErrUnexpectedEOF) {
+				if !errors.Is(err, io.ErrUnexpectedEOF) {
 					slog.Error("jsonRpcV2 readLoop read json error", "error", err)
 				}
 				j.Close()

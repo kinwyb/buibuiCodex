@@ -95,6 +95,7 @@ func NewClient(serverURL string, token string) (*Client, error) {
 	conn := newRpc(ctx)
 	err := conn.Connect(serverURL, token)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	c := &Client{
