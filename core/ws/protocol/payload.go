@@ -207,6 +207,18 @@ type ChatCancelData struct {
 	ChatID    string `json:"chatID,omitempty"`
 }
 
+// ChatApprovalData 上行回传审批决定。
+//
+// ApprovalID 即下行 approval.id（上游审批请求标识）；Decision 取
+// jsonRpc.ApprovalDecision 的 accept / decline。服务端优先用 SessionID，
+// 没有就用 ChatID 推导会话键，与 chat.cancel 一致。
+type ChatApprovalData struct {
+	SessionID  string `json:"sessionID,omitempty"`
+	ChatID     string `json:"chatID,omitempty"`
+	ApprovalID string `json:"approvalID"`
+	Decision   string `json:"decision"`
+}
+
 // PingData 上行心跳
 type PingData struct {
 	TS int64 `json:"ts,omitempty"`

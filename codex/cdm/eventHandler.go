@@ -310,12 +310,24 @@ func (a *Agent) codexRequestParse(state *types.State, request *codex.Event) {
 		event := state.BuildEvent()
 		event.EventID = fmt.Sprintf("%v", request.ID)
 		event.Type = types.EventApproval
+		// 结构化附加信息：前端弹窗据此把「要执行什么命令、在哪个目录、为什么」讲清楚。
+		// 命令 / 目录只有命令类审批才有，权限 / 文件变更类只带理由。
+		approvalExtra := map[string]any{
+			"reason": itemEvt.Reason,
+			"method": request.Method,
+		}
+		if len(itemEvt.Command) > 0 {
+			approvalExtra["command"] = itemEvt.Command
+		}
+		if itemEvt.Cwd != "" {
+			approvalExtra["cwd"] = itemEvt.Cwd
+		}
 		event.Message = &types.Message{
 			Role:             types.RoleSystem,
 			IsDetla:          false,
 			ReasoningContent: "",
 			Content:          itemEvt.Reason,
-			Extra:            nil,
+			Extra:            approvalExtra,
 			ApprovalID:       request.ID,
 		}
 		if strings.Contains(strings.ToLower(request.Method), "command") {

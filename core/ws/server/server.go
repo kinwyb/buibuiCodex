@@ -54,6 +54,7 @@ type Options struct {
 	Config        *config.WebSocketConfig // 服务配置
 	Bus           *bus.MessageBus         // 消息总线
 	Canceller     command.Canceller       // 会话取消能力，可为空
+	Approver      command.Approver        // 审批回传能力，可为空
 	Agents        command.AgentSource     // agent 列表来源，可为空
 	Turns         command.TurnReader      // 历史轮次读取能力，为空时 session.history 不可用
 	Authenticator Authenticator           // 身份解析函数，为空时使用 DefaultAuthenticator
@@ -171,6 +172,7 @@ func New(opts Options) *Server {
 		Bus:          opts.Bus,
 		Hub:          s.hub,
 		Canceller:    opts.Canceller,
+		Approver:     opts.Approver,
 		Agents:       opts.Agents,
 		Turns:        opts.Turns,
 		Channel:      opts.Channel,

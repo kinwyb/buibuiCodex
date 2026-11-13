@@ -183,6 +183,7 @@ func (b *Bridge) convert(event *types.Event) *protocol.Envelope {
 			data.Approval = &protocol.ApprovalData{
 				ID:      fmt.Sprint(msg.ApprovalID),
 				Content: msg.Content,
+				Extra:   msg.Extra,
 			}
 		}
 	} else {

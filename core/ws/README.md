@@ -129,6 +129,7 @@ core/ws/
 │   ├── ping.go           ping
 │   ├── chat_send.go      chat.send（含 fileID 还原）
 │   ├── chat_cancel.go    chat.cancel
+│   ├── chat_approval.go  chat.approval（审批回传）
 │   ├── agent_list.go     agent.list
 │   ├── agent_skills.go   agent.skills
 │   ├── session_list.go   session.list
@@ -290,6 +291,7 @@ delta == false   全量快照，整体覆盖当前消息
 | --- | --- | --- |
 | `chat.send` | `sessionID?`、`chatID?`、`threadID?`、`agent?`、`content`、`media`、`fileIDs?`、`metadata` | 发送提问；带 `threadID` 时继续指定历史对话 |
 | `chat.cancel` | `sessionID?`、`chatID?` | 中断当前会话 |
+| `chat.approval` | `sessionID?`、`chatID?`、`approvalID`、`decision` | 回传审批决定（`accept` / `decline`），见 3.4.1 |
 | `ping` | `ts` | 应用层心跳，测 RTT |
 | `agent.list` | — | 拉取可用 agent |
 | `agent.skills` | `agent?` | 拉取指定 agent 实际加载的技能；不传 agent 时使用默认 agent |
@@ -314,6 +316,34 @@ delta == false   全量快照，整体覆盖当前消息
 服务端只在 `<name>`（技能 `name` 或 `displayName`）与当前 agent 的已启用技能匹配时消费该前缀，随后把正文
 `查一下这个订单的进度` 和 Codex 原生 `skill` 输入一起发送给模型。技能不存在、
 未启用时返回 `skill_not_found`；选择后既没有正文也没有媒体时返回 `bad_request`。
+
+#### 3.4.1 审批回传（`chat.approval`）
+
+agent 执行到需要授权的操作（命令 / 文件变更 / 权限）时，会下发 `approval` 帧并**阻塞这一轮**，
+等客户端回传决定后才继续。下行 `data.approval`：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 审批标识，回传时原样带上（即上游 JSON-RPC 请求 ID 的字符串形式） |
+| `content` | 人类可读说明（命令类为「执行命令：… ,理由：…」） |
+| `extra` | 结构化信息：`command`（argv 数组）、`cwd`、`reason`、`method`；命令 / 目录仅命令类审批有 |
+
+客户端用 `chat.approval` 回传：
+
+```json
+{"kind":"client","type":"chat.approval","data":{
+  "sessionID":"ws_<userID>_<chatID>",
+  "approvalID":"42",
+  "decision":"accept"
+}}
+```
+
+- `decision` 取 `accept`（允许）/ `decline`（拒绝），其余值返回 `bad_request`。
+- 会话归属校验与 `chat.cancel` 一致；`approvalID` 缺失返回 `bad_request`。
+- 服务端把 `approvalID` 还原成上游期望的类型再应答：**codex 的审批请求 ID 是数字**，
+  能解析成整数就按数字回传，否则按字符串。该转换在 ws 命令层无状态完成，不保存待回传记录。
+- 受理成功回 `ack`（`ok=true`）；随后 agent 继续这一轮，照常推后续事件。
+- 审批是**实时**闭环：历史 / 回放里的审批帧那一轮早已结束，前端应置为失效、不再提供可点按钮。
 
 ### 3.5 错误码
 
@@ -997,9 +1027,9 @@ go test -race ./core/db/ ./core/ws/...
 - **界面工具只有 observe / act**：没有 select（给 GridTableApi 加按业务 ID 选中行后才能做）、没有审批闭环（有副作用的命令目前靠命令自身 disabled + 页面确认框兜底）。
 - **补发基于数据库轮次**：`session.history(since)` 只能补已落库的轮次；断线期间正在生成的那一轮不补逐帧内容，重连后由后续事件或 `message_completed` 覆盖收敛。
 - **历史帧不是逐帧录像**：`frames` 只还原关键帧（每轮上限 200 帧、单条文本 4KB），而且只覆盖 `turn_events` 里已有的记录。若某轮在落库前就崩溃，过程会有缺口；`turn_events` 也没有 `session_id`，只能靠 `turn_id` 反查。
-- **回放不支持审批回传**：审批帧能展示，但历史里点「同意/拒绝」没有意义（那一轮已经结束），闭环仍待 P2。
+- **回放里的审批只展示**：历史 / 回放帧能还原审批，但那一轮早已结束，前端置为失效、不提供可点按钮；实时审批的允许 / 拒绝走 `chat.approval`（见 3.4.1）。
 - **对话列表只读 thread 表**：`session.list` 依赖 `sessions` 表关联出归属，若某会话在 `sessions` 里没有记录（历史数据缺失），对应 thread 不会出现在列表中；标题/预览取首末轮，中间轮次不参与。
-- **不支持审批回传**：`approval` 事件能下发，但客户端无法回应，审批闭环待 P2。
+- **审批回传依赖上游在线**：`chat.approval` 直接把决定应答给 codex 的阻塞请求；若该轮已被取消或上游连接已断，应答会落空（服务端仍回 `ack`，但操作不会再执行）。
 - **媒体原样透传**：`AgentData.media` 里的 `types.Media` 直接下发；内联 `base64` 仍可传，但受 1MB 单帧限制，稍大的文件请走 3.8 的上传端点。
 - **文件只在单机**：`filestore` 落在本地磁盘、索引在内存，多实例部署时上传与下载必须落到同一进程（或共享同一 `file_dir` 并接受索引不共享），也没有对象存储与 CDN 加速。
 - **agent 工作区不按用户隔离**：工作区是 agent 级别的，所有会话共享；3.9 的文件接口只校验「路径在不在工作区内」，不区分是谁的文件。它面向受信前端，默认关闭。

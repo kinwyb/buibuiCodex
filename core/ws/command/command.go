@@ -25,6 +25,12 @@ type Canceller interface {
 	Cancel(sessionID string)
 }
 
+// Approver 审批回传能力，由 core.Manager 实现。
+// approvalID 已由命令层还原成上游期望的类型；decision 取 accept / decline。
+type Approver interface {
+	Approve(sessionID string, approvalID any, decision string) error
+}
+
 // AgentSource agent 列表来源，由 core.Manager 实现
 type AgentSource interface {
 	ListAgents() []string
@@ -51,6 +57,7 @@ type Deps struct {
 	Bus          *bus.MessageBus
 	Hub          *conn.Hub
 	Canceller    Canceller
+	Approver     Approver
 	Agents       AgentSource
 	Turns        TurnReader // 历史消息数据源，为空时 session.history 返回未启用
 	Channel      string     // 入站消息的渠道标识
@@ -88,6 +95,7 @@ type Registry struct {
 //	ping.go             ping
 //	chat_send.go        chat.send
 //	chat_cancel.go      chat.cancel
+//	chat_approval.go    chat.approval
 //	agent_list.go       agent.list
 //	agent_skills.go     agent.skills
 //	session_list.go     session.list
@@ -103,6 +111,7 @@ func NewRegistry(deps Deps) *Registry {
 	r.Register(protocol.TypePing, r.ping)
 	r.Register(protocol.TypeChatSend, r.chatSend)
 	r.Register(protocol.TypeChatCancel, r.chatCancel)
+	r.Register(protocol.TypeChatApproval, r.chatApproval)
 	r.Register(protocol.TypeAgentList, r.agentList)
 	r.Register(protocol.TypeAgentSkills, r.agentSkills)
 	r.Register(protocol.TypeSessionList, r.sessionList)

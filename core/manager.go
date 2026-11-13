@@ -14,6 +14,7 @@ import (
 	"uuid"
 
 	"github.com/kinwyb/buibuiCodex/codex/cdm"
+	"github.com/kinwyb/buibuiCodex/codex/jsonRpc"
 	"github.com/kinwyb/buibuiCodex/core/agentfs"
 	"github.com/kinwyb/buibuiCodex/core/bus"
 	"github.com/kinwyb/buibuiCodex/core/config"
@@ -389,6 +390,38 @@ func (m *Manager) CancelSession(sessionID string) bool {
 		agent.Cancel(m.ctx, sessionID)
 	}
 	return true
+}
+
+// Approve 把审批决定回传给指定会话正在运行的 agent。
+//
+// 会话归属与决定取值由 ws 命令层校验；这里只负责按 sessionID 找到当时跑这轮的
+// agent（与 CancelSession 同一套 sessionAgent 映射），找不到就退回默认 agent。
+// approvalID 已由命令层还原成上游期望的类型，直接透传给 agent。
+func (m *Manager) Approve(sessionID string, approvalID any, decision string) error {
+	var dec jsonRpc.ApprovalDecision
+	switch decision {
+	case "accept":
+		dec = jsonRpc.ApprovalAccept
+	case "decline":
+		dec = jsonRpc.ApprovalReject
+	default:
+		return fmt.Errorf("invalid approval decision: %s", decision)
+	}
+
+	m.sessionAgentMux.Lock()
+	agentName := m.sessionAgent[sessionID]
+	m.sessionAgentMux.Unlock()
+
+	agent := m.defaultAgent
+	if agentName != "" {
+		if ag, exists := m.agents[agentName]; exists {
+			agent = ag
+		}
+	}
+	if agent == nil {
+		return errors.New("no agent available to approve")
+	}
+	return agent.Approve(approvalID, dec)
 }
 
 func (m *Manager) messageHandler(ctx context.Context, state *types.State) {

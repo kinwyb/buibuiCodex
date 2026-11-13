@@ -117,6 +117,7 @@ func main() {
 			Config:    cfg.WebSocket,
 			Bus:       msgBus,
 			Canceller: manager,
+			Approver:  manager,
 			Agents:    manager,
 			Turns:     dataStorage.Session(),
 			// agent 工作区浏览（配置 websocket.agent_files 才生效）
