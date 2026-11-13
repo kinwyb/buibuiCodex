@@ -1,0 +1,4 @@
+interface:
+  display_name: "订单进度分析"
+  short_description: "分析生产系统订单进度并识别隐患"
+  default_prompt: "查询订单进度并分析生产情况"

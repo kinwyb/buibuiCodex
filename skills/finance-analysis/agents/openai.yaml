@@ -1,0 +1,4 @@
+interface:
+  display_name: "财务分析"
+  short_description: "分析订单毛利率、利润异常；按需下钻成本明细"
+  default_prompt: "Use $finance to analyze order gross margin and profit anomalies; drill into cost details only when requested."
