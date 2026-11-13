@@ -1,6 +1,8 @@
 package nc
 
 import (
+	"errors"
+
 	"github.com/kinwyb/buibuiCodex/mcp/serv"
 	"github.com/kinwyb/buibuiCodex/mcp/serv/openapi"
 )
@@ -45,6 +47,21 @@ func materialQuery() serv.IMcpTool {
 			"[code,name,vfreeName]必须至少传一个，如果传vfreeName还必须同步传vfreeValue",
 		Method: "POST",
 		Path:   "/nc/material/query",
+		PrepareParams: func(info *serv.UserInfo, params serv.Param) (serv.Param, error) {
+			code, _ := params.Get[string]("code")
+			name, _ := params.Get[string]("name")
+			vfree, _ := params.Get[string]("vfreeName")
+			if code == "" && name == "" && vfree == "" {
+				return nil, errors.New("code、name、vfreeName 至少传一个")
+			}
+			if vfree != "" {
+				value, _ := params.Get[string]("vfreeValue")
+				if value == "" {
+					return nil, errors.New("传 vfreeName 时必须同步传 vfreeValue")
+				}
+			}
+			return params, nil
+		},
 		Binding: openapi.OpenAPIRequestBinding{
 			Path:      map[string]string(nil),
 			Query:     map[string]string(nil),

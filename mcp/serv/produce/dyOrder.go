@@ -74,7 +74,7 @@ type DyOrderListResponse struct {
 func dyOrderList() serv.IMcpTool {
 	return openapi.NewTypedRequestResponseOpenAPITool[DyOrderList, []DyOrderListResponse](openapi.OpenAPIToolSpec{
 		Name:        "produce_dyOrder_list",
-		Description: "打样单列表数据,查询参数至少要传递一个。如果要获取具体某一个打样单的详情请用返回结果数据中的DyOrderID去调用produce_dyOrder_info工具获取",
+		Description: "打样单列表数据,必须传递开始日期(StartDate)和结束日期(EndDate)。如果要获取具体某一个打样单的详情请用返回结果数据中的DyOrderID去调用produce_dyOrder_info工具获取",
 		Method:      "POST",
 		Path:        "/produce/dy/order/list",
 		PrepareParams: func(info *serv.UserInfo, params serv.Param) (serv.Param, error) {
