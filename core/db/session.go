@@ -825,7 +825,6 @@ func (s *sessionStorage) TurnEventOpenTurns(ctx context.Context, since time.Time
 	}
 
 	tx := s.db.WithContext(ctx).Model(&TurnEvent{}).
-		Select("thread_id", "turn_id", "run_turn_id", "method", "raw_data", "seq").
 		Where("method IN ?", []string{"item/started", "item/completed"})
 	if !since.IsZero() {
 		tx = tx.Where("create_time >= ?", since)
@@ -836,10 +835,19 @@ func (s *sessionStorage) TurnEventOpenTurns(ctx context.Context, since time.Time
 		true,
 	)
 
-	var events []TurnEvent
-	if err := tx.Order("seq asc").Limit(MaxTurnEventLimit).Find(&events).Error; err != nil {
+	// 同 TurnEventList：先只排序主键 seq，避免 MySQL filesort 携带 raw_data 大字段。
+	var seqs []uint
+	if err := tx.Order("seq asc").Limit(MaxTurnEventLimit).Pluck("seq", &seqs).Error; err != nil {
 		return nil, err
 	}
+	if len(seqs) == 0 {
+		return nil, nil
+	}
+	var events []TurnEvent
+	if err := s.db.WithContext(ctx).Where("seq IN ?", seqs).Find(&events).Error; err != nil {
+		return nil, err
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
 
 	type lifecycle struct {
 		threadID  string
