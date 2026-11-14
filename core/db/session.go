@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"time"
 
 	"gorm.io/gorm"
@@ -535,20 +534,7 @@ func (s *sessionStorage) TurnListRecoverableByAgent(ctx context.Context, agent s
 		true,
 	)
 
-	// 先只排序主键 seq，避免 MySQL filesort 携带 question/answer 大字段。
-	var seqs []uint
-	if err := tx.Order("seq asc").Limit(limit).Pluck("seq", &seqs).Error; err != nil {
-		return nil, err
-	}
-	if len(seqs) == 0 {
-		return nil, nil
-	}
-	var list []SessionTurn
-	if err := s.db.WithContext(ctx).Where("seq IN ?", seqs).Find(&list).Error; err != nil {
-		return nil, err
-	}
-	sort.Slice(list, func(i, j int) bool { return list[i].Seq < list[j].Seq })
-	return list, nil
+	return listBySeqOrder[SessionTurn](ctx, s.db, tx, "seq asc", limit)
 }
 
 func (s *sessionStorage) TurnRecoveryUpdate(ctx context.Context, reqID, runTurnID, status, lastError string, attempt int) error {
@@ -727,20 +713,7 @@ func (s *sessionStorage) TurnList(ctx context.Context, query TurnQuery) ([]Sessi
 		true,
 	)
 
-	// 先只排序主键 seq，避免 MySQL filesort 携带 question/answer 大字段。
-	var seqs []uint
-	if err := tx.Order("seq desc").Limit(query.NormalizeLimit()).Pluck("seq", &seqs).Error; err != nil {
-		return nil, err
-	}
-	if len(seqs) == 0 {
-		return nil, nil
-	}
-	var list []SessionTurn
-	if err := s.db.WithContext(ctx).Where("seq IN ?", seqs).Find(&list).Error; err != nil {
-		return nil, err
-	}
-	sort.Slice(list, func(i, j int) bool { return list[i].Seq < list[j].Seq })
-	return list, nil
+	return listBySeqOrder[SessionTurn](ctx, s.db, tx, "seq desc", query.NormalizeLimit())
 }
 
 func (s *sessionStorage) TurnEventSave(ctx context.Context, turn *TurnEvent) error {
@@ -794,21 +767,7 @@ func (s *sessionStorage) TurnEventList(ctx context.Context, query TurnEventQuery
 		true,
 	)
 
-	// MySQL 对 SELECT * + ORDER BY 会把 raw_data 大字段一并放进排序缓冲区，
-	// 事件多时容易触发 Out of sort memory。这里先只排序主键 seq，再按主键取整行。
-	var seqs []uint
-	if err := tx.Order("seq asc").Limit(query.NormalizeLimit()).Pluck("seq", &seqs).Error; err != nil {
-		return nil, err
-	}
-	if len(seqs) == 0 {
-		return nil, nil
-	}
-	var list []TurnEvent
-	if err := s.db.WithContext(ctx).Where("seq IN ?", seqs).Find(&list).Error; err != nil {
-		return nil, err
-	}
-	sort.Slice(list, func(i, j int) bool { return list[i].Seq < list[j].Seq })
-	return list, nil
+	return listBySeqOrder[TurnEvent](ctx, s.db, tx, "seq asc", query.NormalizeLimit())
 }
 
 func (s *sessionStorage) TurnEventDeleteByMethods(ctx context.Context, turnID string, methods []string) error {
@@ -850,19 +809,10 @@ func (s *sessionStorage) TurnEventOpenTurns(ctx context.Context, since time.Time
 		true,
 	)
 
-	// 同 TurnEventList：先只排序主键 seq，避免 MySQL filesort 携带 raw_data 大字段。
-	var seqs []uint
-	if err := tx.Order("seq asc").Limit(MaxTurnEventLimit).Pluck("seq", &seqs).Error; err != nil {
+	events, err := listBySeqOrder[TurnEvent](ctx, s.db, tx, "seq asc", MaxTurnEventLimit)
+	if err != nil {
 		return nil, err
 	}
-	if len(seqs) == 0 {
-		return nil, nil
-	}
-	var events []TurnEvent
-	if err := s.db.WithContext(ctx).Where("seq IN ?", seqs).Find(&events).Error; err != nil {
-		return nil, err
-	}
-	sort.Slice(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
 
 	type lifecycle struct {
 		threadID  string
