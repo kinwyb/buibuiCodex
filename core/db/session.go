@@ -535,10 +535,19 @@ func (s *sessionStorage) TurnListRecoverableByAgent(ctx context.Context, agent s
 		true,
 	)
 
-	var list []SessionTurn
-	if err := tx.Order("seq asc").Limit(limit).Find(&list).Error; err != nil {
+	// 先只排序主键 seq，避免 MySQL filesort 携带 question/answer 大字段。
+	var seqs []uint
+	if err := tx.Order("seq asc").Limit(limit).Pluck("seq", &seqs).Error; err != nil {
 		return nil, err
 	}
+	if len(seqs) == 0 {
+		return nil, nil
+	}
+	var list []SessionTurn
+	if err := s.db.WithContext(ctx).Where("seq IN ?", seqs).Find(&list).Error; err != nil {
+		return nil, err
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Seq < list[j].Seq })
 	return list, nil
 }
 
@@ -718,13 +727,19 @@ func (s *sessionStorage) TurnList(ctx context.Context, query TurnQuery) ([]Sessi
 		true,
 	)
 
-	var list []SessionTurn
-	if err := tx.Order("seq desc").Limit(query.NormalizeLimit()).Find(&list).Error; err != nil {
+	// 先只排序主键 seq，避免 MySQL filesort 携带 question/answer 大字段。
+	var seqs []uint
+	if err := tx.Order("seq desc").Limit(query.NormalizeLimit()).Pluck("seq", &seqs).Error; err != nil {
 		return nil, err
 	}
-	for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
-		list[i], list[j] = list[j], list[i]
+	if len(seqs) == 0 {
+		return nil, nil
 	}
+	var list []SessionTurn
+	if err := s.db.WithContext(ctx).Where("seq IN ?", seqs).Find(&list).Error; err != nil {
+		return nil, err
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Seq < list[j].Seq })
 	return list, nil
 }
 
