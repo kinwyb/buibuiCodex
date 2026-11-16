@@ -63,6 +63,8 @@ type AgentData struct {
 	Media []types.Media `json:"media,omitempty"`
 	// Approval 审批信息，仅 approval 事件携带
 	Approval *ApprovalData `json:"approval,omitempty"`
+	// UserInput 结构化提问，仅 user_input 事件携带
+	UserInput *UserInputData `json:"userInput,omitempty"`
 	// Usage token 用量，仅 token_usage 事件携带。
 	// 同一轮会多次推送（每次模型调用后更新），前端按 eventID 覆盖即可。
 	Usage *types.TokenUsage `json:"usage,omitempty"`
@@ -84,6 +86,17 @@ type ApprovalData struct {
 	Content string `json:"content,omitempty"`
 	// Extra 附加信息
 	Extra map[string]any `json:"extra,omitempty"`
+}
+
+// UserInputData 结构化提问，前端按问题渲染选项并回传作答
+type UserInputData struct {
+	// ID 请求标识，回传 chat.user_input 时作为 requestID 带回
+	ID string `json:"id"`
+	// Questions 问题列表
+	Questions []types.UserInputQuestion `json:"questions"`
+	// AutoResolutionMs 非零时上游超时后会自动以空答案落掉该请求，
+	// 并以 request_resolved 事件通知前端收起卡片
+	AutoResolutionMs int64 `json:"autoResolutionMs,omitempty"`
 }
 
 // ErrorBody 统一错误结构
@@ -217,6 +230,18 @@ type ChatApprovalData struct {
 	ChatID     string `json:"chatID,omitempty"`
 	ApprovalID string `json:"approvalID"`
 	Decision   string `json:"decision"`
+}
+
+// ChatUserInputData 上行回传结构化提问的作答。
+//
+// RequestID 即下行 userInput.id；Answers 按问题 ID 组织，每题一个字符串数组
+// （选项 label 或自由文本）。允许为空对象，表示跳过全部问题。
+// 会话推导与 chat.approval 一致：优先 SessionID，其次 ChatID。
+type ChatUserInputData struct {
+	SessionID string              `json:"sessionID,omitempty"`
+	ChatID    string              `json:"chatID,omitempty"`
+	RequestID string              `json:"requestID"`
+	Answers   map[string][]string `json:"answers"`
 }
 
 // PingData 上行心跳

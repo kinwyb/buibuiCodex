@@ -45,6 +45,33 @@ type Message struct {
 
 	// 审批ID,审批时有效
 	ApprovalID any `json:"approve_id,omitempty"`
+
+	// UserInput 结构化提问，仅 user_input 事件携带
+	UserInput *UserInputRequest `json:"user_input,omitempty"`
+}
+
+// UserInputRequest 模型向用户发起的结构化提问
+type UserInputRequest struct {
+	// ID 上游 JSON-RPC 请求 ID，回传答案时原样带回
+	ID any `json:"id"`
+	// Questions 问题列表
+	Questions []UserInputQuestion `json:"questions"`
+	// AutoResolutionMs 非零时上游会在超时后自动以空答案落掉该请求
+	AutoResolutionMs int64 `json:"autoResolutionMs,omitempty"`
+}
+
+// UserInputQuestion 单个问题；Options 为空表示纯自由文本作答
+type UserInputQuestion struct {
+	ID       string            `json:"id"`
+	Header   string            `json:"header,omitempty"`
+	Question string            `json:"question"`
+	Options  []UserInputOption `json:"options,omitempty"`
+}
+
+// UserInputOption 候选项
+type UserInputOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 // ToolType 工具类型，前端据此区分渲染样式

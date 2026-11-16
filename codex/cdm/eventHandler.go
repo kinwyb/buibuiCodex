@@ -33,6 +33,10 @@ var deltaEventMethods = []string{
 
 // clientEvent 这里可以获取到所有客户的事件,注意这里事件和thread，turn等事件是重复分发的,注意重复处理问题
 func (a *Agent) clientEvent(event *codex.Event) {
+	if event.Method == string(codex.ServerRequestResolved) {
+		a.serverRequestResolved(event)
+		return
+	}
 	if a.cfg == nil || a.cfg.SessionDB == nil {
 		return
 	}
@@ -340,8 +344,75 @@ func (a *Agent) codexRequestParse(state *types.State, request *codex.Event) {
 			event.Metadata = map[string]any{}
 		}
 		event.Metadata["approval_request"] = string(request.RawData)
+		a.epMu.Lock()
+		a.pendingInput[fmt.Sprint(request.ID)] = state.SessionID
+		a.epMu.Unlock()
+		state.EventHandler(event)
+	case codex.ItemToolRequestUserInput:
+		itemEvt, err := request.To[jsonRpc.RequestUserInputEvent]()
+		if err != nil {
+			slog.Error("request user input error", "error", err.Error())
+			return
+		}
+		event := state.BuildEvent()
+		event.EventID = fmt.Sprintf("%v", request.ID)
+		event.Type = types.EventUserInput
+		questions := make([]types.UserInputQuestion, 0, len(itemEvt.Questions))
+		texts := make([]string, 0, len(itemEvt.Questions))
+		for _, q := range itemEvt.Questions {
+			options := make([]types.UserInputOption, 0, len(q.Options))
+			for _, opt := range q.Options {
+				options = append(options, types.UserInputOption{Label: opt.Label, Description: opt.Description})
+			}
+			questions = append(questions, types.UserInputQuestion{
+				ID: q.ID, Header: q.Header, Question: q.Question, Options: options,
+			})
+			texts = append(texts, q.Question)
+		}
+		event.Message = &types.Message{
+			Role:    types.RoleSystem,
+			Content: strings.Join(texts, "\n"),
+			UserInput: &types.UserInputRequest{
+				ID:               request.ID,
+				Questions:        questions,
+				AutoResolutionMs: itemEvt.AutoResolutionMs,
+			},
+		}
+		a.epMu.Lock()
+		a.pendingInput[fmt.Sprint(request.ID)] = state.SessionID
+		a.epMu.Unlock()
 		state.EventHandler(event)
 	}
+}
+
+// serverRequestResolved 上游「挂起请求已落定」通知（已作答 / 超时自动落空 / turn 中断）。
+// 该通知不带 turnId，走不了 turn 路由，用挂起表找回会话后转发给前端收起提问卡片。
+func (a *Agent) serverRequestResolved(event *codex.Event) {
+	var resolved struct {
+		RequestID any `json:"requestId"`
+	}
+	if err := json.Unmarshal(event.RawData, &resolved); err != nil {
+		slog.Error("server request resolved unmarshal failed", "error", err.Error())
+		return
+	}
+	key := fmt.Sprint(resolved.RequestID)
+	a.epMu.Lock()
+	sessionID, ok := a.pendingInput[key]
+	delete(a.pendingInput, key)
+	var state *types.State
+	if ok {
+		if ct, exists := a.eps[sessionID]; exists {
+			state = ct.state
+		}
+	}
+	a.epMu.Unlock()
+	if state == nil || state.EventHandler == nil {
+		return
+	}
+	forward := state.BuildEvent()
+	forward.Type = types.EventRequestResolved
+	forward.EventID = key
+	state.EventHandler(forward)
 }
 
 // lifeEventParse 开始结束通知统一处理。

@@ -17,6 +17,8 @@ type Agent interface {
 	Prompt(ctx context.Context, state *State) error
 	// Approve 提交审批结果
 	Approve(approvalID any, approve jsonRpc.ApprovalDecision) error
+	// AnswerUserInput 提交结构化询问的作答；answers 为空表示跳过
+	AnswerUserInput(requestID any, answers map[string][]string) error
 	// Steer 运行中附加信息
 	Steer(ctx context.Context, state *State) error
 	// Cancel 取消

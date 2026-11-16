@@ -128,6 +128,8 @@ func main() {
 			slog.Error("start websocket server failed", "error", err)
 			return
 		}
+		// ws 前端能作答结构化提问；其余渠道的提问由 Manager 自动落空
+		manager.MarkInteractive(wsServer.Channel())
 		// ws 已就绪，把「服务端向浏览器提问」的能力交给界面工具
 		uiBridge.SetTransport(wsServer)
 		defer func() {

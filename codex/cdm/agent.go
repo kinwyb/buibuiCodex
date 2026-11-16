@@ -37,6 +37,9 @@ type Agent struct {
 	epMu    sync.Mutex
 	eps     map[string]*codexTurn
 	turnMap map[string]string //turnID => sessionID
+	// pendingInput 挂起的服务端请求（审批/询问）：requestID => sessionID。
+	// serverRequest/resolved 通知不带 turnId，靠它找回会话转发给前端。
+	pendingInput map[string]string
 	// turnRootMap 记录实际 app-server turn ID 到逻辑 TurnID 的映射。
 	// 恢复执行会生成新的 turn ID，但事件仍要落到原始 TurnID 下供前端回放。
 	turnRootMap  map[string]string //runTurnID => logical TurnID
@@ -67,6 +70,7 @@ func NewAgent(cfg *config.AgentConfig, historyTurnN int) *Agent {
 		eps:           make(map[string]*codexTurn),
 		turnMap:       make(map[string]string),
 		turnRootMap:   make(map[string]string),
+		pendingInput:  make(map[string]string),
 		historyTurnN:  historyTurnN,
 		stopDrain:     30 * time.Second,
 		stopForceWait: 5 * time.Second,
@@ -505,6 +509,19 @@ func (a *Agent) Approve(reqID any, approve jsonRpc.ApprovalDecision) error {
 	err := a.client.Response(reqID, approveResult)
 	if err != nil {
 		slog.Error("response approve request error", "error", err.Error())
+	}
+	return err
+}
+
+// AnswerUserInput 提交结构化询问的作答；answers 为空表示跳过全部问题。
+func (a *Agent) AnswerUserInput(reqID any, answers map[string][]string) error {
+	result := &jsonRpc.UserInputResult{Answers: make(map[string]jsonRpc.UserInputAnswer, len(answers))}
+	for questionID, ans := range answers {
+		result.Answers[questionID] = jsonRpc.UserInputAnswer{Answers: ans}
+	}
+	err := a.client.Response(reqID, result)
+	if err != nil {
+		slog.Error("response user input request error", "error", err.Error())
 	}
 	return err
 }

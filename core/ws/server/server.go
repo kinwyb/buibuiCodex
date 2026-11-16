@@ -355,6 +355,11 @@ func (s *Server) SessionCount() int {
 	return s.hub.SessionCount()
 }
 
+// Channel 返回 ws 服务实际使用的渠道名（Start 时已解析默认值）
+func (s *Server) Channel() string {
+	return s.opts.Channel
+}
+
 // handleWebSocket 处理连接升级
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	userID, chatID, ok := s.authenticate(r)

@@ -29,6 +29,8 @@ type Canceller interface {
 // approvalID 已由命令层还原成上游期望的类型；decision 取 accept / decline。
 type Approver interface {
 	Approve(sessionID string, approvalID any, decision string) error
+	// AnswerUserInput 回传结构化提问的作答；answers 为空表示跳过
+	AnswerUserInput(sessionID string, requestID any, answers map[string][]string) error
 }
 
 // AgentSource agent 列表来源，由 core.Manager 实现
@@ -112,6 +114,7 @@ func NewRegistry(deps Deps) *Registry {
 	r.Register(protocol.TypeChatSend, r.chatSend)
 	r.Register(protocol.TypeChatCancel, r.chatCancel)
 	r.Register(protocol.TypeChatApproval, r.chatApproval)
+	r.Register(protocol.TypeChatUserInput, r.chatUserInput)
 	r.Register(protocol.TypeAgentList, r.agentList)
 	r.Register(protocol.TypeAgentSkills, r.agentSkills)
 	r.Register(protocol.TypeSessionList, r.sessionList)

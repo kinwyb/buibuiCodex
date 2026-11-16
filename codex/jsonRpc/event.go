@@ -335,3 +335,41 @@ const (
 type ApprovalResult struct {
 	Decision ApprovalDecision `json:"decision"`
 }
+
+// ==========================================
+// 结构化用户询问 (item/tool/requestUserInput)
+// ==========================================
+
+// RequestUserInputEvent 模型向用户发起的结构化提问，turn 阻塞等待应答。
+// AutoResolutionMs 非零时 codex 会在超时后自动以空答案落掉该请求。
+type RequestUserInputEvent struct {
+	baseNotificationEvent
+	ItemID           string              `json:"itemId"`
+	Questions        []UserInputQuestion `json:"questions"`
+	AutoResolutionMs int64               `json:"autoResolutionMs,omitempty"`
+}
+
+// UserInputQuestion 单个问题；Options 为空表示纯自由文本作答
+type UserInputQuestion struct {
+	ID       string            `json:"id"`
+	Header   string            `json:"header,omitempty"`
+	Question string            `json:"question"`
+	Options  []UserInputOption `json:"options,omitempty"`
+}
+
+// UserInputOption 候选项
+type UserInputOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// UserInputResult 询问应答，按问题 ID 组织；空 answers 表示跳过。
+// 上游格式：{"answers":{"<questionId>":{"answers":["选项label或自由文本"]}}}
+type UserInputResult struct {
+	Answers map[string]UserInputAnswer `json:"answers"`
+}
+
+// UserInputAnswer 单题答案
+type UserInputAnswer struct {
+	Answers []string `json:"answers"`
+}

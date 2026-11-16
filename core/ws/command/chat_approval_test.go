@@ -12,11 +12,14 @@ import (
 
 // fakeApprover 记录回传调用，供断言会话 / 类型还原 / 决定取值
 type fakeApprover struct {
-	calls      int
-	sessionID  string
-	approvalID any
-	decision   string
-	err        error
+	calls        int
+	sessionID    string
+	approvalID   any
+	decision     string
+	err          error
+	inputCalls   int
+	inputRequest any
+	inputAnswers map[string][]string
 }
 
 func (f *fakeApprover) Approve(sessionID string, approvalID any, decision string) error {
@@ -24,6 +27,14 @@ func (f *fakeApprover) Approve(sessionID string, approvalID any, decision string
 	f.sessionID = sessionID
 	f.approvalID = approvalID
 	f.decision = decision
+	return f.err
+}
+
+func (f *fakeApprover) AnswerUserInput(sessionID string, requestID any, answers map[string][]string) error {
+	f.inputCalls++
+	f.sessionID = sessionID
+	f.inputRequest = requestID
+	f.inputAnswers = answers
 	return f.err
 }
 

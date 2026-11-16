@@ -42,6 +42,9 @@ type Manager struct {
 	pathMapper      map[string]*pathmap.PathMapper // 路径映射器
 	agHandler       []types.AgentProcessHandler    // agent处理拦截器
 	cronManager     *cron.Manager
+	// interactiveChannels 具备结构化作答能力的渠道（ws 前端），mu 保护。
+	// 其余渠道收到 user_input 时自动以空答案落掉，避免 turn 挂死。
+	interactiveChannels map[string]bool
 }
 
 // NewManager 创建 Agent 管理器
@@ -51,16 +54,24 @@ func NewManager(msgBus *bus.MessageBus, dbStorage *db.Data) *Manager {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ret := &Manager{
-		agents:       make(map[string]types.Agent),
-		bus:          msgBus,
-		ctx:          ctx,
-		cancel:       cancel,
-		cancelCh:     make(chan string, 10),
-		pathMapper:   make(map[string]*pathmap.PathMapper),
-		dataStorage:  dbStorage,
-		sessionAgent: make(map[string]string),
+		agents:              make(map[string]types.Agent),
+		bus:                 msgBus,
+		ctx:                 ctx,
+		cancel:              cancel,
+		cancelCh:            make(chan string, 10),
+		pathMapper:          make(map[string]*pathmap.PathMapper),
+		dataStorage:         dbStorage,
+		sessionAgent:        make(map[string]string),
+		interactiveChannels: make(map[string]bool),
 	}
 	return ret
+}
+
+// MarkInteractive 标记渠道具备结构化提问的作答能力（ws 服务启动后调用）。
+func (m *Manager) MarkInteractive(channel string) {
+	m.mu.Lock()
+	m.interactiveChannels[channel] = true
+	m.mu.Unlock()
 }
 
 // MessageBus 消息总线
@@ -424,6 +435,26 @@ func (m *Manager) Approve(sessionID string, approvalID any, decision string) err
 		return fmt.Errorf("invalid approval decision: %s", decision)
 	}
 
+	agent := m.agentForSession(sessionID)
+	if agent == nil {
+		return errors.New("no agent available to approve")
+	}
+	return agent.Approve(approvalID, dec)
+}
+
+// AnswerUserInput 把结构化提问的作答回传给指定会话正在运行的 agent。
+// 会话归属由 ws 命令层校验；answers 为空表示跳过全部问题。
+func (m *Manager) AnswerUserInput(sessionID string, requestID any, answers map[string][]string) error {
+	agent := m.agentForSession(sessionID)
+	if agent == nil {
+		return errors.New("no agent available to answer user input")
+	}
+	return agent.AnswerUserInput(requestID, answers)
+}
+
+// agentForSession 按 sessionID 找到当时跑这轮的 agent（与 CancelSession 同一套
+// sessionAgent 映射），找不到就退回默认 agent。
+func (m *Manager) agentForSession(sessionID string) types.Agent {
 	m.sessionAgentMux.Lock()
 	agentName := m.sessionAgent[sessionID]
 	m.sessionAgentMux.Unlock()
@@ -434,10 +465,7 @@ func (m *Manager) Approve(sessionID string, approvalID any, decision string) err
 			agent = ag
 		}
 	}
-	if agent == nil {
-		return errors.New("no agent available to approve")
-	}
-	return agent.Approve(approvalID, dec)
+	return agent
 }
 
 func (m *Manager) messageHandler(ctx context.Context, state *types.State) {
@@ -728,6 +756,19 @@ func (m *Manager) agentUIEventSteer(ctx context.Context, state *types.State) boo
 // 使用 firstStart 标记确保每个请求只发送一次 start 状态
 func (m *Manager) handleAgentEvent(ctx context.Context, event *types.Event, seq int, agentName string) {
 	event.ChunkIndex = seq
+	// 非交互渠道无法作答结构化提问：直接以空答案落掉，事件照常下发供展示。
+	if event.Type == types.EventUserInput && event.Message != nil && event.Message.UserInput != nil {
+		m.mu.RLock()
+		interactive := m.interactiveChannels[event.Channel]
+		m.mu.RUnlock()
+		if !interactive {
+			if ag, exists := m.agents[agentName]; exists {
+				if err := ag.AnswerUserInput(event.Message.UserInput.ID, nil); err != nil {
+					slog.Error("auto skip user input failed", "error", err.Error(), "sessionID", event.SessionID)
+				}
+			}
+		}
+	}
 	// 出站路径转换：宿主机路径（LLM 产生） -> 本地路径（channel 可用）
 	m.mapEventMediaToHost(agentName, event)
 	_ = m.bus.PublishEvent(ctx, event)

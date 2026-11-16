@@ -23,7 +23,12 @@ const (
 	EventToolCompleted        EventType = "tool_completed"
 	EventError                EventType = "error"
 	EventApproval             EventType = "approval"
-	EventFinished             EventType = "finished"
+	// EventUserInput 模型发起的结构化提问，等待用户作答后回传
+	EventUserInput EventType = "user_input"
+	// EventRequestResolved 挂起的服务端请求（审批/提问）已落定：
+	// 已作答、超时自动落空或 turn 中断。EventID 为请求 ID，前端据此收起交互卡片。
+	EventRequestResolved EventType = "request_resolved"
+	EventFinished        EventType = "finished"
 	// EventTokenUsage token 用量更新。不是消息内容，前端只更新用量面板，
 	// 不参与正文的追加/覆盖；同一轮可能多次到达，按 EventID 覆盖即可。
 	EventTokenUsage EventType = "token_usage"

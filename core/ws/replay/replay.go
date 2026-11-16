@@ -43,6 +43,7 @@ var keyMethods = []string{
 	string(codex.ItemFileChangeRequestApproval),
 	string(codex.ItemPermissionsRequestApproval),
 	string(codex.ApplyPatchApproval),
+	string(codex.ItemToolRequestUserInput),
 	string(codex.TurnCompleted),
 	string(codex.NotificationMethodError),
 }
@@ -135,6 +136,8 @@ func stepOf(ev db.TurnEvent, bodyLimit int) (*protocol.AgentData, string) {
 		string(codex.ApplyPatchApproval):
 		// 审批帧的标识在 data.approval.id 里，不再占用 eventID
 		return approvalStep(ev, bodyLimit), ""
+	case string(codex.ItemToolRequestUserInput):
+		return userInputStep(ev, bodyLimit), ""
 	case string(codex.ItemToolCall):
 		return toolCallStep(ev, bodyLimit)
 	case string(codex.TurnCompleted):
@@ -325,6 +328,32 @@ func approvalStep(ev db.TurnEvent, bodyLimit int) *protocol.AgentData {
 	}
 	data.Content, data.Truncated = clip(content, bodyLimit)
 	data.Approval = &protocol.ApprovalData{ID: approval.ItemID, Content: data.Content}
+	return data
+}
+
+// userInputStep 还原结构化提问。历史帧只读展示：turn 已结束，不再提供作答。
+func userInputStep(ev db.TurnEvent, bodyLimit int) *protocol.AgentData {
+	// 问题字段与 types.UserInputQuestion 的 JSON 标签一致，直接解到目标类型
+	var req struct {
+		ItemID           string                    `json:"itemId"`
+		Questions        []types.UserInputQuestion `json:"questions"`
+		AutoResolutionMs int64                     `json:"autoResolutionMs"`
+	}
+	if err := json.Unmarshal([]byte(ev.RawData), &req); err != nil || len(req.Questions) == 0 {
+		return nil
+	}
+	texts := make([]string, 0, len(req.Questions))
+	for _, q := range req.Questions {
+		texts = append(texts, q.Question)
+	}
+	data := &protocol.AgentData{
+		Event: string(types.EventUserInput),
+		Role:  string(types.RoleSystem),
+		Delta: false,
+		Meta:  map[string]any{"user_input_method": ev.Method},
+	}
+	data.Content, data.Truncated = clip(strings.Join(texts, "\n"), bodyLimit)
+	data.UserInput = &protocol.UserInputData{ID: req.ItemID, Questions: req.Questions}
 	return data
 }
 

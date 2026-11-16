@@ -186,6 +186,13 @@ func (b *Bridge) convert(event *types.Event) *protocol.Envelope {
 				Extra:   msg.Extra,
 			}
 		}
+		if msg.UserInput != nil {
+			data.UserInput = &protocol.UserInputData{
+				ID:               fmt.Sprint(msg.UserInput.ID),
+				Questions:        msg.UserInput.Questions,
+				AutoResolutionMs: msg.UserInput.AutoResolutionMs,
+			}
+		}
 	} else {
 		data.Delta = protocol.IsDelta(protocol.KindAgent, string(event.Type))
 	}

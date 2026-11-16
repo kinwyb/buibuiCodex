@@ -24,8 +24,9 @@ func (a *steerManagerAgent) Init() error     { return nil }
 func (a *steerManagerAgent) Skills(context.Context) ([]types.Skill, error) {
 	return nil, nil
 }
-func (a *steerManagerAgent) Prompt(context.Context, *types.State) error  { return nil }
-func (a *steerManagerAgent) Approve(any, jsonRpc.ApprovalDecision) error { return nil }
+func (a *steerManagerAgent) Prompt(context.Context, *types.State) error     { return nil }
+func (a *steerManagerAgent) Approve(any, jsonRpc.ApprovalDecision) error    { return nil }
+func (a *steerManagerAgent) AnswerUserInput(any, map[string][]string) error { return nil }
 func (a *steerManagerAgent) Steer(context.Context, *types.State) error {
 	a.steerCalls++
 	return a.steerErr

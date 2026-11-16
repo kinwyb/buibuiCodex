@@ -267,6 +267,29 @@ func TestBuildApprovalAndFailures(t *testing.T) {
 	}
 }
 
+func TestBuildUserInputQuestions(t *testing.T) {
+	frames, _ := build(t, []db.TurnEvent{
+		ev(1, "item/tool/requestUserInput", `{"itemId":"q-item","questions":[{"id":"q1","header":"部署","question":"选择部署环境？","options":[{"label":"测试","description":"测试环境"},{"label":"生产"}]},{"id":"q2","question":"备注？"}]}`),
+	}, Options{})
+	if len(frames) != 1 {
+		t.Fatalf("应还原 1 帧，实际 %d", len(frames))
+	}
+	frame := decodeFrame(t, frames[0])
+	if frame.Event != string(types.EventUserInput) {
+		t.Fatalf("提问帧类型不符合预期: %s", frame.Event)
+	}
+	if frame.UserInput == nil || len(frame.UserInput.Questions) != 2 {
+		t.Fatalf("问题列表丢失: %+v", frame.UserInput)
+	}
+	q1 := frame.UserInput.Questions[0]
+	if q1.ID != "q1" || len(q1.Options) != 2 || q1.Options[0].Label != "测试" {
+		t.Fatalf("问题选项还原不符合预期: %+v", q1)
+	}
+	if !strings.Contains(frame.Content, "选择部署环境？") || !strings.Contains(frame.Content, "备注？") {
+		t.Fatalf("提问摘要应包含全部问题文本: %q", frame.Content)
+	}
+}
+
 // 正常结束不需要额外帧：message_completed 已经代表收敛
 func TestBuildSkipsSuccessfulTurnCompleted(t *testing.T) {
 	frames, _ := build(t, []db.TurnEvent{

@@ -173,6 +173,17 @@ func (c *Client) requestLoop() {
 					event.Raw = command
 					event.ThreadID = command.ThreadID
 					event.TurnID = command.TurnID
+				case string(ItemToolRequestUserInput):
+					event.Type = EventTypeRequest
+					userInput := jsonRpc.RequestUserInputEvent{}
+					err := json.Unmarshal(req.Params, &userInput)
+					if err != nil {
+						slog.Error(fmt.Sprintf("codex app-server user input unmarshal failed: %v", err))
+						break
+					}
+					event.Raw = userInput
+					event.ThreadID = userInput.ThreadID
+					event.TurnID = userInput.TurnID
 				case string(ItemCompleted), string(ItemStarted):
 					event.Type = EventTypeNotification
 					var itemEvt jsonRpc.ItemLifecycleEvent

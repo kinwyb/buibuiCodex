@@ -61,6 +61,7 @@ const (
 	TypeChatSend       = "chat.send"           // 发送用户消息
 	TypeChatCancel     = "chat.cancel"         // 中断当前会话
 	TypeChatApproval   = "chat.approval"       // 回传审批决定（允许 / 拒绝）
+	TypeChatUserInput  = "chat.user_input"     // 回传结构化提问的作答
 	TypePing           = "ping"                // 应用层心跳
 	TypeAgentList      = "agent.list"          // 拉取可用 agent
 	TypeAgentSkills    = "agent.skills"        // 拉取 agent 实际加载的技能

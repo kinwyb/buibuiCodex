@@ -30,9 +30,10 @@ func (a *blockingManagerAgent) Prompt(context.Context, *types.State) error {
 	<-a.release
 	return nil
 }
-func (a *blockingManagerAgent) Approve(any, jsonRpc.ApprovalDecision) error { return nil }
-func (a *blockingManagerAgent) Steer(context.Context, *types.State) error   { return nil }
-func (a *blockingManagerAgent) Cancel(context.Context, string) error        { return nil }
+func (a *blockingManagerAgent) Approve(any, jsonRpc.ApprovalDecision) error    { return nil }
+func (a *blockingManagerAgent) AnswerUserInput(any, map[string][]string) error { return nil }
+func (a *blockingManagerAgent) Steer(context.Context, *types.State) error      { return nil }
+func (a *blockingManagerAgent) Cancel(context.Context, string) error           { return nil }
 func (a *blockingManagerAgent) Stop() error {
 	// 模拟真实 Agent.Stop：先等待活跃 Prompt 结束。
 	<-a.release
