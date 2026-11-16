@@ -34,6 +34,9 @@ type rpc interface {
 
 	// Requests 收到的数据
 	Requests() <-chan *jsonRpc.RPCRequest
+
+	// Done 连接关闭信号：读循环出错或 Close 后触发，供上层判断是否需要重建 client。
+	Done() <-chan struct{}
 }
 
 type jsonRpcV2 struct {
@@ -76,11 +79,18 @@ func (j *jsonRpcV2) Connect(url string, authToken string) error {
 		return fmt.Errorf("dial codex app-server failed: %w", err)
 	}
 	j.conn = conn
+	j.isConnected = true
 	go j.readLoop()
 	return nil
 }
 
 func (j *jsonRpcV2) Call(ctx context.Context, method ClientRequestMethod, params any, result any) error {
+	j.mu.Lock()
+	conn := j.conn
+	j.mu.Unlock()
+	if conn == nil {
+		return errors.New("codex app-server connection is closed")
+	}
 	reqID := uuid.NewV4().String()
 	paramRaw, err := json.Marshal(params)
 	if err != nil {
@@ -106,7 +116,7 @@ func (j *jsonRpcV2) Call(ctx context.Context, method ClientRequestMethod, params
 
 	// 发送消息
 	j.sendMu.Lock()
-	err = j.conn.WriteJSON(req)
+	err = conn.WriteJSON(req)
 	j.sendMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("write websocket json failed: %w", err)
@@ -130,6 +140,12 @@ func (j *jsonRpcV2) Call(ctx context.Context, method ClientRequestMethod, params
 }
 
 func (j *jsonRpcV2) Response(id any, result any) error {
+	j.mu.Lock()
+	conn := j.conn
+	j.mu.Unlock()
+	if conn == nil {
+		return errors.New("codex app-server connection is closed")
+	}
 	resultRaw, merr := json.Marshal(result)
 	if merr != nil {
 		return fmt.Errorf("marshal RPC result failed: %w", merr)
@@ -141,7 +157,7 @@ func (j *jsonRpcV2) Response(id any, result any) error {
 	}
 	// 发送消息
 	j.sendMu.Lock()
-	err := j.conn.WriteJSON(req)
+	err := conn.WriteJSON(req)
 	j.sendMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("write websocket json failed: %w", err)
@@ -195,12 +211,32 @@ func (j *jsonRpcV2) readLoop() {
 func (j *jsonRpcV2) Close() {
 	j.cancel()
 	j.mu.Lock()
-	defer j.mu.Unlock()
-	if j.isConnected {
-		j.conn.Close()
-		j.conn = nil
-		j.isConnected = false
+	conn := j.conn
+	j.conn = nil
+	j.isConnected = false
+	j.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
 	}
+	// 挂起的请求立即失败，调用方不必干等到 ctx 超时。
+	// 非阻塞投递：Call 可能已因超时返回，通道里或许还压着一条未取的响应。
+	j.sendMu.Lock()
+	for id, ch := range j.pendingRequests {
+		select {
+		case ch <- &jsonRpc.RPCResponse{
+			JSONRPC: "2.0",
+			ID:      id,
+			Error:   &jsonRpc.RPCError{Code: -32000, Message: "codex app-server connection closed"},
+		}:
+		default:
+		}
+		delete(j.pendingRequests, id)
+	}
+	j.sendMu.Unlock()
+}
+
+func (j *jsonRpcV2) Done() <-chan struct{} {
+	return j.ctx.Done()
 }
 
 // 创建一个rpc连接

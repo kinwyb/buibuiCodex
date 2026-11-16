@@ -126,6 +126,11 @@ func (a *Agent) AgentID() string {
 
 // Skills 返回该 Agent 的 Codex 实例实际加载的技能。
 func (a *Agent) Skills(ctx context.Context) ([]types.Skill, error) {
+	// 走 initProcess：与 app-server 的连接断掉时先重建，
+	// 否则断线后每次拉技能都打在死连接上（broken pipe），刷新页面也救不回来。
+	if err := a.initProcess(); err != nil {
+		return nil, err
+	}
 	a.initMu.Lock()
 	client := a.client
 	a.initMu.Unlock()
@@ -189,10 +194,28 @@ func (a *Agent) RegisterTool(namespace string, desc string, tool ...types.Tool) 
 }
 
 func (a *Agent) initProcess() error {
+	// Stop 之后禁止重建（Init 会先显式重置 stopping 再走到这里）。
+	a.lifeMu.Lock()
+	stopping := a.stopping
+	a.lifeMu.Unlock()
+	if stopping {
+		return errAgentStopping
+	}
 	a.initMu.Lock()
 	defer a.initMu.Unlock()
 	if a.isInit {
-		return nil
+		if a.client != nil {
+			select {
+			case <-a.client.Done():
+				// 与 app-server 的连接已死（容器重启 / 网络断开）：关掉旧 client 往下重建。
+				// 容器若还在运行，proc.Start 会按名字复用；已退出则重新创建。
+				slog.Warn("codex app-server connection lost, rebuilding client", "agent", a.cfg.Name)
+				_ = a.client.Close()
+			default:
+				return nil
+			}
+		}
+		a.isInit = false
 	}
 	// docker容器运行方式
 	startParam := docker.StartParam{

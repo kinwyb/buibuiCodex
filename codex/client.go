@@ -295,6 +295,12 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// Done 返回底层连接的关闭信号（断线或 Close 后触发）。
+// 连接本身不自动重连；Agent 层据此判断是否重建 client。
+func (c *Client) Done() <-chan struct{} {
+	return c.conn.Done()
+}
+
 // Call 发送
 func (c *Client) Call(ctx context.Context, method ClientRequestMethod, params any, result any) error {
 	return c.conn.Call(ctx, method, params, result)
