@@ -295,6 +295,25 @@ func (m *Manager) AgentFS(agentName string) (*agentfs.FS, bool) {
 	return agentfs.New(mapper.Mappings()), true
 }
 
+// AgentTmpDir 返回 agent 容器里 /tmp 对应的宿主机目录。
+//
+// 界面工具把 *.page 的超大 rows 写到这里：容器把该目录挂到 /tmp，
+// 模型在自己的 shell 里可以直接按 /tmp/... 读取。
+func (m *Manager) AgentTmpDir(agentName string) (string, bool) {
+	m.mu.RLock()
+	mapper, ok := m.pathMapper[agentName]
+	m.mu.RUnlock()
+	if !ok || mapper.IsNoop() {
+		return "", false
+	}
+	for _, mapping := range mapper.Mappings() {
+		if mapping.Container == "/tmp" {
+			return mapping.Host, true
+		}
+	}
+	return "", false
+}
+
 // Start 启动消息处理器
 func (m *Manager) Start(ctx context.Context) error {
 	// 使用传入的 ctx 作为父 context，这样 Gateway 取消时会传递到这里

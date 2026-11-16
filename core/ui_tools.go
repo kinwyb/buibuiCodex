@@ -65,8 +65,9 @@ type UITransport interface {
 // 而 ws 服务在那之后才启动。所以先用本对象占位，ws 起来后调用 SetTransport 注入。
 // 注入前调用工具会得到一个明确的错误，而不是 panic。
 type UIBridge struct {
-	mu        sync.RWMutex
-	transport UITransport
+	mu          sync.RWMutex
+	transport   UITransport
+	agentTmpDir func(agentName string) (string, bool)
 }
 
 // NewUIBridge 创建界面工具桥
@@ -78,6 +79,14 @@ func NewUIBridge() *UIBridge {
 func (b *UIBridge) SetTransport(t UITransport) {
 	b.mu.Lock()
 	b.transport = t
+	b.mu.Unlock()
+}
+
+// SetAgentTmpDir 注入 agent 名称到其 /tmp 宿主机目录的解析函数。
+// 界面工具用它把 *.page 的超大 rows 落到模型可以直接读取的 /tmp/ui_data。
+func (b *UIBridge) SetAgentTmpDir(resolve func(agentName string) (string, bool)) {
+	b.mu.Lock()
+	b.agentTmpDir = resolve
 	b.mu.Unlock()
 }
 
@@ -161,6 +170,8 @@ func (t *UIActTool) Description() string {
 	return "执行一条界面命令。cmd 必须取自最近一次 ui_observe 返回的 actions[].id，" +
 		"并带上同一次快照的 rev；params 按该 action 的 params 声明构造（键名即参数名），" +
 		"没有 params 声明就表示这条命令不需要参数。返回执行结果，页面状态按 result / patch / snapshot 三档给。" +
+		"*.page 取数超过 5KB 时只回前 5 行和 meta（total/shown/file/fileHint），完整 rows 以 JSON 数组存入 agent 的 /tmp/ui_data 下：" +
+		"用脚本或代码筛选、聚合，不要整份读进上下文。" +
 		"回执里的状态是尽力而为的最新视图（命令可能还在异步落定）；需要权威状态时再 ui_observe 一次。 " +
 		"失败（rev 已过期、命令不再可用、参数不合法）会返回具体原因与此刻的增量变化：按原因修正后再来，" +
 		"只有 rev 过期才需要重新 ui_observe。" +
@@ -209,6 +220,11 @@ func (t *UIActTool) Execute(ctx context.Context, state *types.State, params map[
 	resp, err := t.bridge.request(ctx, channelOf(state), sessionIDOf(state), req)
 	if err != nil {
 		return nil, err
+	}
+	if resp != nil && resp.OK && strings.HasSuffix(cmd, ".page") {
+		if trimmed, ok := t.bridge.spillPageRows(state, cmd, resp.Result); ok {
+			resp.Result = trimmed
+		}
 	}
 	return uiResponseMessage(resp), nil
 }

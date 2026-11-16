@@ -160,10 +160,11 @@ func EncodeSchemaData(schema CompactSchema, data, page json.RawMessage) (string,
 		Data:   previewData,
 		Page:   pageValue,
 		Meta: &schemaDataMeta{
-			Total:    total,
-			Shown:    shown,
-			File:     fileURL,
-			FileHint: "文件内容是上方 data 数组；请用脚本或代码筛选、聚合、分页读取，只加载回答所需的字段和记录，不要一次性读取完整文件",
+			Total: total,
+			Shown: shown,
+			File:  fileURL,
+			FileHint: "文件内容是上方 data 数组本身：顶层就是 JSON 数组（[...]），不含 format/layout/schema/page；" +
+				"请用脚本或代码筛选、聚合、分页读取，只加载回答所需的字段和记录，不要一次性读取完整文件",
 		},
 	}
 	previewBytes, err := json.Marshal(preview)

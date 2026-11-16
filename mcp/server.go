@@ -104,6 +104,7 @@ func (m *Mcp) Start(ctx context.Context) error {
 		return err
 	}
 	m.tokenCache = cache
+	startTmpCleanup(ctx, m.tmpPath)
 	serv.UserQueryFun = m.codexThreadParseUser
 	// 初始化 MCP 服务
 	s := server.NewMCPServer(m.cfg.Name, m.cfg.Version, server.WithToolCapabilities(true),

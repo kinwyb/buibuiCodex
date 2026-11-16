@@ -73,7 +73,11 @@ func TestUIBridgeEndToEnd(t *testing.T) {
 	bridge.SetTransport(s)
 	core.RegisterUITools(bridge)
 
-	state := &types.State{SessionID: sessionID}
+	// 真实链路里 chat.send 会带上来源渠道；界面工具只接受 Web 会话来源。
+	state := &types.State{
+		SessionID: sessionID,
+		Input:     &types.InputMessage{Channel: "ws"},
+	}
 
 	// 1) ui_observe：agent 要快照
 	snapshotText := "!v=7 rev=5 view=V0189_V0279_V0280 t=\"预订单管理\"\n\n## actions\na|refresh|刷新"

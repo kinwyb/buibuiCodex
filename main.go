@@ -74,6 +74,7 @@ func main() {
 	// 界面工具（ui_observe / ui_act）：必须在 InitFromConfig 之前注册，
 	// 工具组是 agent 创建时统一挂载的。传输层要等 ws 起来后再注入。
 	uiBridge := core.NewUIBridge()
+	uiBridge.SetAgentTmpDir(manager.AgentTmpDir)
 	core.RegisterUITools(uiBridge)
 	err = manager.InitFromConfig(ctx, &cfg.ManagerConfig)
 	if err != nil {
