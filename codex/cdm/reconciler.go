@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/kinwyb/buibuiCodex/codex"
 	"github.com/kinwyb/buibuiCodex/codex/jsonRpc"
 	"github.com/kinwyb/buibuiCodex/core/db"
 )
@@ -53,8 +55,10 @@ type threadReconcileJob struct {
 }
 
 type turnOutcome struct {
-	done bool
-	err  error
+	done  bool
+	open  int
+	fixed int
+	err   error
 }
 
 // turnReconciler 以 thread 为调度单位、以 turn 为重试单位，对账 turn_events
@@ -205,7 +209,11 @@ func (r *turnReconciler) scanOpenTurns() {
 		r.Enqueue(turn.ThreadID, turn.TurnID, turn.RunTurnID)
 	}
 	if len(turns) > 0 {
-		slog.Info("发现未完成 turn 事件，已按 thread 加入补全队列", "count", len(turns))
+		ids := make([]string, 0, len(turns))
+		for _, turn := range turns {
+			ids = append(ids, turn.ThreadID+"/"+turn.TurnID+"/"+turn.RunTurnID)
+		}
+		slog.Info("发现未完成 turn 事件，已按 thread 加入补全队列", "count", len(turns), "turns", ids)
 	}
 }
 
@@ -257,6 +265,7 @@ func (r *turnReconciler) processThreadJob(ctx context.Context, threadID string, 
 	if len(turnIDs) == 0 {
 		return outcomes
 	}
+	slog.Info("开始补全 turn 事件", "threadID", threadID, "turns", turnIDs)
 
 	events, err := r.store.TurnEventList(ctx, db.TurnEventQuery{
 		RunTurnIDs: turnIDs,
@@ -279,12 +288,12 @@ func (r *turnReconciler) processThreadJob(ctx context.Context, threadID string, 
 		byTurn[runTurnID] = append(byTurn[runTurnID], event)
 	}
 
-	openByTurn := make(map[string]map[string]struct{}, len(turnIDs))
+	openByTurn := make(map[string]map[string]db.TurnEvent, len(turnIDs))
 	needRead := make([]string, 0, len(turnIDs))
 	for _, turnID := range turnIDs {
-		open := openItemIDs(byTurn[turnID])
+		open := openLifecycleItems(byTurn[turnID])
 		if len(open) == 0 {
-			outcomes[turnID] = turnOutcome{done: true}
+			outcomes[turnID] = turnOutcome{done: true, open: 0}
 			continue
 		}
 		openByTurn[turnID] = open
@@ -314,8 +323,8 @@ func (r *turnReconciler) processThreadJob(ctx context.Context, threadID string, 
 		if logicalTurnID == "" {
 			logicalTurnID = runTurnID
 		}
-		done, _, err := r.reconcileOpenItems(ctx, threadID, logicalTurnID, runTurnID, turn, openByTurn[runTurnID])
-		outcomes[runTurnID] = turnOutcome{done: done, err: err}
+		done, fixed, err := r.reconcileOpenItems(ctx, threadID, logicalTurnID, runTurnID, turn, openByTurn[runTurnID])
+		outcomes[runTurnID] = turnOutcome{done: done, open: len(openByTurn[runTurnID]), fixed: fixed, err: err}
 	}
 	return outcomes
 }
@@ -336,11 +345,28 @@ func (r *turnReconciler) finishThreadJob(job *threadReconcileJob, turnIDs []stri
 		}
 		outcome := outcomes[turnID]
 		if outcome.done {
+			slog.Info("turn 事件补全任务结束",
+				"threadID", job.threadID,
+				"logicalTurnID", state.logicalTurnID,
+				"runTurnID", turnID,
+				"items", outcome.fixed,
+				"attempts", state.attempts+1,
+			)
 			delete(job.turns, turnID)
 			continue
 		}
-		if outcome.err != nil {
+		switch {
+		case outcome.err != nil:
 			slog.Warn("turn 事件补全失败", "threadID", job.threadID, "turnID", turnID, "error", outcome.err.Error())
+		default:
+			slog.Warn("turn 事件补全未完成，稍后重试",
+				"threadID", job.threadID,
+				"logicalTurnID", state.logicalTurnID,
+				"runTurnID", turnID,
+				"open", outcome.open,
+				"items", outcome.fixed,
+				"attempts", state.attempts+1,
+			)
 		}
 		if now.After(state.deadline) {
 			slog.Error("turn 事件补全超时，停止重试",
@@ -378,7 +404,7 @@ func (r *turnReconciler) reconcileRun(ctx context.Context, threadID, logicalTurn
 	if err != nil {
 		return false, fmt.Errorf("读取 turn 事件失败: %w", err)
 	}
-	open := openItemIDs(events)
+	open := openLifecycleItems(events)
 	if len(open) == 0 {
 		return true, nil
 	}
@@ -397,12 +423,40 @@ func (r *turnReconciler) reconcileRun(ctx context.Context, threadID, logicalTurn
 	return done, err
 }
 
-func (r *turnReconciler) reconcileOpenItems(ctx context.Context, threadID, logicalTurnID, runTurnID string, turn *jsonRpc.Turn, open map[string]struct{}) (bool, int, error) {
+func (r *turnReconciler) reconcileOpenItems(ctx context.Context, threadID, logicalTurnID, runTurnID string, turn *jsonRpc.Turn, open map[string]db.TurnEvent) (bool, int, error) {
 	fixed := 0
-	for itemID := range open {
+	for itemID, started := range open {
 		rawItem, ok := findThreadItem(turn, itemID)
 		if !ok {
-			continue
+			if turn.Status == "inProgress" {
+				slog.Info("turn 仍在运行，等待 app-server 持久化 item",
+					"threadID", threadID,
+					"logicalTurnID", logicalTurnID,
+					"runTurnID", runTurnID,
+					"itemID", itemID,
+				)
+				continue
+			}
+			fallback, fallbackOK, err := r.reasoningCompletionFromStarted(ctx, runTurnID, itemID, started.RawData)
+			if err != nil {
+				return false, fixed, fmt.Errorf("根据本地事件补全 reasoning item 失败: %w", err)
+			}
+			if !fallbackOK {
+				slog.Warn("app-server 中未找到 item",
+					"threadID", threadID,
+					"logicalTurnID", logicalTurnID,
+					"runTurnID", runTurnID,
+					"itemID", itemID,
+				)
+				continue
+			}
+			rawItem = fallback
+			slog.Info("app-server 缺少 reasoning item，已按本地事件补全",
+				"threadID", threadID,
+				"logicalTurnID", logicalTurnID,
+				"runTurnID", runTurnID,
+				"itemID", itemID,
+			)
 		}
 		final, normalized, err := finalItemPayload(rawItem, turn.Status)
 		if err != nil {
@@ -410,6 +464,13 @@ func (r *turnReconciler) reconcileOpenItems(ctx context.Context, threadID, logic
 			continue
 		}
 		if !final {
+			slog.Info("turn 事件补全等待 item 进入终态",
+				"threadID", threadID,
+				"logicalTurnID", logicalTurnID,
+				"runTurnID", runTurnID,
+				"itemID", itemID,
+				"turnStatus", turn.Status,
+			)
 			continue
 		}
 		rawData, err := completionEventRaw(threadID, runTurnID, normalized)
@@ -437,6 +498,81 @@ func (r *turnReconciler) reconcileOpenItems(ctx context.Context, threadID, logic
 	return fixed == len(open), fixed, nil
 }
 
+// reasoningCompletionFromStarted 处理 app-server 未持久化的空 reasoning item。
+// reasoning 的 started 载荷只有 item ID，完整文本在 delta 事件里；若上游没有
+// 保存该 item，就按本地 delta 重建，连 delta 都没有时补一个空终态即可收尾。
+func (r *turnReconciler) reasoningCompletionFromStarted(ctx context.Context, runTurnID, itemID, startedRaw string) (json.RawMessage, bool, error) {
+	var started struct {
+		Item struct {
+			ID          string   `json:"id"`
+			Type        string   `json:"type"`
+			StartedAtMs int64    `json:"startedAtMs"`
+			Summary     []string `json:"summary"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(startedRaw), &started); err != nil {
+		return nil, false, err
+	}
+	if started.Item.Type != string(jsonRpc.Reasoning) || started.Item.ID != itemID {
+		return nil, false, nil
+	}
+
+	events, err := r.store.TurnEventList(ctx, db.TurnEventQuery{
+		RunTurnIDs: []string{runTurnID},
+		Methods: []string{
+			string(codex.ItemReasoningSummaryTextDelta),
+			string(codex.ItemReasoningTextDelta),
+		},
+		Limit: -1,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("读取 reasoning delta 失败: %w", err)
+	}
+
+	summaryByIndex := make(map[int]string)
+	var contentParts []string
+	for _, event := range events {
+		var delta jsonRpc.TextDeltaEvent
+		if json.Unmarshal([]byte(event.RawData), &delta) != nil || delta.ItemID != itemID {
+			continue
+		}
+		switch event.Method {
+		case string(codex.ItemReasoningSummaryTextDelta):
+			summaryByIndex[delta.SummaryIndex] += delta.Delta
+		case string(codex.ItemReasoningTextDelta):
+			contentParts = append(contentParts, delta.Delta)
+		}
+	}
+
+	maxSummaryIndex := -1
+	for index := range summaryByIndex {
+		if index > maxSummaryIndex {
+			maxSummaryIndex = index
+		}
+	}
+	summary := make([]string, maxSummaryIndex+1)
+	for index, text := range summaryByIndex {
+		summary[index] = text
+	}
+	content := make([]string, 0, 1)
+	if text := strings.Join(contentParts, ""); text != "" {
+		content = append(content, text)
+	}
+
+	normalized, err := json.Marshal(map[string]any{
+		"id":            itemID,
+		"type":          string(jsonRpc.Reasoning),
+		"summary":       summary,
+		"content":       content,
+		"startedAtMs":   started.Item.StartedAtMs,
+		"completedAtMs": r.now().UnixMilli(),
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return normalized, true, nil
+}
+
 func (j *threadReconcileJob) recalcNext() {
 	var next time.Time
 	for _, state := range j.turns {
@@ -462,8 +598,8 @@ func stableLifecycleEventID(turnID, itemID, method string) string {
 	return "evt:" + hex.EncodeToString(sum[:16])
 }
 
-func openItemIDs(events []db.TurnEvent) map[string]struct{} {
-	started := make(map[string]struct{})
+func openLifecycleItems(events []db.TurnEvent) map[string]db.TurnEvent {
+	started := make(map[string]db.TurnEvent)
 	completed := make(map[string]struct{})
 	for _, event := range events {
 		itemID := eventItemID(event.RawData)
@@ -472,18 +608,15 @@ func openItemIDs(events []db.TurnEvent) map[string]struct{} {
 		}
 		switch event.Method {
 		case "item/started":
-			started[itemID] = struct{}{}
+			started[itemID] = event
 		case "item/completed":
 			completed[itemID] = struct{}{}
 		}
 	}
-	open := make(map[string]struct{})
-	for itemID := range started {
-		if _, ok := completed[itemID]; !ok {
-			open[itemID] = struct{}{}
-		}
+	for itemID := range completed {
+		delete(started, itemID)
 	}
-	return open
+	return started
 }
 
 func eventItemID(raw string) string {

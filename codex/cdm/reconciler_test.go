@@ -1,10 +1,13 @@
 package cdm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +60,23 @@ func saveOpenCommandFor(t *testing.T, store db.ISession, turnID, itemID, eventID
 	})
 	if err != nil {
 		t.Fatalf("写入 started 事件失败: %v", err)
+	}
+}
+
+func saveOpenReasoning(t *testing.T, store db.ISession, itemID string) {
+	t.Helper()
+	err := store.TurnEventSave(context.Background(), &db.TurnEvent{
+		ID:         "started-" + itemID,
+		ThreadID:   "t1",
+		TurnID:     "u1",
+		RunTurnID:  "u1",
+		Type:       "notification",
+		Method:     "item/started",
+		RawData:    fmt.Sprintf(`{"item":{"id":%q,"type":"reasoning","content":[],"summary":[],"startedAtMs":1794555369944,"completedAtMs":null}}`, itemID),
+		CreateTime: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("写入 reasoning started 事件失败: %v", err)
 	}
 }
 
@@ -123,6 +143,106 @@ func TestReconcileTurnFillsCompletedCommand(t *testing.T) {
 	}
 	if len(events) != 2 {
 		t.Fatalf("重复补全不应新增事件，实际 %d 条", len(events))
+	}
+}
+
+func TestReconcileTurnFallsBackToStartedReasoning(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		withDeltas  bool
+		wantSummary []string
+		wantContent []string
+	}{
+		{name: "有delta", withDeltas: true, wantSummary: []string{"想一下"}, wantContent: []string{"思考"}},
+		{name: "无delta", wantSummary: []string{}, wantContent: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newReconcileTestStore(t)
+			saveOpenReasoning(t, store, "msg_1")
+			if tc.withDeltas {
+				for _, event := range []*db.TurnEvent{
+					{ID: "d1", ThreadID: "t1", TurnID: "u1", RunTurnID: "u1", Method: "item/reasoning/summaryTextDelta", RawData: `{"itemId":"msg_1","delta":"想","summaryIndex":0}`, CreateTime: time.Now()},
+					{ID: "d2", ThreadID: "t1", TurnID: "u1", RunTurnID: "u1", Method: "item/reasoning/summaryTextDelta", RawData: `{"itemId":"msg_1","delta":"一下","summaryIndex":0}`, CreateTime: time.Now()},
+					{ID: "d3", ThreadID: "t1", TurnID: "u1", RunTurnID: "u1", Method: "item/reasoning/textDelta", RawData: `{"itemId":"msg_1","delta":"思考"}`, CreateTime: time.Now()},
+				} {
+					if err := store.TurnEventSave(context.Background(), event); err != nil {
+						t.Fatalf("写入 reasoning delta 失败: %v", err)
+					}
+				}
+			}
+			reconciler := newTurnReconciler(store, func(context.Context, string, []string) (map[string]*jsonRpc.Turn, error) {
+				return map[string]*jsonRpc.Turn{
+					"u1": reconcileTurnResult("completed"),
+				}, nil
+			})
+
+			done, err := reconciler.reconcileTurn(context.Background(), "t1", "u1")
+			if err != nil {
+				t.Fatalf("补全 reasoning 失败: %v", err)
+			}
+			if !done {
+				t.Fatal("app-server 缺少 reasoning item 时应按本地事件收尾")
+			}
+
+			events, err := store.TurnEventList(context.Background(), db.TurnEventQuery{
+				TurnIDs: []string{"u1"},
+				Methods: []string{"item/completed"},
+			})
+			if err != nil {
+				t.Fatalf("查询完成事件失败: %v", err)
+			}
+			if len(events) != 1 {
+				t.Fatalf("应补一条 reasoning 完成帧，实际 %d 条", len(events))
+			}
+			var payload struct {
+				Item struct {
+					Type        string   `json:"type"`
+					Summary     []string `json:"summary"`
+					Content     []string `json:"content"`
+					CompletedAt int64    `json:"completedAtMs"`
+				} `json:"item"`
+			}
+			if err := json.Unmarshal([]byte(events[0].RawData), &payload); err != nil {
+				t.Fatalf("解析补全事件失败: %v", err)
+			}
+			if payload.Item.Type != "reasoning" || payload.Item.CompletedAt == 0 {
+				t.Fatalf("补全 item 不完整: %+v", payload.Item)
+			}
+			if fmt.Sprint(payload.Item.Summary) != fmt.Sprint(tc.wantSummary) {
+				t.Fatalf("summary 不符: want %v, got %v", tc.wantSummary, payload.Item.Summary)
+			}
+			if fmt.Sprint(payload.Item.Content) != fmt.Sprint(tc.wantContent) {
+				t.Fatalf("content 不符: want %v, got %v", tc.wantContent, payload.Item.Content)
+			}
+		})
+	}
+}
+
+func TestReconcileTurnDoesNotFallbackWhileTurnInProgress(t *testing.T) {
+	store := newReconcileTestStore(t)
+	saveOpenReasoning(t, store, "msg_1")
+	reconciler := newTurnReconciler(store, func(context.Context, string, []string) (map[string]*jsonRpc.Turn, error) {
+		return map[string]*jsonRpc.Turn{
+			"u1": reconcileTurnResult("inProgress"),
+		}, nil
+	})
+
+	done, err := reconciler.reconcileTurn(context.Background(), "t1", "u1")
+	if err != nil {
+		t.Fatalf("检查运行中的 turn 失败: %v", err)
+	}
+	if done {
+		t.Fatal("turn 仍在运行时不能提前补 reasoning 完成帧")
+	}
+	events, err := store.TurnEventList(context.Background(), db.TurnEventQuery{
+		TurnIDs: []string{"u1"},
+		Methods: []string{"item/completed"},
+	})
+	if err != nil {
+		t.Fatalf("查询完成事件失败: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("turn 仍在运行时不应写完成帧，实际 %d 条", len(events))
 	}
 }
 
@@ -278,6 +398,9 @@ func TestProcessThreadJobBatchesTurns(t *testing.T) {
 	if !outcomes["u1"].done || !outcomes["u2"].done {
 		t.Fatalf("两个 turn 都应补全完成: %+v", outcomes)
 	}
+	if outcomes["u1"].fixed != 1 || outcomes["u2"].fixed != 1 {
+		t.Fatalf("两个 turn 各应补一条完成帧: %+v", outcomes)
+	}
 
 	events, err := store.TurnEventList(context.Background(), db.TurnEventQuery{
 		TurnIDs: []string{"u1", "u2"},
@@ -361,5 +484,75 @@ func TestFinishThreadJobReschedulesPerTurn(t *testing.T) {
 	})
 	if reconciler.jobs["t1"] != nil {
 		t.Fatal("所有 turn 完成后应删除 thread 任务")
+	}
+}
+
+func TestFinishThreadJobLogsCompletion(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	reconciler := newTurnReconciler(nil, nil)
+	now := time.Now()
+	reconciler.now = func() time.Time { return now }
+	job := &threadReconcileJob{
+		threadID: "t1",
+		turns: map[string]*turnReconcileState{
+			"run-1": {
+				logicalTurnID: "logical-1",
+				runTurnID:     "run-1",
+				next:          now,
+				deadline:      now.Add(time.Hour),
+			},
+		},
+		next: now,
+	}
+	reconciler.jobs["t1"] = job
+
+	reconciler.finishThreadJob(job, []string{"run-1"}, map[string]turnOutcome{
+		"run-1": {done: true, fixed: 1},
+	})
+
+	output := buf.String()
+	for _, want := range []string{"turn 事件补全任务结束", "threadID=t1", "logicalTurnID=logical-1", "runTurnID=run-1", "items=1", "attempts=1"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("补全完成日志缺少 %q: %s", want, output)
+		}
+	}
+}
+
+func TestFinishThreadJobLogsPendingRetry(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	reconciler := newTurnReconciler(nil, nil)
+	now := time.Now()
+	reconciler.now = func() time.Time { return now }
+	job := &threadReconcileJob{
+		threadID: "t1",
+		turns: map[string]*turnReconcileState{
+			"run-1": {
+				logicalTurnID: "logical-1",
+				runTurnID:     "run-1",
+				next:          now,
+				deadline:      now.Add(time.Hour),
+			},
+		},
+		next: now,
+	}
+	reconciler.jobs["t1"] = job
+
+	reconciler.finishThreadJob(job, []string{"run-1"}, map[string]turnOutcome{
+		"run-1": {open: 1, fixed: 0},
+	})
+
+	output := buf.String()
+	for _, want := range []string{"turn 事件补全未完成，稍后重试", "threadID=t1", "runTurnID=run-1", "open=1", "items=0", "attempts=1"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("待重试日志缺少 %q: %s", want, output)
+		}
 	}
 }
