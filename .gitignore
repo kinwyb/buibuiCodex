@@ -6,3 +6,6 @@
 
 # WorkBuddy 本地会话记忆，不进版本库
 /.workbuddy/
+
+# Docker 构建用的大体积本地依赖包，不进版本库
+/codex/proc/docker/assets/*.deb
