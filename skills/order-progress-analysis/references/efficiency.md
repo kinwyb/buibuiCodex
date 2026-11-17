@@ -17,7 +17,22 @@
 
 ## 数据获取
 
-使用 `boda` MCP 服务的 **`order_efficiency`** 工具查询生产效率数据。
+优先通过 `ui-operation` 从「常规报表」（`view: V0018_V0112`）查询 `101080.员工生产效率明细表`；界面不可用时再用 `boda` MCP 的 **`order_efficiency`** 工具兜底。完整流程见 SKILL.md 的「数据获取方式（界面优先，MCP 兜底）」。
+
+### 优先：界面常规报表
+
+| 报表编号与名称 | `reports.find` 关键字 |
+|----------------|-----------------------|
+| `101080.员工生产效率明细表` | `员工生产效率明细表` |
+
+- 日期范围按报表 `args` 中名称含「日期」的开始/结束条件对应；具体字段 id 以 `reports.find` 返回的 `args[].field` 为准
+- 部门、员工条件按 `args[].name` 的业务含义对应；报表没有对应条件时先向用户确认，不要强行套用 MCP 参数名
+- 界面 `data.page` 分页取完整个查询结果后，再按 `汇总类型` 分组分析；分页过程中不要重复发起 `report.query`
+- 界面列名与本文档字段名不一致时，落盘前按页面列目录映射为 `汇总类型`、`大部门`、`部门`、`工作日期`、`人数`、`上班时间(小时)`、`产出标准工时(小时)`、`效率` 等字段；如果报表只返回员工明细，先按 `部门` + `工作日期` 聚合出汇总行再生成图表
+
+### 兜底：MCP 工具
+
+界面不可用时，使用 `boda` MCP 服务的 **`order_efficiency`** 工具查询生产效率数据。
 
 ### 调用示例
 
@@ -139,10 +154,10 @@ date "+%Y-%m-%d %H:%M:%S"
 
 ### 第二步：一次性获取效率数据并保存
 
-调用 `order_efficiency` 工具获取汇总数据，并**将返回的 JSON 原样写入 `efficiency_data.json`**，后续分析和图表生成复用同一份数据：
+优先从界面常规报表 `101080.员工生产效率明细表` 取数；界面不可用时调用 `order_efficiency` 工具。**将本次取到的完整数据写入 `efficiency_data.json`**，后续分析和图表生成复用同一份数据：
 
 ```jsonc
-// 汇总查询（默认模式，必做一次）
+// MCP 兜底时的汇总查询（界面查询则按报表条件设置日期范围）
 { "startDate": "<开始日期>", "endDate": "<结束日期>" }
 ```
 
@@ -155,7 +170,7 @@ date "+%Y-%m-%d %H:%M:%S"
 
 如遇到权限相关错误（见 SKILL.md 权限错误处理章节），**立即停止**。
 
-> 重要：效率分析默认只查询一次汇总数据。不要为了生成图表再次调用 `order_efficiency` 工具；报告分析和 `efficiency_chart.py` 都应读取同一个 `efficiency_data.json`。
+> 重要：效率分析默认只查询一次数据。不要为了生成图表再次查询界面报表或调用 `order_efficiency` 工具；报告分析和 `efficiency_chart.py` 都应读取同一个 `efficiency_data.json`。
 
 ### 第三步：基于已保存 JSON 生成图表
 
@@ -309,8 +324,8 @@ python3 <path-to-skill>/scripts/efficiency_chart.py \
 ### 使用方法
 
 ```bash
-# 1) 先调用 order_efficiency 工具取数，并将返回的 JSON 原样写入 efficiency_data.json
-#    （汇总查询一次即可，供报告分析和图表生成共同使用）
+# 1) 先从界面报表 101080.员工生产效率明细表 取数（界面不可用时调用 order_efficiency），
+#    并将完整 JSON 写入 efficiency_data.json（查询一次即可，供报告分析和图表生成共同使用）
 
 # 2) 使用同一份 JSON 文件生成组合图表
 python3 <path-to-skill>/scripts/efficiency_chart.py \
@@ -359,7 +374,7 @@ python3 <path-to-skill>/scripts/efficiency_chart.py \
 
 - 输出目录 `--output-dir` 由调用方（大模型）按系统规则传入，脚本不硬编码路径
 - 脚本接受工具返回的原始 JSON（含 `data` 字段的对象或直接数组）
-- 生产效率分析默认流程必须先将 `order_efficiency` 工具返回的汇总数据写入一份 JSON 文件，再复用同一份 JSON 做报告分析和图表生成
+- 生产效率分析默认流程必须先将界面报表或 `order_efficiency` 工具返回的完整数据写入一份 JSON 文件，再复用同一份 JSON 做报告分析和图表生成
 - 输出给用户时，文字分析报告和 `efficiency_chart.py` 生成的组合图片应分开发送；常规聊天先发送图片、再发送报告，避免报告结束后漏发图表；除 PDF/文档文件外，不要把图片路径或 Markdown 图片链接嵌入报告正文
 - 后续如有生产效率柱状图需求，可直接调用此脚本，无需重复编写生成代码，也无需重复查询相同数据
 
