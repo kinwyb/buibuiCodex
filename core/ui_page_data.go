@@ -23,8 +23,6 @@ const (
 	uiPageRowsInlineLimit = 5 * 1024
 	// uiPagePreviewRows 回执里保留的预览行数。
 	uiPagePreviewRows = 5
-	// uiPageDataTTL 落盘文件保留时长，由下一次落盘顺带清理。
-	uiPageDataTTL = 24 * time.Hour
 	// uiPageContainerDir 容器内（模型 shell 里）看到的目录。
 	uiPageContainerDir = "/tmp/ui_data"
 )
@@ -56,7 +54,6 @@ func (b *UIBridge) spillPageRows(state *types.State, cmd string, raw json.RawMes
 	if err != nil {
 		return nil, false
 	}
-	cleanupPageData(dir)
 	fileName := fmt.Sprintf("%d.json", time.Now().UnixNano())
 	if err := os.WriteFile(filepath.Join(dir, fileName), rows, 0644); err != nil {
 		return nil, false
@@ -111,24 +108,4 @@ func (b *UIBridge) pageDataDir(state *types.State) (string, error) {
 		return "", err
 	}
 	return dir, nil
-}
-
-// cleanupPageData 清掉超过 24 小时的旧文件。
-// 只在落盘时扫一次，目录里只有上一两天的页面数据，成本可以忽略。
-func cleanupPageData(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	deadline := time.Now().Add(-uiPageDataTTL)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || info.ModTime().After(deadline) {
-			continue
-		}
-		_ = os.Remove(filepath.Join(dir, entry.Name()))
-	}
 }

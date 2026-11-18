@@ -20,6 +20,7 @@ import (
 	"github.com/kinwyb/buibuiCodex/core/config"
 	"github.com/kinwyb/buibuiCodex/core/cron"
 	"github.com/kinwyb/buibuiCodex/core/db"
+	"github.com/kinwyb/buibuiCodex/core/fileclean"
 	"github.com/kinwyb/buibuiCodex/core/pathmap"
 	"github.com/kinwyb/buibuiCodex/core/types"
 )
@@ -303,7 +304,27 @@ func (m *Manager) AgentTmpDir(agentName string) (string, bool) {
 	m.mu.RLock()
 	mapper, ok := m.pathMapper[agentName]
 	m.mu.RUnlock()
-	if !ok || mapper.IsNoop() {
+	if !ok {
+		return "", false
+	}
+	return tmpDirOf(mapper)
+}
+
+// agentTmpDirs 返回所有 agent 的 /tmp 宿主机目录，供统一回收使用。
+func (m *Manager) agentTmpDirs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	dirs := make([]string, 0, len(m.pathMapper))
+	for _, mapper := range m.pathMapper {
+		if dir, ok := tmpDirOf(mapper); ok {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
+}
+
+func tmpDirOf(mapper *pathmap.PathMapper) (string, bool) {
+	if mapper == nil || mapper.IsNoop() {
 		return "", false
 	}
 	for _, mapping := range mapper.Mappings() {
@@ -331,6 +352,15 @@ func (m *Manager) Start(ctx context.Context) error {
 	// 启动取消信号处理器
 	m.wg.Add(1)
 	go m.processCancel()
+
+	// agent 的 /tmp 下会积累附件和 ui_data，统一按 TTL 回收。
+	if dirs := m.agentTmpDirs(); len(dirs) > 0 {
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			fileclean.Run(m.ctx, dirs...)
+		}()
+	}
 
 	if m.cronManager != nil {
 		m.cronManager.Start()

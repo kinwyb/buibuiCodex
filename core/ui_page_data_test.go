@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kinwyb/buibuiCodex/core/pathmap"
 	"github.com/kinwyb/buibuiCodex/core/types"
@@ -187,32 +187,6 @@ func TestUIActFallsBackToInlineWhenSpillFails(t *testing.T) {
 	}
 }
 
-func TestCleanupPageDataRemovesExpiredFiles(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ui_data")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	oldFile := filepath.Join(dir, "old.json")
-	freshFile := filepath.Join(dir, "fresh.json")
-	for _, name := range []string{oldFile, freshFile} {
-		if err := os.WriteFile(name, []byte("[]"), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	expired := time.Now().Add(-uiPageDataTTL - time.Minute)
-	if err := os.Chtimes(oldFile, expired, expired); err != nil {
-		t.Fatal(err)
-	}
-
-	cleanupPageData(dir)
-	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
-		t.Fatalf("超过 24 小时的文件应被清理")
-	}
-	if _, err := os.Stat(freshFile); err != nil {
-		t.Fatalf("未过期文件不应被清理: %v", err)
-	}
-}
-
 func TestManagerAgentTmpDir(t *testing.T) {
 	m := NewManager(nil, nil)
 	m.pathMapper["agentA"] = pathmap.New(&pathmap.Config{Mappings: []pathmap.PathMapping{
@@ -226,5 +200,22 @@ func TestManagerAgentTmpDir(t *testing.T) {
 	}
 	if _, ok := m.AgentTmpDir("missing"); ok {
 		t.Fatalf("未知 agent 应返回 false")
+	}
+}
+
+func TestManagerAgentTmpDirs(t *testing.T) {
+	m := NewManager(nil, nil)
+	for _, name := range []string{"agentA", "agentB"} {
+		m.pathMapper[name] = pathmap.New(&pathmap.Config{Mappings: []pathmap.PathMapping{
+			{Host: "/host/" + name + "/workspace", Container: "/workspace"},
+			{Host: "/host/" + name + "/tmp", Container: "/tmp"},
+		}})
+	}
+
+	got := m.agentTmpDirs()
+	slices.Sort(got)
+	want := []string{"/host/agentA/tmp", "/host/agentB/tmp"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("应返回所有 agent 的 tmp 目录，实际 %v", got)
 	}
 }
