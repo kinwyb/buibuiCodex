@@ -5,12 +5,15 @@ FROM node:26.7-bookworm-slim
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Noto CJK 字体包较大，构建时从镜像源下载不稳定，预先放入构建上下文再复制。
-COPY assets/fonts-noto-cjk.deb /tmp/fonts-noto-cjk.deb
-COPY assets/pandoc.deb /tmp/pandoc.deb
-
 # 1. 安装 Python、文档解析、格式转换和基础工具链
 RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources
+
+# 大体积依赖下载时多给几次重试，避免字体和 pandoc 因网络抖动中断。
+RUN printf '%s\n' \
+    'Acquire::Retries "10";' \
+    'Acquire::http::Timeout "300";' \
+    'Acquire::https::Timeout "300";' \
+    > /etc/apt/apt.conf.d/99-network
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bubblewrap \
@@ -27,11 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file \
     ripgrep \
     sqlite3 \
-    liblua5.3-0 \
-    libyaml-0-2 \
     poppler-utils \
     ghostscript \
-    pandoc-data \
     antiword \
     catdoc \
     libreoffice-writer \
@@ -41,9 +41,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-eng \
     tesseract-ocr-chi-sim \
     tesseract-ocr-chi-tra \
-    && dpkg -i /tmp/fonts-noto-cjk.deb /tmp/pandoc.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+# 字体和 pandoc 体积较大，单独一层安装；apt 会按目标架构自动选择 deb 包。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        fonts-noto-cjk \
+        pandoc \
     && fc-cache -f \
-    && rm -f /tmp/fonts-noto-cjk.deb /tmp/pandoc.deb \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm config set registry https://registry.npmmirror.com
