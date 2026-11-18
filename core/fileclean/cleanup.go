@@ -14,7 +14,7 @@ import (
 
 const (
 	// DefaultTTL 历史文件保留时长。
-	DefaultTTL = 24 * time.Hour
+	DefaultTTL = 7 * 24 * time.Hour
 	// DefaultInterval 后台回收扫描间隔。
 	DefaultInterval = time.Hour
 )
