@@ -56,13 +56,15 @@ RUN npm config set registry https://registry.npmmirror.com
 RUN npm install -g @openai/codex
 
 # 2. 预装文档分析依赖。系统 Python 受 PEP 668 管理，统一放进独立 venv。
+# NumPy 2.4+ 的 x86_64 wheel 要求 x86-64-v2，老 CPU 会在导入时直接报错；固定在 2.3.5。
+# PyMuPDF 2.x 会引入 onnxruntime，1.x 足够覆盖 PDF 解析和渲染，兼容性也更好。
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
         openpyxl xlrd xlsxwriter \
         python-docx python-pptx odfpy \
-        pypdf PyPDF2 pdfplumber PyMuPDF \
-        pandas numpy matplotlib seaborn pillow \
+        pypdf PyPDF2 pdfplumber PyMuPDF==1.28.2 \
+        pandas numpy==2.3.5 matplotlib seaborn pillow \
         pytesseract tabulate beautifulsoup4 lxml \
     && /opt/venv/bin/python -c "import openpyxl, docx, pptx, pypdf, pdfplumber, fitz, pandas, numpy, matplotlib, PIL"
 
