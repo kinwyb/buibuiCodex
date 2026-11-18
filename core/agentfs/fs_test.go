@@ -63,6 +63,9 @@ func TestListAndStat(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "workspace", "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "workspace", ".hidden"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	items, err := fs.List("/workspace")
 	if err != nil {
@@ -72,6 +75,9 @@ func TestListAndStat(t *testing.T) {
 		t.Fatalf("应有 2 项，实际 %d", len(items))
 	}
 	for _, item := range items {
+		if strings.HasPrefix(item.Name, ".") {
+			t.Fatalf("隐藏文件不应出现在列表里: %+v", item)
+		}
 		if !strings.HasPrefix(item.Path, "/workspace/") {
 			t.Fatalf("条目路径应是容器路径: %+v", item)
 		}

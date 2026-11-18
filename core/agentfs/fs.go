@@ -129,6 +129,11 @@ func (f *FS) List(containerPath string) ([]Entry, error) {
 
 	out := make([]Entry, 0, len(items))
 	for _, item := range items {
+		// 隐藏文件不进列表：工作区里的 .codex、.git 等属于内部状态，
+		// 前端目录视图不需要展示，避免误操作。
+		if strings.HasPrefix(item.Name(), ".") {
+			continue
+		}
 		info, err := item.Info()
 		if err != nil {
 			// 单个条目读不到（权限、竞态删除）不该让整个列表失败
