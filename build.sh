@@ -15,7 +15,7 @@ else
   arch=amd64
 fi
 
-OUTPUT_NAME="buibuiCode"
+OUTPUT_NAME="buibuiCodex"
 if [ "$os" = "linux" ]; then
   OUTPUT_NAME="${OUTPUT_NAME}_linux"
 elif [ "$os" = "windows" ]; then
