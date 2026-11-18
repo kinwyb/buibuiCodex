@@ -400,6 +400,64 @@ func Test_lifeEventParse_uiEventBatchAsToolStep(t *testing.T) {
 	}
 }
 
+// 真实回显形状：userMessage 正文在 content 数组里，正文进 Content，附件解析进 Media，角色是 user
+func Test_lifeEventParse_userMessageContentArray(t *testing.T) {
+	raw := `{"item":{"id":"u1","type":"userMessage","content":[{"type":"text","text":"分析这个文件内容","text_elements":[]},{"type":"text","text":"文件[报价汇总.xlsx]地址:/tmp/a1759e3e_报价汇总.xlsx","text_elements":[]}]}}`
+	a := &Agent{}
+	state := types.NewState(&types.InputMessage{ID: "req_u", Session: "ws_user_chat", Channel: "ws"})
+	var got *types.Event
+	state.EventHandler = func(event *types.Event) { got = event }
+
+	a.codexEventParse(state, &codex.Event{
+		Type:    codex.EventTypeNotification,
+		Method:  string(codex.ItemCompleted),
+		RawData: []byte(raw),
+	})
+
+	if got == nil || got.Type != types.EventUserMessageCompleted {
+		t.Fatalf("应映射成用户消息完成帧: %+v", got)
+	}
+	if got.Message.Role != types.RoleUser {
+		t.Fatalf("用户消息角色应为 user: %+v", got.Message)
+	}
+	if got.Message.Content != "分析这个文件内容" {
+		t.Fatalf("正文应只留用户原文: %q", got.Message.Content)
+	}
+	if len(got.Message.Media) != 1 {
+		t.Fatalf("附件应解析进 media: %+v", got.Message.Media)
+	}
+	media := got.Message.Media[0]
+	if media.Type != types.MediaTypeFile || media.URL != "/tmp/a1759e3e_报价汇总.xlsx" || media.Metadata["filename"] != "报价汇总.xlsx" {
+		t.Fatalf("附件 media 结构不符: %+v", media)
+	}
+}
+
+// content 数组里的 ui_events 批次应映射成工具帧：事件不是用户消息
+func Test_lifeEventParse_uiEventBatchFromContentArray(t *testing.T) {
+	raw := `{"item":{"id":"ui_1","type":"userMessage","content":[{"type":"text","text":"<ui_events>{\"v\":1,\"events\":[{\"ts\":1,\"view\":\"V1\",\"event\":\"selection.change\"}]}</ui_events>\n请分析"}]}}`
+	a := &Agent{}
+	state := types.NewState(&types.InputMessage{ID: "req_ui", Session: "ws_user_chat", Channel: "ws"})
+	var got *types.Event
+	state.EventHandler = func(event *types.Event) { got = event }
+
+	a.codexEventParse(state, &codex.Event{
+		Type:    codex.EventTypeNotification,
+		Method:  string(codex.ItemCompleted),
+		RawData: []byte(raw),
+	})
+
+	if got == nil || got.Type != types.EventToolCompleted {
+		t.Fatalf("UI 事件批次应映射成 tool_completed: %+v", got)
+	}
+	if len(got.Message.ToolCalls) != 1 {
+		t.Fatalf("应带一个工具步骤: %+v", got.Message)
+	}
+	call := got.Message.ToolCalls[0]
+	if call.Name != "ui_event" || call.Extra["uiEvent"] != true || call.Extra["userText"] != "请分析" {
+		t.Fatalf("UI 事件工具步骤内容不符: %+v", call)
+	}
+}
+
 // Test_lifeEventParse_mcpToolCall 用线上真实报文覆盖 MCP 工具调用。
 // mcpToolCall 曾经没有映射分支，落到 default 只打日志，事件类型为空被丢弃，
 // 前端因此完全看不到 MCP 调用；这里锁住开始帧、成功帧、失败帧三种形态。

@@ -58,6 +58,52 @@ type itemlifecycle struct {
 	AgentMessageItemDetail
 	WebSearchItemDetail
 	ToolCallItemDetail
+	// UserAttachments userMessage 回显里解析出的附件（文件行 / 图片段），
+	// 由 UnmarshalJSON 填充，不参与 JSON 映射。
+	UserAttachments []InputItem `json:"-"`
+}
+
+// UnmarshalJSON 补齐 userMessage 的正文与附件。
+// 真实回显没有顶层 text，正文在 content 数组里：用户正文是普通 text 段，
+// 文件是 FileInputText 格式的 text 段，图片是 image/localImage 段。
+// 这里把正文拼回 Text、附件拆进 UserAttachments，下游（实时/回放）无需再感知数组形状。
+// 带顶层 text 的旧形态保持原样；其余 item 类型走默认映射。
+func (i *itemlifecycle) UnmarshalJSON(data []byte) error {
+	type plain itemlifecycle
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*i = itemlifecycle(p)
+	if i.Type != UserMessage || i.Text != "" {
+		return nil
+	}
+	parts := make([]string, 0, len(i.Content))
+	for _, c := range i.Content {
+		m, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch m["type"] {
+		case "text":
+			text, _ := m["text"].(string)
+			if name, url, isFile := ParseFileInputText(text); isFile {
+				i.UserAttachments = append(i.UserAttachments, InputItem{Type: "file", Name: name, URL: url})
+			} else if text != "" {
+				parts = append(parts, text)
+			}
+		case "localImage":
+			if path, _ := m["path"].(string); path != "" {
+				i.UserAttachments = append(i.UserAttachments, InputItem{Type: "localImage", Path: path})
+			}
+		case "image":
+			if url, _ := m["url"].(string); url != "" {
+				i.UserAttachments = append(i.UserAttachments, InputItem{Type: "image", URL: url})
+			}
+		}
+	}
+	i.Text = strings.Join(parts, "\n")
+	return nil
 }
 
 // item 状态取值，commandExecution / dynamicToolCall / mcpToolCall 共用

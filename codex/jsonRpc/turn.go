@@ -1,11 +1,38 @@
 package jsonRpc
 
+import "strings"
+
 type InputItem struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
 	URL  string `json:"url,omitempty"`
 	Path string `json:"path,omitempty"`
 	Name string `json:"name,omitempty"`
+}
+
+// FileInputText 文件附件写入 turn 输入的文本格式。
+// userMessage 回显解析按同一格式把附件还原成结构化数据，两端共用以免格式漂移。
+func FileInputText(name, url string) string {
+	return "文件[" + name + "]地址:" + url
+}
+
+// ParseFileInputText 反解 FileInputText 格式；不是文件行时返回 ok=false。
+func ParseFileInputText(text string) (name, url string, ok bool) {
+	const open = "文件["
+	const sep = "]地址:"
+	if !strings.HasPrefix(text, open) {
+		return "", "", false
+	}
+	idx := strings.Index(text[len(open):], sep)
+	if idx < 0 {
+		return "", "", false
+	}
+	name = text[len(open) : len(open)+idx]
+	url = text[len(open)+idx+len(sep):]
+	if name == "" || url == "" {
+		return "", "", false
+	}
+	return name, url, true
 }
 
 // StartTurnParams 发起 Turn 请求参数

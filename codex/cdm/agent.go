@@ -604,7 +604,7 @@ func (a *Agent) buildInput(turn *codex.Turn, message *types.InputMessage, inputs
 				filename = uuid.NewV4().String()
 			}
 			if item.URL != "" {
-				result = turn.BuildInputWithText("文件["+filename+"]地址:"+item.URL, result...)
+				result = turn.BuildInputWithText(jsonRpc.FileInputText(filename, item.URL), result...)
 			}
 		}
 	}

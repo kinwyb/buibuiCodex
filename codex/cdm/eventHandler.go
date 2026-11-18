@@ -495,7 +495,7 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 		})
 		eType = types.EventToolStart
 	case jsonRpc.UserMessage:
-		msg.Content = notification.RawData.String()
+		msg.Media = types.MediaFromAttachments(item.UserAttachments)
 		if batch, userText, ok := types.ParseUIEventContent(item.Text); ok {
 			msg.Role = types.RoleTool
 			extra := map[string]any{
@@ -515,6 +515,9 @@ func (a *Agent) lifeEventParse(event *types.Event, notification *codex.Event) {
 			event.Metadata["ui_event"] = true
 			eType = types.EventToolStart
 		} else {
+			// 与回放同构：正文取拼好的 Text，角色是 user，不再塞原始 JSON
+			msg.Role = types.RoleUser
+			msg.Content = item.Text
 			eType = types.EventUserMessageStart
 		}
 	default:

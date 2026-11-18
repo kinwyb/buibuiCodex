@@ -186,6 +186,55 @@ func TestBuildMapsUIEventsToToolSteps(t *testing.T) {
 	}
 }
 
+// 真实 codex 回显的 userMessage 是 content 数组：正文还原成内容，附件解析成 media，不能是空气泡
+func TestBuildUserMessageContentArray(t *testing.T) {
+	raw := `{"item":{"id":"u1","type":"userMessage","content":[{"type":"text","text":"分析这个文件内容","text_elements":[]},{"type":"text","text":"文件[报价汇总.xlsx]地址:/tmp/a1759e3e_报价汇总.xlsx","text_elements":[]}]}}`
+	frames, _ := build(t, []db.TurnEvent{ev(1, "item/completed", raw)}, Options{})
+	if len(frames) != 1 {
+		t.Fatalf("应还原一帧用户消息，实际 %d", len(frames))
+	}
+	data := decodeFrame(t, frames[0])
+	if data.Event != string(types.EventUserMessageCompleted) || data.Role != string(types.RoleUser) {
+		t.Fatalf("应映射成用户消息完成帧: %+v", data)
+	}
+	if data.Content != "分析这个文件内容" {
+		t.Fatalf("正文应只留用户原文: %q", data.Content)
+	}
+	if len(data.Media) != 1 {
+		t.Fatalf("附件应解析进 media: %+v", data.Media)
+	}
+	media := data.Media[0]
+	if media.Type != types.MediaTypeFile || media.URL != "/tmp/a1759e3e_报价汇总.xlsx" || media.Metadata["filename"] != "报价汇总.xlsx" {
+		t.Fatalf("附件 media 结构不符: %+v", media)
+	}
+}
+
+// content 数组里的 ui_events 批次同样要还原成事件工具帧：事件不是用户消息
+func TestBuildMapsUIEventsFromContentArray(t *testing.T) {
+	content := `<ui_events>{"v":1,"events":[{"ts":1,"view":"V1","event":"selection.change","payload":{"rowId":"9"}}]}</ui_events>
+请分析`
+	raw, _ := json.Marshal(map[string]any{
+		"item": map[string]any{
+			"id": "u1", "type": "userMessage",
+			"content": []map[string]any{{"type": "text", "text": content}},
+		},
+	})
+	frames, _ := build(t, []db.TurnEvent{ev(1, "item/completed", string(raw))}, Options{})
+	if len(frames) != 1 {
+		t.Fatalf("应生成一个事件工具帧，实际 %d", len(frames))
+	}
+	data := decodeFrame(t, frames[0])
+	if data.Event != string(types.EventToolCompleted) || data.Role != string(types.RoleTool) {
+		t.Fatalf("事件批次应映射成工具完成帧: %+v", data)
+	}
+	if len(data.ToolCalls) != 1 || data.ToolCalls[0].Name != "ui_event" {
+		t.Fatalf("工具调用内容不符合预期: %+v", data.ToolCalls)
+	}
+	if data.ToolCalls[0].Extra["userText"] != "请分析" {
+		t.Fatalf("事件后的用户正文应单独带回: %+v", data.ToolCalls[0].Extra)
+	}
+}
+
 // 超长输出按上限截断，并打上有损标记
 func TestBuildTruncatesLongBody(t *testing.T) {
 	output := strings.Repeat("日志行\n", 300)

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 	"uuid"
+
+	"github.com/kinwyb/buibuiCodex/codex/jsonRpc"
 )
 
 // RoleType 消息角色
@@ -118,6 +120,31 @@ type Media struct {
 	Base64   string         `json:"base64"`             // Base64编码内容
 	MimeType string         `json:"mimetype"`           // MIME类型
 	Metadata map[string]any `json:"metadata,omitempty"` // 额外元数据（如加密参数等）
+}
+
+// MediaFromAttachments 把 userMessage 回显解析出的附件还原成 Media，
+// 实时流与历史回放共用，前端按同一 media 结构渲染文件/图片。
+// 文件名放 metadata.filename，与 chat.send 上传还原出的 Media 约定一致。
+func MediaFromAttachments(items []jsonRpc.InputItem) []Media {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]Media, 0, len(items))
+	for _, it := range items {
+		switch it.Type {
+		case "image":
+			out = append(out, Media{Type: MediaTypeImage, URL: it.URL})
+		case "localImage":
+			out = append(out, Media{Type: MediaTypeImage, URL: it.Path})
+		default:
+			out = append(out, Media{
+				Type:     MediaTypeFile,
+				URL:      it.URL,
+				Metadata: map[string]any{"filename": it.Name},
+			})
+		}
+	}
+	return out
 }
 
 // Skill 是 Codex 已加载的技能，以及本轮显式选择的技能。

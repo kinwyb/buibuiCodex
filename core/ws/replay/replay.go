@@ -180,6 +180,7 @@ func itemStep(ev db.TurnEvent, bodyLimit int) (*protocol.AgentData, string) {
 		data.Content, data.Truncated = clip(item.Text, bodyLimit)
 
 	case jsonRpc.UserMessage:
+		data.Media = types.MediaFromAttachments(item.UserAttachments)
 		if batch, userText, ok := types.ParseUIEventContent(item.Text); ok {
 			data.Event = eventOf(done, types.EventToolCompleted, types.EventToolStart)
 			data.Role = string(types.RoleTool)

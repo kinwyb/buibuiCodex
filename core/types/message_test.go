@@ -1,6 +1,10 @@
 package types
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/kinwyb/buibuiCodex/codex/jsonRpc"
+)
 
 func TestInputMessageSessionIDIncludesSender(t *testing.T) {
 	base := InputMessage{
@@ -74,5 +78,29 @@ func TestInputMessageThreadIDFromMetadata(t *testing.T) {
 	var nilMsg *InputMessage
 	if got := nilMsg.ThreadID(); got != "" {
 		t.Fatalf("nil 消息应返回空 threadID，实际 %q", got)
+	}
+}
+
+// 回显附件转 Media：文件带 filename，本地/远程图片都归一成 image
+func TestMediaFromAttachments(t *testing.T) {
+	got := MediaFromAttachments([]jsonRpc.InputItem{
+		{Type: "file", Name: "报价.xlsx", URL: "/tmp/a_报价.xlsx"},
+		{Type: "localImage", Path: "/tmp/a.png"},
+		{Type: "image", URL: "https://example.com/b.png"},
+	})
+	if len(got) != 3 {
+		t.Fatalf("应转换三个附件: %+v", got)
+	}
+	if got[0].Type != MediaTypeFile || got[0].URL != "/tmp/a_报价.xlsx" || got[0].Metadata["filename"] != "报价.xlsx" {
+		t.Fatalf("文件附件结构不符: %+v", got[0])
+	}
+	if got[1].Type != MediaTypeImage || got[1].URL != "/tmp/a.png" {
+		t.Fatalf("本地图片应取 path: %+v", got[1])
+	}
+	if got[2].Type != MediaTypeImage || got[2].URL != "https://example.com/b.png" {
+		t.Fatalf("远程图片应取 url: %+v", got[2])
+	}
+	if MediaFromAttachments(nil) != nil {
+		t.Fatal("无附件应返回 nil")
 	}
 }
