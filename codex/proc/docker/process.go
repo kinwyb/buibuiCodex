@@ -37,21 +37,15 @@ type StartParam struct {
 }
 
 func (s *StartParam) ToCodexConfig() CodexConfig {
-	codexConfig := CodexConfig{
+	return CodexConfig{
 		OpenAIBaseURL:  s.APIBaseURL,
 		SandboxMode:    "workspace-write",
 		ModelProvider:  s.ModelProvider,
 		ModelProviders: s.ModelProviders,
 		MCPServers:     s.MCP,
-		Memories: &Memories{
-			Use:      new(true),
-			Generate: new(true),
-		},
+		Features:       &Features{Memory: &s.Memories},
+		Memories:       &Memories{Use: &s.Memories, Generate: &s.Memories},
 	}
-	if s.Memories {
-		codexConfig.Features = &Features{Memory: new(true)}
-	}
-	return codexConfig
 }
 
 type StartResult struct {
@@ -86,14 +80,29 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 	imageName := opts.ImageName
 	token := m.sha256(containerName)
 
+	// 配置可能在容器运行期间被修改（如 enable_memory 开关）：先落盘并比对，
+	// 有变化时强制重建容器，否则复用运行中的容器会让新配置永远不生效。
+	configChanged := false
+	if opts.CodexHome != "" {
+		changed, err := ensureCodexConfig(opts.CodexHome, opts.ToCodexConfig())
+		if err != nil {
+			slog.Error("codex config.toml set openai_base_url failed", "error", err.Error())
+			return nil, fmt.Errorf("确保 Codex 配置失败: %w", err)
+		}
+		configChanged = changed
+	}
+
 	var containerID string
 	// 1. 尝试查找是否已经存在同名容器（包含运行中和已停止的）
 	existingContainer, err := m.findContainerByName(ctx, containerName)
 	if err == nil && existingContainer != nil {
 		slog.Info(fmt.Sprintf("发现已存在的容器 [%s] | ID: %s | 当前状态: %s", containerName, existingContainer.ID[:12], existingContainer.State))
-		if existingContainer.State == container.StateRunning {
+		if existingContainer.State == container.StateRunning && !configChanged {
 			containerID = existingContainer.ID
 		} else {
+			if configChanged {
+				slog.Info(fmt.Sprintf("Codex 配置已变化，重建容器 [%s]", containerName))
+			}
 			err = m.StopAndRemoveContainer(ctx, existingContainer.ID)
 			if err != nil {
 				return nil, fmt.Errorf("container name is used and stop container failed: %w", err)
@@ -154,10 +163,6 @@ func (m *SandboxManager) StartCodexContainer(ctx context.Context, opts StartPara
 			})
 		}
 		if opts.CodexHome != "" {
-			if err = ensureCodexConfig(opts.CodexHome, opts.ToCodexConfig()); err != nil {
-				slog.Error("codex config.toml set openai_base_url failed", "error", err.Error())
-				return nil, fmt.Errorf("确保 Codex 配置失败: %w", err)
-			}
 			// codex home添加auth.json,没有这个文件后续即使配置了模型也会异常
 			authFile := filepath.Join(opts.CodexHome, "auth.json")
 			if _, err = os.Stat(authFile); os.IsNotExist(err) {

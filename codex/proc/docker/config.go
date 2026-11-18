@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"github.com/BurntSushi/toml"
 )
@@ -50,24 +51,34 @@ type MCPServerConfig struct {
 	BearerTokenEnvVar *string           `toml:"bearer_token_env_var,omitempty"`
 }
 
-// ensureCodexConfig 确保配置文件存在并更新指定配置
-func ensureCodexConfig(codexHome string, cfg CodexConfig) error {
+// ensureCodexConfig 确保配置文件存在并与期望配置一致，返回是否发生了写入。
+// 只比较本服务管理的字段：app-server 会往 config.toml 回写 skills.config 等
+// 额外内容，不能据此判定配置变化。
+func ensureCodexConfig(codexHome string, cfg CodexConfig) (bool, error) {
 	if codexHome == "" {
-		return nil
+		return false, nil
 	}
 	if err := os.MkdirAll(codexHome, 0755); err != nil {
-		return fmt.Errorf("创建 CodexHome 目录失败: %w", err)
+		return false, fmt.Errorf("创建 CodexHome 目录失败: %w", err)
 	}
 
 	configPath := filepath.Join(codexHome, "config.toml")
 
+	existing, err := loadConfig(configPath)
+	if err != nil {
+		return false, err
+	}
+	if reflect.DeepEqual(existing, &cfg) {
+		return false, nil
+	}
+
 	// 写入配置
 	if err := saveConfig(configPath, &cfg); err != nil {
-		return err
+		return false, err
 	}
 
 	slog.Info(fmt.Sprintf("Codex 配置已生成: %s", configPath))
-	return nil
+	return true, nil
 }
 
 // loadConfig 从文件加载配置
