@@ -1,0 +1,26 @@
+# Codex 运行时镜像：在基础镜像上只安装/升级 Codex 本体。
+#
+# 构建基础镜像：
+#   docker build -f Dockerfile -t codex_run_base:latest .
+#
+# 构建 Codex 镜像：
+#   docker build -f Dockerfile.codex \
+#     --build-arg BASE_IMAGE=codex_run_base:latest \
+#     --build-arg CODEX_VERSION=latest \
+#     -t codex_run:v7 .
+#
+# 注意：Docker 不会因为 npm 上出现新版本而自动失效缓存。
+# 更新 Codex 时请传具体版本号，或先执行 npm view @openai/codex version 取值。
+ARG BASE_IMAGE=codex_run_base:latest
+FROM ${BASE_IMAGE}
+
+ARG CODEX_VERSION=latest
+
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install -g --no-fund --no-audit @openai/codex@${CODEX_VERSION} \
+    && npm cache clean --force
+
+WORKDIR /workspace
+
+# 默认指令 (实际会被 Go 网关启动容器时的 Cmd 覆盖)
+CMD ["codex", "app-server", "--listen", "ws://0.0.0.0:4500"]

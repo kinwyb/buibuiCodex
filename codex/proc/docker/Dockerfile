@@ -1,3 +1,5 @@
+# Codex 沙箱基础镜像：只负责系统工具、文档解析、字体和 Python 环境。
+# 可运行的 Codex 镜像请使用同目录的 Dockerfile.codex 构建。
 # 使用基于 Debian 的 Node.js 官方轻量镜像
 FROM node:26.7-bookworm-slim
 
@@ -50,11 +52,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm config set registry https://registry.npmmirror.com
-
-# 4. 如果选择将 Codex 打包进镜像 (如果不打包，可以在运行容器时通过 Volume 挂载)
-RUN npm install -g @openai/codex
-
 # 2. 预装文档分析依赖。系统 Python 受 PEP 668 管理，统一放进独立 venv。
 # NumPy 2.4+ 的 x86_64 wheel 要求 x86-64-v2，老 CPU 会在导入时直接报错；固定在 2.3.5。
 # PyMuPDF 2.x 会引入 onnxruntime，1.x 足够覆盖 PDF 解析和渲染，兼容性也更好。
@@ -85,6 +82,3 @@ RUN mkdir -p /var/run/codex /workspace/.codex /root/.codex
 VOLUME ["/root/.codex", "/workspace"]
 
 WORKDIR /workspace
-
-# 默认指令 (实际会被 Go 网关启动容器时的 Cmd 覆盖)
-CMD ["codex", "app-server","--listen","ws://0.0.0.0:4500"]
